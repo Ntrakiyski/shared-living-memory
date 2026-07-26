@@ -93,7 +93,7 @@ function makeEnv(db: SqliteD1): Env {
 
 async function seedUser(db: SqliteD1, id: string): Promise<string> {
   const secret = `${id}-secret`;
-  const key = `sbu_${id}.${secret}`;
+  const key = `slm_${id}.${secret}`;
   db.sqlite.prepare(
     `INSERT INTO users (
        id, username, normalized_username, auth_key_hash, auth_key_prefix,

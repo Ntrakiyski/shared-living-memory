@@ -15,7 +15,7 @@
 export const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, X-Second-Brain-User, X-Second-Brain-User-Key",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, X-Shared-Living-Memory-User, X-Shared-Living-Memory-User-Key",
 };
 
 export function graceMs(env: { VECTORIZE_GRACE_MS?: string }): number {

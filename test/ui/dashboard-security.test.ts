@@ -139,10 +139,10 @@ describe("dashboard credential storage", () => {
   it("removes credentials left by older dashboard versions during init", () => {
     const authUrl = fakeElement();
     const storage = makeStorage({
-      sb_token: "legacy-workspace-key",
-      sb_key: "legacy-user-key",
-      sb_auth_mode: "legacy",
-      sb_url: "https://brain.example.test",
+      slm_token: "legacy-workspace-key",
+      slm_key: "legacy-user-key",
+      slm_auth_mode: "legacy",
+      slm_url: "https://brain.example.test",
     });
     const init = new Function(
       "applyTheme",
@@ -159,10 +159,10 @@ describe("dashboard credential storage", () => {
 
     init();
 
-    expect(storage.removals).toEqual(["sb_token", "sb_key", "sb_auth_mode"]);
-    expect(storage.values.has("sb_token")).toBe(false);
-    expect(storage.values.has("sb_key")).toBe(false);
-    expect(storage.values.has("sb_auth_mode")).toBe(false);
+    expect(storage.removals).toEqual(["slm_token", "slm_key", "slm_auth_mode"]);
+    expect(storage.values.has("slm_token")).toBe(false);
+    expect(storage.values.has("slm_key")).toBe(false);
+    expect(storage.values.has("slm_auth_mode")).toBe(false);
     expect(authUrl.value).toBe("https://brain.example.test");
   });
 
@@ -177,7 +177,7 @@ describe("dashboard credential storage", () => {
       "auth-user-step": fakeElement(),
       "auth-username": fakeElement({ value: "alice" }),
       "auth-login-username": fakeElement(),
-      "auth-key": fakeElement({ value: "sbu_test.user-secret" }),
+      "auth-key": fakeElement({ value: "slm_test.user-secret" }),
     };
     const document = fakeDocument(elements);
     const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
@@ -237,21 +237,21 @@ describe("dashboard credential storage", () => {
 
     expect(loginHarness.state()).toEqual({
       CURRENT_USERNAME: "alice",
-      USER_API_KEY: "sbu_test.user-secret",
+      USER_API_KEY: "slm_test.user-secret",
     });
     expect(elements["auth-key"].value).toBe("");
     expect(elements["auth-login-username"].value).toBe("alice");
     expect(showApp).toHaveBeenCalledOnce();
     expect(storage.writes).toEqual([
-      ["sb_url", "https://brain.example.test"],
-      ["sb_url", "https://brain.example.test"],
-      ["sb_username", "alice"],
+      ["slm_url", "https://brain.example.test"],
+      ["slm_url", "https://brain.example.test"],
+      ["slm_username", "alice"],
     ]);
   });
 
   it("contains no persistent writes for legacy credential keys", () => {
     expect(indexHtml).not.toMatch(
-      /localStorage\s*\.\s*setItem\s*\(\s*(["'])(?:sb_token|sb_key|sb_auth_mode)\1/,
+      /localStorage\s*\.\s*setItem\s*\(\s*(["'])(?:slm_token|slm_key|slm_auth_mode)\1/,
     );
   });
 });

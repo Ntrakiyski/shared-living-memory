@@ -16,10 +16,10 @@ async function seedExportActor(db: D1Mock) {
   const secret = "export-secret";
   db.users.push({
     id: "export-owner", username: "export-owner", normalized_username: "export-owner",
-    auth_key_hash: await hmacKey(secret, AUTH_PEPPER), auth_key_prefix: "sbu_export",
+    auth_key_hash: await hmacKey(secret, AUTH_PEPPER), auth_key_prefix: "slm_export",
     status: "active", created_at: 1,
   });
-  return { username: "export-owner", key: `sbu_export-owner.${secret}` };
+  return { username: "export-owner", key: `slm_export-owner.${secret}` };
 }
 
 describe("GET /export", () => {

@@ -16,8 +16,8 @@ describe("CORS", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
     expect(res.headers.get("Access-Control-Allow-Methods")).toContain("POST");
-    expect(res.headers.get("Access-Control-Allow-Headers")).toContain("X-Second-Brain-User");
-    expect(res.headers.get("Access-Control-Allow-Headers")).toContain("X-Second-Brain-User-Key");
+    expect(res.headers.get("Access-Control-Allow-Headers")).toContain("X-Shared-Living-Memory-User");
+    expect(res.headers.get("Access-Control-Allow-Headers")).toContain("X-Shared-Living-Memory-User-Key");
   });
 
   it("successful JSON response includes CORS header", async () => {

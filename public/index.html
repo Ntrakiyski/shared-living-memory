@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <meta name="apple-mobile-web-app-title" content="Second Brain" />
+    <meta name="apple-mobile-web-app-title" content="Shared Living Memory" />
     <meta name="theme-color" content="#F4F1EA" />
-    <title>Second Brain</title>
+    <title>Shared Living Memory</title>
     <link rel="icon" href="/icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link
@@ -18,7 +18,7 @@
     <link rel="manifest" href="/manifest.json" />
     <style>
       /* ============================================================
-       Second Brain — Journal edition
+       Shared Living Memory — Journal edition
        Editorial / serif-forward · warm paper · terracotta accent
        Light + dark via html[data-theme]. Variable names kept
        backward-compatible so inline styles keep resolving.
@@ -2937,12 +2937,12 @@
         <div class="brain-logo">
           <i class="ti ti-brain"></i>
         </div>
-        <h1>Second Brain</h1>
+        <h1>Shared Living Memory</h1>
         <!-- Step 1: Connect to server -->
         <form id="auth-connect-step" class="field-group" onsubmit="connect(); return false">
           <input type="text" name="username" value="workspace" autocomplete="username" hidden />
-          <label class="sr-only" for="auth-url">Second Brain server URL</label>
-          <input type="url" id="auth-url" placeholder="Second Brain server URL" autocomplete="url" autocapitalize="none" />
+          <label class="sr-only" for="auth-url">Shared Living Memory server URL</label>
+          <input type="url" id="auth-url" placeholder="Shared Living Memory server URL" autocomplete="url" autocapitalize="none" />
           <label class="sr-only" for="auth-token">Workspace key</label>
           <input type="password" id="auth-token" placeholder="Workspace key" autocomplete="current-password" />
           <button id="auth-connect-btn" type="submit">Connect</button>
@@ -2989,7 +2989,7 @@
             <i class="ti ti-brain"></i>
           </div>
           <div>
-            <div class="sb-brand-name">Second Brain</div>
+            <div class="sb-brand-name">Shared Living Memory</div>
             <div class="sb-brand-status" id="sb-status">always remembers</div>
           </div>
         </div>
@@ -3013,7 +3013,7 @@
             <i class="ti ti-brain"></i>
           </div>
           <div class="topbar-info">
-            <div class="topbar-name">Second Brain</div>
+            <div class="topbar-name">Shared Living Memory</div>
             <div class="topbar-status" id="topbar-status">always remembers</div>
           </div>
           <button class="topbar-menu" onclick="openMenu()"><i class="ti ti-dots"></i></button>
@@ -3354,7 +3354,7 @@
 
     <div id="menu-sheet">
       <div class="menu-inner">
-        <h3>Second Brain</h3>
+        <h3>Shared Living Memory</h3>
         <div class="stats-panel" id="stats-panel">
           <div class="stats-kpi-row">
             <div class="stats-kpi-card">
@@ -3524,16 +3524,16 @@
         // Secrets from older dashboard versions must not survive in browser
         // storage. Connection credentials are intentionally memory-only and a
         // page reload requires authentication again.
-        ;['sb_token', 'sb_key', 'sb_auth_mode'].forEach((key) => localStorage.removeItem(key))
-        document.getElementById('auth-url').value = localStorage.getItem('sb_url') || origin
+        ;['slm_token', 'slm_key', 'slm_auth_mode'].forEach((key) => localStorage.removeItem(key))
+        document.getElementById('auth-url').value = localStorage.getItem('slm_url') || origin
       }
 
       function authHeaders(extra) {
         const headers = Object.assign({}, extra || {})
         headers['Authorization'] = `Bearer ${AUTH_TOKEN}`
         if (CURRENT_USERNAME && USER_API_KEY) {
-          headers['X-Second-Brain-User'] = CURRENT_USERNAME
-          headers['X-Second-Brain-User-Key'] = USER_API_KEY
+          headers['X-Shared-Living-Memory-User'] = CURRENT_USERNAME
+          headers['X-Shared-Living-Memory-User-Key'] = USER_API_KEY
         }
         return headers
       }
@@ -3578,14 +3578,14 @@
           if (!res.ok) throw new Error(`Server error: ${res.status}`)
           WORKER_URL = url
           AUTH_TOKEN = workspaceKey
-          localStorage.setItem('sb_url', url)
+          localStorage.setItem('slm_url', url)
           document.getElementById('auth-token').value = ''
           document.getElementById('auth-connect-step').style.display = 'none'
           document.getElementById('auth-user-step').style.display = ''
           document.getElementById('auth-error').textContent = ''
           document.getElementById('auth-url').value = window.location.origin
           await loadUserAccounts()
-          const savedUser = localStorage.getItem('sb_username')
+          const savedUser = localStorage.getItem('slm_username')
           if (savedUser) {
             const sel = document.getElementById('auth-username')
             if ([...sel.options].some(o => o.value === savedUser)) sel.value = savedUser
@@ -3612,8 +3612,8 @@
           const res = await fetch(`${WORKER_URL}/list?n=1`, {
             headers: {
               Authorization: `Bearer ${AUTH_TOKEN}`,
-              'X-Second-Brain-User': username,
-              'X-Second-Brain-User-Key': key
+              'X-Shared-Living-Memory-User': username,
+              'X-Shared-Living-Memory-User-Key': key
             }
           })
           if (res.status === 401) throw new Error('Invalid credentials')
@@ -3621,8 +3621,8 @@
           CURRENT_USERNAME = username
           USER_API_KEY = key
           document.getElementById('auth-key').value = ''
-          localStorage.setItem('sb_url', WORKER_URL)
-          localStorage.setItem('sb_username', username)
+          localStorage.setItem('slm_url', WORKER_URL)
+          localStorage.setItem('slm_username', username)
           showApp()
         } catch (e) {
           err.textContent = e.message || 'Could not log in.'
@@ -3656,7 +3656,7 @@
           document.getElementById('key-reveal-value').textContent = data.key
           CURRENT_USERNAME = data.username
           USER_API_KEY = data.key
-          localStorage.setItem('sb_username', data.username)
+          localStorage.setItem('slm_username', data.username)
         } catch (e) {
           err.textContent = e.message || 'Could not create account.'
         } finally {
@@ -3674,7 +3674,7 @@
       }
 
       function dismissKeyReveal() {
-        localStorage.setItem('sb_url', WORKER_URL)
+        localStorage.setItem('slm_url', WORKER_URL)
         document.getElementById('key-reveal-value').textContent = ''
         showApp()
       }
@@ -3778,11 +3778,11 @@
         closeServiceIdentities()
         serviceIdentitiesCache = []
         document.getElementById('service-identities-menu-item').style.display = 'none'
-        localStorage.removeItem('sb_url')
-        localStorage.removeItem('sb_token')
-        localStorage.removeItem('sb_username')
-        localStorage.removeItem('sb_key')
-        localStorage.removeItem('sb_auth_mode')
+        localStorage.removeItem('slm_url')
+        localStorage.removeItem('slm_token')
+        localStorage.removeItem('slm_username')
+        localStorage.removeItem('slm_key')
+        localStorage.removeItem('slm_auth_mode')
         WORKER_URL = ''
         AUTH_TOKEN = ''
         CURRENT_USERNAME = ''
@@ -5342,10 +5342,10 @@
 
           if (format === 'json') {
             content = JSON.stringify(data, null, 2)
-            filename = `second-brain-export-${ts}.json`
+            filename = `shared-living-memory-export-${ts}.json`
             mime = 'application/json'
           } else {
-            const lines = [`# Second Brain Export`, `Exported: ${ts}`, '']
+            const lines = [`# Shared Living Memory Export`, `Exported: ${ts}`, '']
             entries.forEach((e, i) => {
               const tags = e.tags || []
               const date = new Date(e.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
@@ -5371,7 +5371,7 @@
               lines.push('')
             }
             content = lines.join('\n')
-            filename = `second-brain-export-${ts}.md`
+            filename = `shared-living-memory-export-${ts}.md`
             mime = 'text/markdown'
           }
 
@@ -6363,11 +6363,11 @@
       // ---- Theme (light / dark / auto) ----
       const _prefersDark = window.matchMedia('(prefers-color-scheme: dark)')
       function setTheme(mode) {
-        localStorage.setItem('sb_theme', mode)
+        localStorage.setItem('slm_theme', mode)
         applyTheme()
       }
       function applyTheme() {
-        const mode = localStorage.getItem('sb_theme') || 'auto'
+        const mode = localStorage.getItem('slm_theme') || 'auto'
         const dark = mode === 'dark' || (mode === 'auto' && _prefersDark.matches)
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
         const tc = document.querySelector('meta[name="theme-color"]')

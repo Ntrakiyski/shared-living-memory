@@ -93,7 +93,7 @@ const apiHandler = {
       await initializeDatabase(env);
     } catch (error) {
       console.error("Database initialization failed:", error);
-      return mcpIdentityError(503, "Second Brain storage is unavailable");
+      return mcpIdentityError(503, "Shared Living Memory storage is unavailable");
     }
     // OAuthProvider injects the authenticated token principal into ctx.props.
     // Complete, verified legacy user headers may select a narrower per-user

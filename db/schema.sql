@@ -1,7 +1,7 @@
--- Current schema snapshot for a fresh Second Brain D1 database.
+-- Current schema snapshot for a fresh Shared Living Memory D1 database.
 -- Runtime upgrades are ordered and recorded by src/db.ts. Keep this snapshot in
 -- sync with the latest runtime migration.
--- Run with: wrangler d1 execute second-brain-db --file=db/schema.sql
+-- Run with: wrangler d1 execute shared-living-memory-db --file=db/schema.sql
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version    INTEGER PRIMARY KEY,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Wires up Second Brain for Claude Code and Codex CLI in one shot:
+# Wires up Shared Living Memory for Claude Code and Codex CLI in one shot:
 #   - appends global system instructions to ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md
 #   - registers the /mcp endpoint as an MCP server via OAuth (no token ever stored here)
 #
@@ -8,18 +8,18 @@
 
 set -euo pipefail
 
-RAW_BASE="https://raw.githubusercontent.com/Ntrakiyski/second-brain/main"
+RAW_BASE="https://raw.githubusercontent.com/Ntrakiyski/shared-living-memory/main"
 INSTRUCTION_SOURCE_PATH="AGENTS.md"
-INSTRUCTION_SECTION_START="<!-- second-brain:mcp-client-instructions:start -->"
-INSTRUCTION_SECTION_END="<!-- second-brain:mcp-client-instructions:end -->"
-START_MARKER="<!-- second-brain:instructions:start -->"
-END_MARKER="<!-- second-brain:instructions:end -->"
+INSTRUCTION_SECTION_START="<!-- shared-living-memory:mcp-client-instructions:start -->"
+INSTRUCTION_SECTION_END="<!-- shared-living-memory:mcp-client-instructions:end -->"
+START_MARKER="<!-- shared-living-memory:instructions:start -->"
+END_MARKER="<!-- shared-living-memory:instructions:end -->"
 SENTINEL_PHRASE="At the start of EVERY conversation, call recall"
 
 WORKER_URL="${1:-}"
 
 if [[ -z "$WORKER_URL" ]]; then
-  read -rp "Enter your Second Brain worker URL (e.g. https://your-worker.workers.dev): " WORKER_URL
+  read -rp "Enter your Shared Living Memory worker URL (e.g. https://your-worker.workers.dev): " WORKER_URL
 fi
 
 # Trim trailing slash(es)
@@ -93,14 +93,14 @@ echo
 echo "── MCP server registration (OAuth — no token needed here) ──"
 
 if command -v claude >/dev/null 2>&1; then
-  if claude mcp get second-brain >/dev/null 2>&1; then
-    echo "[Claude Code] 'second-brain' MCP server is already registered — skipping."
+  if claude mcp get shared-living-memory >/dev/null 2>&1; then
+    echo "[Claude Code] 'shared-living-memory' MCP server is already registered — skipping."
   else
-    if claude mcp add --transport http second-brain "$MCP_URL"; then
-      echo "[Claude Code] Registered 'second-brain'. You'll be prompted to authorize in your browser on first use."
+    if claude mcp add --transport http shared-living-memory "$MCP_URL"; then
+      echo "[Claude Code] Registered 'shared-living-memory'. You'll be prompted to authorize in your browser on first use."
     else
-      echo "[Claude Code] Failed to register 'second-brain' — you can add it manually with:" >&2
-      echo "  claude mcp add --transport http second-brain \"$MCP_URL\"" >&2
+      echo "[Claude Code] Failed to register 'shared-living-memory' — you can add it manually with:" >&2
+      echo "  claude mcp add --transport http shared-living-memory \"$MCP_URL\"" >&2
     fi
   fi
 else
@@ -108,14 +108,14 @@ else
 fi
 
 if command -v codex >/dev/null 2>&1; then
-  if codex mcp get second-brain >/dev/null 2>&1; then
-    echo "[Codex CLI] 'second-brain' MCP server is already registered — skipping."
+  if codex mcp get shared-living-memory >/dev/null 2>&1; then
+    echo "[Codex CLI] 'shared-living-memory' MCP server is already registered — skipping."
   else
-    if codex mcp add second-brain --url "$MCP_URL"; then
-      echo "[Codex CLI] Registered 'second-brain' and started the OAuth login flow."
+    if codex mcp add shared-living-memory --url "$MCP_URL"; then
+      echo "[Codex CLI] Registered 'shared-living-memory' and started the OAuth login flow."
     else
-      echo "[Codex CLI] Failed to register 'second-brain' — you can add it manually with:" >&2
-      echo "  codex mcp add second-brain --url \"$MCP_URL\"" >&2
+      echo "[Codex CLI] Failed to register 'shared-living-memory' — you can add it manually with:" >&2
+      echo "  codex mcp add shared-living-memory --url \"$MCP_URL\"" >&2
     fi
   fi
 else
@@ -130,6 +130,6 @@ echo "    that's the one-time OAuth handshake. (If you connect both Claude Code 
 echo "    Codex in the same browser session, you may only be asked once.)"
 echo "  • Also using the ChatGPT or Claude apps (not Codex CLI / Claude Code)? Their"
 echo "    personalization / custom-instruction settings are account-level and have no"
-echo "    public write API — paste the 'Second Brain MCP Client Instructions' block"
+echo "    public write API — paste the 'Shared Living Memory MCP Client Instructions' block"
 echo "    from AGENTS.md into ChatGPT's Settings → Personalization → Custom Instructions,"
 echo "    and a similar block into claude.ai's profile preferences, by hand."

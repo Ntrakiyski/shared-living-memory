@@ -7,7 +7,7 @@
 
 ---
 
-These 10 principles are the architectural foundation of Second Brain v2. Every implementation decision must comply with them. They are not guidelines — they are non-negotiables grounded in research evidence.
+These 10 principles are the architectural foundation of Shared Living Memory v2. Every implementation decision must comply with them. They are not guidelines — they are non-negotiables grounded in research evidence.
 
 ---
 
@@ -85,7 +85,7 @@ Task-state memories should decay in days. User preferences should last months. V
 
 Weight = link strength (how related). Confidence = certainty (how sure we are about this relationship). These are orthogonal. A weak-but-certain link needs both signals.
 
-**Why:** No production system (Graphiti, AgentMemory, MemPalace) has native edge confidence in their public OSS. This is a gap in the entire field. Second Brain can be the first to implement it correctly. Confidence enables: (a) trusting LLM-inferred edges less than user-created ones, (b) confidence-weighted graph traversal, (c) evidence-weighted contradiction resolution.
+**Why:** No production system (Graphiti, AgentMemory, MemPalace) has native edge confidence in their public OSS. This is a gap in the entire field. Shared Living Memory can be the first to implement it correctly. Confidence enables: (a) trusting LLM-inferred edges less than user-created ones, (b) confidence-weighted graph traversal, (c) evidence-weighted contradiction resolution.
 
 **Implementation:** Add `confidence REAL DEFAULT 1.0` to edges. Set on first insert, never upserted (preserve original certainty). For LLM-inferred edges: `confidence = (cosine_score - threshold) / (1 - threshold)` normalized to 0–1. For user-created edges: default to 1.0. For contradiction-detected edges: LLM provides confidence.
 

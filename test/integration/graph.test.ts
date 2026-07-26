@@ -110,7 +110,7 @@ describe("GET /graph", () => {
 
   it("includes user's own private entries in graph", async () => {
     const secret = "graph-secret";
-    db.users.push({ id: "sys", username: "graph-owner", normalized_username: "graph-owner", auth_key_hash: await hmacKey(secret, AUTH_PEPPER), auth_key_prefix: "sbu_graph", status: "active", created_at: 1000 });
+    db.users.push({ id: "sys", username: "graph-owner", normalized_username: "graph-owner", auth_key_hash: await hmacKey(secret, AUTH_PEPPER), auth_key_prefix: "slm_graph", status: "active", created_at: 1000 });
     seedEntry(db, "mine", "My private", ["private"], 0, "sys");
     // Private graph nodes form a separate visibility partition because edges
     // do not carry ACLs of their own.
@@ -118,7 +118,7 @@ describe("GET /graph", () => {
     pushEdge(db, "mine", "other");
 
     const res = await worker.fetch(req("GET", "/graph", {
-      userCredentials: { username: "graph-owner", key: `sbu_sys.${secret}` },
+      userCredentials: { username: "graph-owner", key: `slm_sys.${secret}` },
     }), env, ctx);
     const data = await res.json() as any;
     const nodeIds = data.nodes.map((n: any) => n.id);

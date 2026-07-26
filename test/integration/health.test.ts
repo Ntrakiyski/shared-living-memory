@@ -25,7 +25,7 @@ describe("GET /health", () => {
     const data = await res.json() as any;
     expect(data.ok).toBe(true);
     expect(data.vectorize.ok).toBe(true);
-    expect(data.vectorize.indexName).toBe("second-brain-vectors_v2");
+    expect(data.vectorize.indexName).toBe("shared-living-memory-vectors");
   });
 
   it("reports vectorize not-ok when the index is missing", async () => {

@@ -1,4 +1,4 @@
-# Competitor Patterns → Second Brain Schema Changes
+# Competitor Patterns → Shared Living Memory Schema Changes
 
 **Date:** 2026-07-13
 **Derived from:** `docs/research/competitor-analysis.md` (13 systems) + `docs/research/technical-knowledge-base-report.md`

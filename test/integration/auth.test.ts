@@ -209,7 +209,7 @@ describe("Auth", () => {
   });
 
   it("POST /capture — partial user headers do not fall back to the system actor", async () => {
-    for (const header of ["X-Second-Brain-User", "X-Second-Brain-User-Key"]) {
+    for (const header of ["X-Shared-Living-Memory-User", "X-Shared-Living-Memory-User-Key"]) {
       const request = req("POST", "/capture", { body: { content: "test" } });
       request.headers.set(header, "partial-credential");
       const res = await worker.fetch(request, env, ctx);

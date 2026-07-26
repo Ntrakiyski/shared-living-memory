@@ -1,4 +1,4 @@
-# Second Brain v2 — Technical Knowledge Base Report
+# Shared Living Memory v2 — Technical Knowledge Base Report
 
 **Date:** 2026-07-13  
 **Research depth:** Primary papers, production codebases, MTEB benchmarks, competitor implementations  
@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-Second Brain v2 is architecturally ahead of most open-source memory systems in multi-user auth, contradiction detection, auto-linking, and compression. However, the research reveals five critical gaps where production evidence from competitors (Graphiti, AgentMemory, MemPalace) and recent ICML/ACL papers directly applicable to this system's design.
+Shared Living Memory v2 is architecturally ahead of most open-source memory systems in multi-user auth, contradiction detection, auto-linking, and compression. However, the research reveals five critical gaps where production evidence from competitors (Graphiti, AgentMemory, MemPalace) and recent ICML/ACL papers directly applicable to this system's design.
 
 **Priority findings:**
 
@@ -25,7 +25,7 @@ Second Brain v2 is architecturally ahead of most open-source memory systems in m
 
 ### Current State
 
-Second Brain uses `@cf/baai/bge-small-en-v1.5` — 384 dimensions, cosine similarity, max 512 tokens. The embed call at `src/index.ts:782` is a single non-batched, non-cached call per embedding.
+Shared Living Memory uses `@cf/baai/bge-small-en-v1.5` — 384 dimensions, cosine similarity, max 512 tokens. The embed call at `src/index.ts:782` is a single non-batched, non-cached call per embedding.
 
 ### Research Findings
 
@@ -98,7 +98,7 @@ Current keyword weight = raw token match count (not TF-IDF, not BM25). A 3-word 
 
 ### Query Expansion
 
-Second Brain has no paraphrase expansion. AgeMem's approach of generating 2-3 paraphrase variants before search is shown to improve recall for paraphrase-sensitive queries.
+Shared Living Memory has no paraphrase expansion. AgeMem's approach of generating 2-3 paraphrase variants before search is shown to improve recall for paraphrase-sensitive queries.
 
 **Recommendation:** Add optional query expansion using LLM-generated paraphrases for short queries (<5 words). Run in parallel with primary embedding to minimize latency. This is a low-priority, low-risk improvement.
 
@@ -149,7 +149,7 @@ Edge {
 
 | Action | Priority | Evidence |
 |---|---|---|
-| **Add `confidence` column to edges** | High | No production system has this natively — Second Brain can be first |
+| **Add `confidence` column to edges** | High | No production system has this natively — Shared Living Memory can be first |
 | **Add `contradicts` and `derives_from` edge types** | High | One-line change in EDGE_TYPES; immediate graph quality improvement |
 | **Implement relation-specific contradiction policies** | Medium | TOKI (2026) shows this is critical for correct conflict resolution |
 | **Add `valid_at`/`invalid_at` to edges** | Medium | Graphiti's core pattern — temporal truth maintenance |
@@ -238,7 +238,7 @@ P(useful now | m) = 2^(-Δ/h_m)
 
 ### Current State
 
-Second Brain has no temporal validity windows on entries or edges. `created_at` is the only timestamp. There is no way to answer "what did we believe about X at time Y?"
+Shared Living Memory has no temporal validity windows on entries or edges. `created_at` is the only timestamp. There is no way to answer "what did we believe about X at time Y?"
 
 ### Research Findings
 
@@ -260,7 +260,7 @@ Second Brain has no temporal validity windows on entries or edges. `created_at` 
 3. **History-of-fact**: fetch all edges between entities, sort by `valid_at`
 4. **Windowed retrieval**: overlap query between fact validity interval and target interval
 
-### Recommended Schema for Second Brain
+### Recommended Schema for Shared Living Memory
 
 **On entries:**
 ```sql
@@ -299,17 +299,17 @@ Contradiction detection happens during capture via cosine similarity thresholds 
 **From the KG refinement research:**
 
 Production contradiction strategies (TOKI, 2026):
-1. **last-writer-wins** — Second Brain's current approach (with canonical protection)
+1. **last-writer-wins** — Shared Living Memory's current approach (with canonical protection)
 2. **evidence-weighted merge** — requires confidence scores (not yet implemented)
 3. **await-confirmation** — safe but slow (not applicable to real-time capture)
-4. **per-rule policy** — relation-specific (recommended for Second Brain)
+4. **per-rule policy** — relation-specific (recommended for Shared Living Memory)
 
 **Key insight from RoMem (2026):** Many systems wrongly treat time as metadata, then rely on recency sorting or overwriting. The alternative is a temporal representation where outdated facts naturally lose retrieval salience without deletion.
 
 **From the competitor analysis:**
 - AgentMemory's 3-tier consolidation (L0→L1→L2) with LLM-driven compression is the most sophisticated lifecycle
 - Graphiti's temporal invalidation is the most robust contradiction handling
-- Second Brain's compression pipeline (nightly synthesis) is unique among competitors
+- Shared Living Memory's compression pipeline (nightly synthesis) is unique among competitors
 
 ### Recommendations
 
@@ -384,7 +384,7 @@ All processing is either synchronous in request handlers or via `ctx.waitUntil()
 
 ---
 
-## 9. What Second Brain Already Does Better Than Competitors
+## 9. What Shared Living Memory Already Does Better Than Competitors
 
 Before building anything, acknowledge the strong foundation:
 
@@ -392,7 +392,7 @@ Before building anything, acknowledge the strong foundation:
 2. **Contradiction detection with structural resolution** — only AgentMemory comes close
 3. **Auto-linking between related memories** — most competitors require manual linking
 4. **Compression pipeline with eligibility guards** — most competitors have no compression
-5. **Pattern derivation across memories** — unique to Second Brain
+5. **Pattern derivation across memories** — unique to Shared Living Memory
 6. **Graph expansion in recall (BFS)** — most competitors do flat retrieval
 7. **RRF fusion (dense + keyword)** — production-quality hybrid search
 8. **Importance scoring with contradiction adjustment** — adaptive, not static

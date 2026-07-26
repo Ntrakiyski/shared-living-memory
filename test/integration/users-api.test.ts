@@ -17,7 +17,7 @@ describe("POST /api/users", () => {
     const data = await res.json() as any;
     expect(data.ok).toBe(true);
     expect(data.username).toBe("alice");
-    expect(data.key).toMatch(/^sbu_[a-f0-9]+\.[a-zA-Z0-9]+$/);
+    expect(data.key).toMatch(/^slm_[a-f0-9]+\.[a-zA-Z0-9]+$/);
   });
 
   it("rejects duplicate username", async () => {

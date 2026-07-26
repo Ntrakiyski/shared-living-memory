@@ -1,8 +1,8 @@
-# Second Brain v2 — Product Goal
+# Shared Living Memory v2 — Product Goal
 
 ## Vision
 
-Extend Second Brain from a single-user personal memory tool into a multi-user shared memory platform. The existing memory model (entries + edges + tags) is preserved and extended. Tags become the organizing principle — workspace, project, private/public are all tags. No separate workspace infrastructure.
+Extend Shared Living Memory from a single-user personal memory tool into a multi-user shared memory platform. The existing memory model (entries + edges + tags) is preserved and extended. Tags become the organizing principle — workspace, project, private/public are all tags. No separate workspace infrastructure.
 
 ---
 
@@ -36,7 +36,7 @@ Extend Second Brain from a single-user personal memory tool into a multi-user sh
 
 A user dumps data and sets tags. Tags can indicate:
 - **Workspace** (e.g., `workspace:arete`) — team-level grouping
-- **Project** (e.g., `project:second-brain`) — project-level grouping
+- **Project** (e.g., `project:shared-living-memory`) — project-level grouping
 - **Visibility** (`private`) — system-enforced: only the owner can see
 
 No separate workspace table. No workspace_memberships. No workspace API keys. A "workspace" is just a tag on a memory.
@@ -47,7 +47,7 @@ No separate workspace table. No workspace_memberships. No workspace API keys. A 
 
 Two-screen flow:
 
-**Screen 1:** Connect to Second Brain (same as today)
+**Screen 1:** Connect to Shared Living Memory (same as today)
 - Worker URL
 - Workspace key (`AUTH_TOKEN`)
 
@@ -59,8 +59,8 @@ Every request carries:
 
 ```http
 Authorization: Bearer <WORKSPACE_KEY>
-X-Second-Brain-User: nik
-X-Second-Brain-User-Key: <USER_AUTH_KEY>
+X-Shared-Living-Memory-User: nik
+X-Shared-Living-Memory-User-Key: <USER_AUTH_KEY>
 ```
 
 The server:
@@ -89,7 +89,7 @@ CREATE TABLE users (
 );
 ```
 
-- Key format: `sbu_<public-user-id>.<secret>`
+- Key format: `slm_<public-user-id>.<secret>`
 - Storage: HMAC-SHA-256(server pepper, raw key) only
 - Raw key shown once at creation, never retrievable
 - Username: 3–32 chars, letters/numbers/`_`/`-`, case-insensitive unique
@@ -237,19 +237,19 @@ All existing data must be migrated without loss:
 
 # 16. Client & Connection Updates
 
-Every client that talks to the Second Brain server must carry user credentials after migration. All clients update from single AUTH_TOKEN to user+key authentication.
+Every client that talks to the Shared Living Memory server must carry user credentials after migration. All clients update from single AUTH_TOKEN to user+key authentication.
 
 ## 16.1 MCP Server
 
 The MCP server (stdio-based, invoked by Claude Desktop, Claude Code, Cursor, etc.) currently reads `AUTH_TOKEN` from environment. It must:
 - Accept user key and username as additional config/env vars
-- Send all requests with user headers (`X-Second-Brain-User`, `X-Second-Brain-User-Key`)
+- Send all requests with user headers (`X-Shared-Living-Memory-User`, `X-Shared-Living-Memory-User-Key`)
 - Update README and setup docs with new config fields
 
 ## 16.2 REST API Clients
 
 Any HTTP client calling the REST API:
-- Must include `X-Second-Brain-User` and `X-Second-Brain-User-Key` headers
+- Must include `X-Shared-Living-Memory-User` and `X-Shared-Living-Memory-User-Key` headers
 - Existing single-token requests are treated as legacy (still accepted during transition)
 - After migration, all new requests must carry user credentials
 

@@ -308,9 +308,9 @@ describe("ordered database migrations", () => {
         id, username, normalized_username, auth_key_hash, auth_key_prefix,
         status, created_at
       ) VALUES
-        ('user-b', 'bob', 'bob', 'hash-b', 'sbu_b.', 'active', 100),
-        ('user-a', 'alice', 'alice', 'hash-a', 'sbu_a.', 'active', 100),
-        ('user-old', 'old', 'old', 'hash-old', 'sbu_old.', 'inactive', 1);
+        ('user-b', 'bob', 'bob', 'hash-b', 'slm_b.', 'active', 100),
+        ('user-a', 'alice', 'alice', 'hash-a', 'slm_a.', 'active', 100),
+        ('user-old', 'old', 'old', 'hash-old', 'slm_old.', 'inactive', 1);
 
       INSERT INTO entries (
         id, content, tags, source, created_at, vector_ids, owner_user_id
@@ -454,8 +454,8 @@ describe("ordered database migrations", () => {
         id, username, normalized_username, auth_key_hash, auth_key_prefix,
         status, created_at, role
       ) VALUES
-        ('operator', 'operator', 'operator', 'hash-o', 'sbu_o.', 'active', 10, 'admin'),
-        ('reviewer', 'reviewer', 'reviewer', 'hash-r', 'sbu_r.', 'active', 20, 'member');
+        ('operator', 'operator', 'operator', 'hash-o', 'slm_o.', 'active', 10, 'admin'),
+        ('reviewer', 'reviewer', 'reviewer', 'hash-r', 'slm_r.', 'active', 20, 'member');
       INSERT INTO entries (
         id, content, tags, source, created_at, vector_ids, owner_user_id,
         created_by_user_id, visibility, updated_at

@@ -240,7 +240,7 @@ function actionProposalErrorResponse(error: unknown): Response {
 }
 
 function storageUnavailableResponse(): Response {
-  return new Response(JSON.stringify({ ok: false, error: "Second Brain storage is unavailable" }), {
+  return new Response(JSON.stringify({ ok: false, error: "Shared Living Memory storage is unavailable" }), {
     status: 503,
     headers: {
       "Cache-Control": "no-store",

@@ -1,4 +1,4 @@
-/* utils.js — helper functions for the Second Brain UI.
+/* utils.js — helper functions for the Shared Living Memory UI.
  *
  * In production these are served from the Worker root. This file mirrors
  * them so the UI is fully functional in preview / offline as well.
@@ -119,7 +119,7 @@ function normalizeEntry(e) {
  * fetch failure never raises a false alarm. */
 function vectorizeHealthBanner(health) {
   if (!health || !health.vectorize || health.vectorize.ok) return null;
-  const name = health.vectorize.indexName || 'second-brain-vectors_v2';
+  const name = health.vectorize.indexName || 'shared-living-memory-vectors';
   return {
     title: 'Semantic search is disabled. The Vectorize index "' + name + '" was not found.',
     command: 'npx wrangler vectorize create ' + name + ' --dimensions=384 --metric=cosine',

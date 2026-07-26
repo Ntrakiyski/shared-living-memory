@@ -26,13 +26,13 @@
 
 **New helper functions (near `isAuthorized` at line 561):**
 - `hmacKey(rawKey: string, pepper: string): Promise<string>` — HMAC-SHA-256 using Web Crypto API
-- `generateApiKey(): { publicId: string; secret: string; fullKey: string }` — generates `sbu_<publicId>.<secret>` format
-- `parseUserCredentials(request: Request): { username: string | null; key: string | null }` — extracts `X-Second-Brain-User` and `X-Second-Brain-User-Key` headers
+- `generateApiKey(): { publicId: string; secret: string; fullKey: string }` — generates `slm_<publicId>.<secret>` format
+- `parseUserCredentials(request: Request): { username: string | null; key: string | null }` — extracts `X-Shared-Living-Memory-User` and `X-Shared-Living-Memory-User-Key` headers
 - `resolveUser(request: Request, env: Env): Promise<{ user_id: string; username: string } | null>` — looks up user by normalized username, verifies HMAC key hash
 
 **Modify `isAuthorized()` (line 561-564):**
 - Keep existing Bearer token check as-is
-- Add second path: if `Authorization: Bearer <DEPLOYMENT_TOKEN>` AND `X-Second-Brain-User` + `X-Second-Brain-User-Key` headers present, resolve user via `resolveUser()`
+- Add second path: if `Authorization: Bearer <DEPLOYMENT_TOKEN>` AND `X-Shared-Living-Memory-User` + `X-Shared-Living-Memory-User-Key` headers present, resolve user via `resolveUser()`
 - Return `{ authorized: boolean; user_id?: string; username?: string }` instead of boolean
 
 **Modify `requireAuth()` (line 575-578):**
@@ -69,7 +69,7 @@
 
 ### `test/helpers/make-request.ts` — Extend request helper
 - Extend `req()` function (line 4-17) to accept optional `userCredentials: { username: string; key: string }` parameter
-- When provided, add `X-Second-Brain-User` and `X-Second-Brain-User-Key` headers
+- When provided, add `X-Shared-Living-Memory-User` and `X-Shared-Living-Memory-User-Key` headers
 
 ### `test/integration/auth.test.ts` — Add multi-user auth tests
 - Add test: Bearer token alone → 200 (legacy mode)

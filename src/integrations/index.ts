@@ -1,5 +1,5 @@
 /**
- * Second Brain — integration registry.
+ * Shared Living Memory — integration registry.
  *
  * Adding a provider: create src/integrations/<provider>.ts exporting an
  * IntegrationProvider (see framework.ts for the contract), and register it

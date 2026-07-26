@@ -56,9 +56,9 @@ describe("synthesizeDigest()", () => {
 
   it("includes the tag in the prompt sent to LLM", async () => {
     const env = makeTestEnv(undefined, { AI: aiMock("ok") });
-    await synthesizeDigest("second-brain", [{ id: "1", content: "note" }], env);
+    await synthesizeDigest("shared-living-memory", [{ id: "1", content: "note" }], env);
     const [, { messages }] = (env.AI.run as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(messages[0].content).toContain("second-brain");
+    expect(messages[0].content).toContain("shared-living-memory");
   });
 
   it("includes all row content in the prompt", async () => {

@@ -127,14 +127,14 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
     throw new Error("A verified, scoped MCP actor is required");
   }
 
-  const server = new McpServer({ name: "second-brain", version: "1.0.0" });
+  const server = new McpServer({ name: "shared-living-memory", version: "1.0.0" });
 
   server.registerResource(
-    "second-brain-mcp-onboarding",
+    "shared-living-memory-mcp-onboarding",
     MCP_ONBOARDING_RESOURCE_URI,
     {
-      title: "Second Brain MCP Onboarding",
-      description: "Read this first after connecting Second Brain MCP. Explains which MCP-use skills to install from skills.sh and how agents should start using the tools.",
+      title: "Shared Living Memory MCP Onboarding",
+      description: "Read this first after connecting Shared Living Memory MCP. Explains which MCP-use skills to install from skills.sh and how agents should start using the tools.",
       mimeType: "text/markdown",
     },
     (uri) => ({
@@ -439,7 +439,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   server.registerTool(
     "remember",
     {
-      description: "Store an idea, task, or note in your second brain. Call this automatically whenever the user shares context, goals, decisions, or preferences.",
+      description: "Store an idea, task, or note in your shared living memory. Call this automatically whenever the user shares context, goals, decisions, or preferences.",
       inputSchema: {
         content: z.string().describe("The idea, task, or note to store"),
         tags: z.array(z.string()).optional().describe("Optional tags for filtering"),
@@ -474,7 +474,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   server.registerTool(
     "append",
     {
-      description: "Append new information to an existing entry in your second brain. Use when something has changed or been updated — preserves the original and adds the update with a timestamp. Get the entry ID from recall or list_recent first.",
+      description: "Append new information to an existing entry in your shared living memory. Use when something has changed or been updated — preserves the original and adds the update with a timestamp. Get the entry ID from recall or list_recent first.",
       inputSchema: {
         id: z.string().describe("Entry ID to append to — from recall or list_recent"),
         addition: z.string().describe("The new information to add to the existing entry"),
@@ -663,7 +663,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   server.registerTool(
     "recall",
     {
-      description: "Recall: semantically search your second brain for relevant notes and context. Call recall automatically at the start of every conversation and every 3-4 messages.",
+      description: "Recall: semantically search your shared living memory for relevant notes and context. Call recall automatically at the start of every conversation and every 3-4 messages.",
       inputSchema: {
         query: z.string().describe("Natural language search query"),
         topK: z.number().int().min(1).max(20).default(5).describe("Number of results"),
@@ -728,7 +728,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   server.registerTool(
     "list_recent",
     {
-      description: "list_recent: List the most recent entries by date from your second brain. Use when you need to browse recent entries or find an entry ID. Not the same as recall — returns entries by time, not by meaning.",
+      description: "list_recent: List the most recent entries by date from your shared living memory. Use when you need to browse recent entries or find an entry ID. Not the same as recall — returns entries by time, not by meaning.",
       inputSchema: {
         n: z.number().int().min(1).max(50).default(10),
         tag: z.string().optional(),
@@ -759,7 +759,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   server.registerTool(
     "forget",
     {
-      description: "Permanently delete an entry from your second brain by ID. Only call when the user explicitly asks to delete something. Confirm the entry ID using recall or list_recent first. This action cannot be undone.",
+      description: "Permanently delete an entry from your shared living memory by ID. Only call when the user explicitly asks to delete something. Confirm the entry ID using recall or list_recent first. This action cannot be undone.",
       inputSchema: {
         id: z.string().describe("Entry ID from recall or list_recent"),
       },
@@ -1308,7 +1308,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
 // tolerate unknown fields.
 //
 // Bug discovered, and fix originally authored, in the
-// guoyingwei6/second-brain-cloudflare fork (commit a3fa15f).
+// guoyingwei6/shared-living-memory-cloudflare fork (commit a3fa15f).
 
 export async function isMcpToolsListRequest(request: Request): Promise<boolean> {
   if (request.method !== "POST") return false;

@@ -44,11 +44,11 @@ async function addUser(
     username,
     normalized_username: username.toLowerCase(),
     auth_key_hash: await hmacKey(secret, AUTH_PEPPER),
-    auth_key_prefix: `sbu_${id}`.slice(0, 15),
+    auth_key_prefix: `slm_${id}`.slice(0, 15),
     status: "active",
     created_at: Date.now(),
   });
-  return { username, key: `sbu_${id}.${secret}` };
+  return { username, key: `slm_${id}.${secret}` };
 }
 
 async function seedUser() {
@@ -153,7 +153,7 @@ describe("MCP actor resolution", () => {
     const { db, env, credentials } = await seedUser();
     await addUser(db, "oauth-alice", "OAuthAlice", "oauth-secret");
     const partialRequest = req("POST", "/mcp", { body: MCP_BODY });
-    partialRequest.headers.set("X-Second-Brain-User", credentials.username);
+    partialRequest.headers.set("X-Shared-Living-Memory-User", credentials.username);
     const invalidRequest = req("POST", "/mcp", {
       body: MCP_BODY,
       userCredentials: { username: credentials.username, key: "wrong-key" },

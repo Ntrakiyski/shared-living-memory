@@ -1,25 +1,25 @@
-# Second Brain — Living Team Knowledgebase
+# Shared Living Memory — Living Team Knowledgebase
 
 **A governed, time-aware knowledgebase that translates between the mental maps of humans and domain agents.**
 
 [![Built with Cloudflare Workers](https://img.shields.io/badge/Built%20with-Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-8B5CF6)](https://modelcontextprotocol.io/)
 
-Second Brain turns scattered notes, decisions, source material, and agent context into a shared team knowledgebase that can be queried, cited, reviewed, and safely operated by humans or domain-specific AI agents.
+Shared Living Memory turns scattered notes, decisions, source material, and agent context into a shared team knowledgebase that can be queried, cited, reviewed, and safely operated by humans or domain-specific AI agents.
 
 The real product is not “memory” by itself. The real product is translation between different mental maps: helping one person or agent understand what another person or agent discovered, why it mattered to them, and how it may become useful in a different context.
 
-This project started as a fork of [Second Brain for AI](https://github.com/rahilp/second-brain-cloudflare). It now extends that idea into a multi-user, provenance-first, operator-governed team knowledgebase.
+This project started as a fork of [Shared Living Memory for AI](https://github.com/rahilp/second-brain-cloudflare). It now extends that idea into a multi-user, provenance-first, operator-governed team knowledgebase.
 
-**Live deployment:** [second-brain.nikolay-trakiyski.workers.dev](https://second-brain.nikolay-trakiyski.workers.dev/)
+**Live deployment:** [shared-living-memory.nikolay-trakiyski.workers.dev](https://shared-living-memory.nikolay-trakiyski.workers.dev/)
 
 ## Demo
 
-![Second Brain behind-the-scenes demo](media/second-brain-demo.gif)
+![Shared Living Memory behind-the-scenes demo](media/shared-living-memory-demo.gif)
 
 ## What it is
 
-Second Brain is not just “semantic search over notes.” It has three product layers:
+Shared Living Memory is not just “semantic search over notes.” It has three product layers:
 
 1. **Shared knowledge layer** — durable, governed knowledge that humans and agents can capture, recall, cite, connect, version, and review.
 2. **Translation layer** — workflows that map knowledge from one mental model into another person’s, project’s, or agent domain’s context.
@@ -81,7 +81,7 @@ Example agent teammates:
 - **QA / Critic Agent:** looks for contradictions, stale assumptions, weak evidence, and missing citations.
 - **Personal Chief of Staff:** turns private notes into drafts or proposals without publishing them directly.
 
-These agents are “team members,” but governed ones: they can be proactive in their domain while Second Brain enforces identity, visibility, policy, proposal review, and audit.
+These agents are “team members,” but governed ones: they can be proactive in their domain while Shared Living Memory enforces identity, visibility, policy, proposal review, and audit.
 
 ## Current implementation
 
@@ -95,7 +95,7 @@ Implemented foundations:
 - Restore creates a new version instead of rewriting old history.
 - `as_of` and `known_at` support bitemporal recall:
   - `as_of` = world/valid time.
-  - `known_at` = when Second Brain knew that state.
+  - `known_at` = when Shared Living Memory knew that state.
 - Evidence passages, documents, and citation metadata flow into recall.
 - Vector cleanup is durable and retryable when stale vector deletion fails.
 - Every entry has explicit `owner_user_id`, `created_by_user_id`, and `visibility`.
@@ -117,7 +117,7 @@ These features belong in this product because they are the bridge between shared
 
 ### Layer 3 — Living organism / Hermes layer
 
-Second Brain is designed so Hermes-style profiles can operate through governed service identities instead of direct storage access:
+Shared Living Memory is designed so Hermes-style profiles can operate through governed service identities instead of direct storage access:
 
 - Service identities have scoped credentials, expiry, rotation, suspension, and revocation.
 - Operators are actor-scoped: human, service, or system.
@@ -144,7 +144,7 @@ See [docs/operator-runtime-deployment.md](docs/operator-runtime-deployment.md) f
 
 Open the live deployment:
 
-[https://second-brain.nikolay-trakiyski.workers.dev](https://second-brain.nikolay-trakiyski.workers.dev/)
+[https://shared-living-memory.nikolay-trakiyski.workers.dev](https://shared-living-memory.nikolay-trakiyski.workers.dev/)
 
 The dashboard supports:
 
@@ -163,20 +163,20 @@ The dashboard supports:
 
 This repo includes practical skill files that humans can hand to Codex, Hermes, or another MCP-connected agent:
 
-- [Second Brain MCP Knowledgebase](.agents/skills/second-brain-mcp-knowledgebase/SKILL.md) — how people and agents should use Second Brain through MCP as a governed team knowledgebase and translation layer.
+- [Shared Living Memory MCP Knowledgebase](.agents/skills/shared-living-memory-mcp-knowledgebase/SKILL.md) — how people and agents should use Shared Living Memory through MCP as a governed team knowledgebase and translation layer.
 - [Hermes Domain Profile Creator](.agents/skills/hermes-domain-profile/SKILL.md) — how Hermes should turn “build a scheduled job for X” into a safe domain-agent profile, with sources, cadence, scopes, outputs, proposals, and review boundaries.
 
 Install the public MCP-use skills with the Skills CLI:
 
 ```bash
-npx skills add https://github.com/Ntrakiyski/second-brain -g -y
+npx skills add https://github.com/Ntrakiyski/shared-living-memory -g -y
 ```
 
 Only MCP-use skills are public by default. Development/maintainer skills in `.agents/skills/` are marked internal so Skills CLI and skills.sh users do not install them accidentally. If needed, install the MCP-use skills explicitly:
 
 ```bash
-npx skills add https://github.com/Ntrakiyski/second-brain \
-  --skill second-brain-mcp-knowledgebase \
+npx skills add https://github.com/Ntrakiyski/shared-living-memory \
+  --skill shared-living-memory-mcp-knowledgebase \
   --skill hermes-domain-profile \
   -g -y
 ```
@@ -185,7 +185,7 @@ The MCP server also exposes `memory://onboarding`, a read-only onboarding resour
 
 First-run identity setup for agents:
 
-1. Open [the dashboard](https://second-brain.nikolay-trakiyski.workers.dev/) automatically when the MCP client has browser support, or ask the human to open it.
+1. Open [the dashboard](https://shared-living-memory.nikolay-trakiyski.workers.dev/) automatically when the MCP client has browser support, or ask the human to open it.
 2. Enter the workspace key.
 3. Create or select a username.
 4. Copy the generated user API key.
@@ -201,18 +201,18 @@ Then Hermes can help define the profile, sources, cadence, scopes, outputs, prop
 
 ### MCP clients
 
-Use Second Brain from any MCP-compatible client. Requests are scoped by workspace key plus user credentials.
+Use Shared Living Memory from any MCP-compatible client. Requests are scoped by workspace key plus user credentials.
 
 ```json
 {
   "mcp": {
-    "second-brain": {
+    "shared-living-memory": {
       "type": "remote",
-      "url": "https://second-brain.nikolay-trakiyski.workers.dev/mcp",
+      "url": "https://shared-living-memory.nikolay-trakiyski.workers.dev/mcp",
       "headers": {
         "Authorization": "Bearer YOUR-WORKSPACE-KEY",
-        "X-Second-Brain-User": "your-username",
-        "X-Second-Brain-User-Key": "sbu_your-api-key"
+        "X-Shared-Living-Memory-User": "your-username",
+        "X-Shared-Living-Memory-User-Key": "slm_your-api-key"
       }
     }
   }
@@ -378,8 +378,8 @@ This repository deploys through Cloudflare Workers.
 
 Required Cloudflare resources:
 
-- D1 database: `second-brain-db`
-- Vectorize index: `second-brain-vectors_v2`
+- D1 database: `shared-living-memory-db`
+- Vectorize index: `shared-living-memory-vectors`
 - Workers AI binding: `AI`
 - KV namespace: `OAUTH_KV`
 - secret: `AUTH_TOKEN`
@@ -406,7 +406,7 @@ Database schema is managed by ordered runtime migrations in [src/db.ts](src/db.t
 
 ## What this architecture is not built for
 
-Second Brain is intentionally a governed knowledgebase, not an unrestricted agent runtime. It is not designed for:
+Shared Living Memory is intentionally a governed knowledgebase, not an unrestricted agent runtime. It is not designed for:
 
 - **Unreviewed high-impact autonomy.** Agents can scout, draft, and propose; they should not silently publish major knowledge changes, delete data, change permissions, or deploy infrastructure.
 - **Direct storage access by agents.** Hermes-style profiles must never receive D1, Vectorize, Cloudflare deployment, migration, or backup credentials.
@@ -415,7 +415,7 @@ Second Brain is intentionally a governed knowledgebase, not an unrestricted agen
 - **Secret storage.** API keys, credentials, and private tokens belong in secret managers, not memory entries, proposals, or audit summaries.
 - **Guaranteed truth.** The system preserves evidence, provenance, confidence, and time; humans still judge disputed claims.
 - **Fully autonomous compliance actions.** Hard forget and access-control changes remain explicit human-controlled operations.
-- **Studio workflow automation.** Client meetings, proposal writing, delivery process, and the broader studio operating model can use Second Brain as context, but they are not implemented in this repo.
+- **Studio workflow automation.** Client meetings, proposal writing, delivery process, and the broader studio operating model can use Shared Living Memory as context, but they are not implemented in this repo.
 
 ## Documentation
 
@@ -429,6 +429,6 @@ Second Brain is intentionally a governed knowledgebase, not an unrestricted agen
 
 ## Attribution
 
-This project builds on [Second Brain for AI](https://github.com/rahilp/second-brain-cloudflare) by Rahil Parikh.
+This project builds on [Shared Living Memory for AI](https://github.com/rahilp/second-brain-cloudflare) by Rahil Parikh.
 
 [MIT License](LICENSE)

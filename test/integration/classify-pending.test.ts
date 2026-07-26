@@ -58,7 +58,7 @@ describe("POST /classify-pending", () => {
       username: TEST_USERNAME,
       normalized_username: TEST_USERNAME,
       auth_key_hash: TEST_USER_AUTH_HASH,
-      auth_key_prefix: "sbu_test-princi",
+      auth_key_prefix: "slm_test-princi",
       status: "active",
       created_at: 1,
       role: "admin",

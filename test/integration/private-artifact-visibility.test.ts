@@ -20,10 +20,10 @@ describe("private child artifacts", () => {
     const secret = "alice-private-artifacts";
     db.users.push({
       id: "alice", username: "Alice", normalized_username: "alice",
-      auth_key_hash: await hmacKey(secret, AUTH_PEPPER), auth_key_prefix: "sbu_alice",
+      auth_key_hash: await hmacKey(secret, AUTH_PEPPER), auth_key_prefix: "slm_alice",
       status: "active", created_at: 1,
     });
-    credentials = { username: "Alice", key: `sbu_alice.${secret}` };
+    credentials = { username: "Alice", key: `slm_alice.${secret}` };
   });
 
   it("makes restore owner-only and indistinguishable from a missing parent", async () => {

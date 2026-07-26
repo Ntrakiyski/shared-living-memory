@@ -114,7 +114,7 @@ async function seedHuman(
   role: "admin" | "member",
 ): Promise<string> {
   const secret = `${username}-secret`;
-  const key = `sbu_${id}.${secret}`;
+  const key = `slm_${id}.${secret}`;
   db.sqlite.prepare(
     `INSERT INTO users (
        id, username, normalized_username, auth_key_hash, auth_key_prefix,

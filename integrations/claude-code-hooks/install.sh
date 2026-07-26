@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Adds Second Brain hooks to Claude Code's global settings.
+# Adds Shared Living Memory hooks to Claude Code's global settings.
 # Usage: bash install.sh https://your-worker.workers.dev your-workspace-key
 #
 # After running, every Claude Code session will:
 #   - auto-recall relevant context on start
-#   - auto-save the conversation to Second Brain on end
+#   - auto-save the conversation to Shared Living Memory on end
 
 set -euo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETTINGS_FILE="$HOME/.claude/settings.json"
-MARKER='"second-brain-hooks"'
+MARKER='"shared-living-memory-hooks"'
 
 WORKER_URL="${1:-}"
 TOKEN="${2:-}"
 
 if [[ -z "$WORKER_URL" ]]; then
-  read -rp "Enter your Second Brain worker URL (e.g. https://your-worker.workers.dev): " WORKER_URL
+  read -rp "Enter your Shared Living Memory worker URL (e.g. https://your-worker.workers.dev): " WORKER_URL
 fi
 if [[ -z "$TOKEN" ]]; then
   read -rsp "Enter your workspace key (AUTH_TOKEN): " TOKEN
@@ -39,12 +39,12 @@ mkdir -p "$(dirname "$SETTINGS_FILE")"
 
 # Check for existing installation
 if [[ -f "$SETTINGS_FILE" ]] && grep -qF "$MARKER" "$SETTINGS_FILE" 2>/dev/null; then
-  echo "Second Brain hooks already installed in $SETTINGS_FILE — skipping."
+  echo "Shared Living Memory hooks already installed in $SETTINGS_FILE — skipping."
   exit 0
 fi
 
-START_CMD="SECOND_BRAIN_URL=${WORKER_URL} SECOND_BRAIN_TOKEN=${TOKEN} node ${HOOKS_DIR}/session-start.js"
-END_CMD="SECOND_BRAIN_URL=${WORKER_URL} SECOND_BRAIN_TOKEN=${TOKEN} node ${HOOKS_DIR}/session-end.js"
+START_CMD="SHARED_LIVING_MEMORY_URL=${WORKER_URL} SHARED_LIVING_MEMORY_TOKEN=${TOKEN} node ${HOOKS_DIR}/session-start.js"
+END_CMD="SHARED_LIVING_MEMORY_URL=${WORKER_URL} SHARED_LIVING_MEMORY_TOKEN=${TOKEN} node ${HOOKS_DIR}/session-end.js"
 
 # Merge hooks into existing settings or create new file
 node - "$SETTINGS_FILE" "$START_CMD" "$END_CMD" "$MARKER" <<'NODEEOF'
@@ -74,8 +74,8 @@ console.log('Updated', settingsFile);
 NODEEOF
 
 echo
-echo "Done. Second Brain hooks installed."
+echo "Done. Shared Living Memory hooks installed."
 echo "  SessionStart: recalls relevant context when a session opens"
-echo "  SessionEnd:   saves the session conversation to your Second Brain"
+echo "  SessionEnd:   saves the session conversation to your Shared Living Memory"
 echo
 echo "To use without the hooks, keep the MCP server approach (see AGENTS.md)."

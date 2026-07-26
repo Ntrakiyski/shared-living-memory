@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "second-brain",
+	"name": "shared-living-memory",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-06-17",
 	"compatibility_flags": [
@@ -9,13 +9,13 @@
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "second-brain-db","database_id": "1d021a72-5c50-48d5-9766-bd41063138dc"
+			"database_name": "shared-living-memory-db","database_id": "fac0f14a-718f-41e2-a2e0-ca4b644ad152"
 		}
 	],
 	"vectorize": [
 		{
 			"binding": "VECTORIZE",
-			"index_name": "second-brain-vectors_v2"
+			"index_name": "shared-living-memory-vectors"
 		}
 	],
 	"ai": {
@@ -23,7 +23,7 @@
 	},
 	"kv_namespaces": [
 		{
-			"binding": "OAUTH_KV","id": "8b6c8619600c4851b6202f904827bc56"
+			"binding": "OAUTH_KV","id": "c5fa8c88b4ca4d00ae2a546b2c4ac2b7"
 		}
 	],
 	"vars": {

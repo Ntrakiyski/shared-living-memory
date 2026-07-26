@@ -38,7 +38,7 @@ export function _resetDbReady(): void {
 
 // ─── Vectorize index health ──────────────────────────────────────────────────
 
-export const VECTORIZE_INDEX_NAME = "second-brain-vectors_v2";
+export const VECTORIZE_INDEX_NAME = "shared-living-memory-vectors";
 
 export interface VectorizeHealth {
   ok: boolean;
@@ -1269,7 +1269,7 @@ async function bootstrapSystemOwner(env: Env): Promise<void> {
         auth_key_prefix, status, created_at
       ) VALUES (?, ?, ?, ?, ?, 'inactive', ?)
       ON CONFLICT(normalized_username) DO NOTHING`,
-    ).bind(systemId, "_system", "_system", keyHash, "sb_system.", Date.now()).run();
+    ).bind(systemId, "_system", "_system", keyHash, "slm_system.", Date.now()).run();
     // Another isolate may have won the first-deploy race. Read the canonical
     // row instead of assuming this candidate was inserted.
     systemRow = await env.DB.prepare(

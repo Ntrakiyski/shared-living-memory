@@ -277,7 +277,7 @@ describe("toDateStr", () => {
 
 describe("vectorizeHealthBanner", () => {
   it("returns null when vectorize is healthy", () => {
-    expect(vectorizeHealthBanner({ ok: true, vectorize: { ok: true, indexName: "second-brain-vectors" } })).toBeNull();
+    expect(vectorizeHealthBanner({ ok: true, vectorize: { ok: true, indexName: "shared-living-memory-vectors" } })).toBeNull();
   });
 
   it("returns null when health is null or undefined (no false alarm)", () => {
@@ -286,16 +286,16 @@ describe("vectorizeHealthBanner", () => {
   });
 
   it("returns a title and fix command naming the index when it is missing", () => {
-    const b = vectorizeHealthBanner({ ok: false, vectorize: { ok: false, indexName: "second-brain-vectors", error: "index not found" } });
+    const b = vectorizeHealthBanner({ ok: false, vectorize: { ok: false, indexName: "shared-living-memory-vectors", error: "index not found" } });
     expect(b).not.toBeNull();
-    expect(b.title).toContain("second-brain-vectors");
-    expect(b.command).toBe("npx wrangler vectorize create second-brain-vectors --dimensions=384 --metric=cosine");
+    expect(b.title).toContain("shared-living-memory-vectors");
+    expect(b.command).toBe("npx wrangler vectorize create shared-living-memory-vectors --dimensions=384 --metric=cosine");
     expect(b.gui).toContain("Vectorize Edit");
   });
 
   it("falls back to the default index name when indexName is absent", () => {
     const b = vectorizeHealthBanner({ ok: false, vectorize: { ok: false } });
-    expect(b.command).toContain("second-brain-vectors");
+    expect(b.command).toContain("shared-living-memory-vectors");
   });
 });
 
@@ -325,11 +325,11 @@ describe("vectorizeBannerHtml", () => {
 describe("syncVectorizeBanner", () => {
   it("mounts the banner and offsets the body when a banner is given", () => {
     const doc = makeFakeDoc();
-    const banner = vectorizeHealthBanner({ ok: false, vectorize: { ok: false, indexName: "second-brain-vectors" } });
+    const banner = vectorizeHealthBanner({ ok: false, vectorize: { ok: false, indexName: "shared-living-memory-vectors" } });
     const el = syncVectorizeBanner(doc, banner);
     expect(el).not.toBeNull();
     expect(doc.getElementById("vectorize-banner")).toBe(el);
-    expect(el.innerHTML).toContain("second-brain-vectors");
+    expect(el.innerHTML).toContain("shared-living-memory-vectors");
     expect(doc.body.style.paddingTop).toBe("24px");
   });
 

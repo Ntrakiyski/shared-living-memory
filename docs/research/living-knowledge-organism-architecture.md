@@ -1,9 +1,9 @@
-# Research Memory Layer for Second Brain
+# Research Memory Layer for Shared Living Memory
 
-**Status:** evidence-backed design assessment  
-**System assessed:** `Ntrakiyski/second-brain`, `main`, architecture document blob `18342ed8d40a99bbd5ad3af8710ecb853a8853e4`  
-**Date:** 2026-07-13  
-**Scope:** turning Second Brain into a citable technical knowledge base for AI-model and systems research, without discarding its general shared-memory role.
+**Status:** evidence-backed design assessment
+**System assessed:** `Ntrakiyski/shared-living-memory`, `main`, architecture document blob `18342ed8d40a99bbd5ad3af8710ecb853a8853e4`
+**Date:** 2026-07-13
+**Scope:** turning Shared Living Memory into a citable technical knowledge base for AI-model and systems research, without discarding its general shared-memory role.
 
 ## Executive decision
 
@@ -35,7 +35,7 @@ The critical design rule is **separate discovery from truth**. Autonomous agents
 
 **Cron is not the agent. Cron is its heartbeat.** The living component is a persistent executive that wakes with a durable state, observes what changed, decides the highest-value next action, delegates work, evaluates the result, and updates its own agenda for the next run.
 
-It lives *inside* Second Brain as a first-class subsystem, not as an external script that periodically dumps summaries into memory.
+It lives *inside* Shared Living Memory as a first-class subsystem, not as an external script that periodically dumps summaries into memory.
 
 ```mermaid
 flowchart TD
@@ -224,7 +224,7 @@ This also addresses the primary failure case of living memory: recursive self-co
 For a knowledge organism, `created_at` is not enough. A claim needs two clocks:
 
 - **valid time:** when the claim is asserted to hold in the world, e.g. a model version is current from date A until date B;
-- **transaction time:** when Second Brain learned, reviewed, corrected, or retired that assertion.
+- **transaction time:** when Shared Living Memory learned, reviewed, corrected, or retired that assertion.
 
 Bitemporal knowledge-graph work distinguishes these clocks and combines them with confidence for uncertain extracted facts. [Chekol & Stuckenschmidt, 2018](https://consensus.app/papers/towards-probabilistic-bitemporal-knowledge-graphs-chekol-stuckenschmidt/e85d46139198543bbaf51ea372c24c16/?utm_source=chatgpt) (Web Conference Companion; 7 citations). More recent temporal-RAG work likewise models identical facts from different times as distinct relations, rather than overwriting one embedding with another. [Han et al., 2025](https://consensus.app/papers/rag-meets-temporal-graphs-timesensitive-modeling-and-han-cheung/67c1fc783aac5ecab4e28aeae7da0217/?utm_source=chatgpt) (arXiv; 6 citations).
 
@@ -265,11 +265,11 @@ Each run must produce a *delta* rather than another generic summary: `new eviden
 
 ### Existing open-source building blocks — exact fit assessment
 
-**Conclusion:** no single repository currently provides the full governed knowledge organism: research acquisition, evidence-level provenance, bitemporal truth, autonomous agenda selection, policy-gated publication, and evaluation. The closest practical composition is **Graphiti + a research worker + the Second Brain control plane**.
+**Conclusion:** no single repository currently provides the full governed knowledge organism: research acquisition, evidence-level provenance, bitemporal truth, autonomous agenda selection, policy-gated publication, and evaluation. The closest practical composition is **Graphiti + a research worker + the Shared Living Memory control plane**.
 
 | Repository | What it genuinely provides | Fit for this project | Critical gap / integration cost |
 |---|---|---|---|
-| [getzep/graphiti](https://github.com/getzep/graphiti) | Temporal context graph; source episodes; fact validity windows; incremental ingestion; prescribed/learned ontology; hybrid semantic/BM25/graph retrieval; MCP server | **Best substrate candidate.** Its `episode → entity/fact` lineage and temporal fact invalidation directly implement the provenance and time model missing from Second Brain | Python plus Neo4j/FalkorDB/Neptune/OpenSearch, not Cloudflare D1/Vectorize. Its MCP exposes destructive graph operations, so put the project control plane in front of it rather than exposing it as the canonical write interface |
+| [getzep/graphiti](https://github.com/getzep/graphiti) | Temporal context graph; source episodes; fact validity windows; incremental ingestion; prescribed/learned ontology; hybrid semantic/BM25/graph retrieval; MCP server | **Best substrate candidate.** Its `episode → entity/fact` lineage and temporal fact invalidation directly implement the provenance and time model missing from Shared Living Memory | Python plus Neo4j/FalkorDB/Neptune/OpenSearch, not Cloudflare D1/Vectorize. Its MCP exposes destructive graph operations, so put the project control plane in front of it rather than exposing it as the canonical write interface |
 | [langchain-ai/open_deep_research](https://github.com/langchain-ai/open_deep_research) | Configurable multi-provider research workflow, search/MCP integration, source summarization/compression, report generation, Deep Research Bench evaluation | **Best research-worker candidate.** Fork/use as the nightly scout and replace its final-report sink with `knowledge_proposal` creation | Does not itself maintain a governed temporal knowledge base, research agenda, reviewer inbox, or claim-evidence model |
 | [topoteretes/cognee](https://github.com/topoteretes/cognee) | Broad AI-memory platform: ingestion, graph/vector search, ontology grounding, `remember`/`recall`/`forget`/`improve`, local/self-hosted operation, agent isolation and traceability claims | **Good all-in-one spike / alternative platform.** Most useful if you are ready to move the core away from the current Worker-centric design | It is a large Python platform and a replacement-level decision; its README does not establish Graphiti-style bitemporal claim semantics or the proposal-to-canonical governance workflow required here |
 | [langchain-ai/langmem](https://github.com/langchain-ai/langmem) | Agent tools for memory management/search plus a background memory manager that extracts, consolidates, and updates knowledge | **Useful control-plane reference or optional worker component** if the research agent runs on LangGraph | Generic agent memory; needs an external provenance, graph, temporal, and review model. It should not be the canonical knowledge store |
@@ -281,7 +281,7 @@ Each run must produce a *delta* rather than another generic summary: `new eviden
 ### Recommended implementation composition
 
 ```text
-Second Brain (existing Cloudflare Worker)
+Shared Living Memory (existing Cloudflare Worker)
   ├─ shared identity, team visibility, MCP front door, legacy conversation memory
   ├─ Research Control Plane (new): agenda, evidence gate, policy, reviewer inbox, audit
   ├─ Graphiti service (pilot): temporal episodes, entities, fact edges, hybrid graph retrieval
@@ -289,13 +289,13 @@ Second Brain (existing Cloudflare Worker)
        └─ append-only run ledger + insights/dead-ends/rate-limit patterns from auto-deep-researcher-24x7
 ```
 
-This preserves the current product while allowing a service boundary for the heavy temporal graph work. Start by mirroring only research-source episodes into Graphiti; do not migrate personal memories or make Graphiti authoritative on day one. The proposal object remains the only write contract between the research worker and Second Brain.
+This preserves the current product while allowing a service boundary for the heavy temporal graph work. Start by mirroring only research-source episodes into Graphiti; do not migrate personal memories or make Graphiti authoritative on day one. The proposal object remains the only write contract between the research worker and Shared Living Memory.
 
 ### Pilot sequence: prove the composition before committing to it
 
 1. Run Graphiti locally with FalkorDB and ingest 20 papers plus their sections as episodes; compare its temporal/provenance retrieval with the current `entries` pipeline on `research-retrieval-v1`.
 2. Run Open Deep Research on three approved standing questions. Replace final report persistence with `knowledge_proposal` JSON—sources, evidence spans, affected claims, delta, confidence, and cost.
-3. Build a minimal reviewer inbox in Second Brain. No direct Graphiti or research-agent canonical writes.
+3. Build a minimal reviewer inbox in Shared Living Memory. No direct Graphiti or research-agent canonical writes.
 4. Shadow-run nightly for 30 days using an append-only run ledger, `INSIGHTS`, `DEAD_ENDS`, explicit budgets, and a kill switch.
 5. Choose Graphiti only if citation-anchor availability, temporal correctness, and proposal review quality improve enough to justify operating a Python graph service.
 
@@ -492,4 +492,4 @@ Keep `entries` for conversational memory. A paper ingestion creates a document h
 
 ## Source inspected
 
-- [Second Brain v2 — System Architecture & Data Science Reference](https://github.com/Ntrakiyski/second-brain/blob/main/docs/system-architecture.md), sections 1–12; repository state accessed 2026-07-13.
+- [Shared Living Memory v2 — System Architecture & Data Science Reference](https://github.com/Ntrakiyski/shared-living-memory/blob/main/docs/system-architecture.md), sections 1–12; repository state accessed 2026-07-13.

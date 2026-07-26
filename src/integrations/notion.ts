@@ -1,5 +1,5 @@
 /**
- * Second Brain — Notion provider.
+ * Shared Living Memory — Notion provider.
  *
  * Mirrors every page shared with the user's internal Notion connection into
  * memory. Notion's sharing model IS the selection mechanism: users share pages

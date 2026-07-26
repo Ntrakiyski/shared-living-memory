@@ -70,7 +70,7 @@ describe("claude-code hooks helpers", () => {
     });
 
     it("includes context keywords", () => {
-      const q = buildRecallQuery('/home/user/second-brain');
+      const q = buildRecallQuery('/home/user/shared-living-memory');
       expect(q).toContain('context');
       expect(q).toContain('decisions');
     });

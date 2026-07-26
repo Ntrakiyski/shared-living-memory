@@ -55,7 +55,7 @@ export async function synthesizeInsight(
     .map((r, i) => `[${i + 1}] ID: ${r.id}\n${r.content}`)
     .join("\n\n");
 
-  const prompt = `You are a second brain assistant. Summarize what the user's stored memories below say in relation to their query. Base the insight ONLY on these memories.
+  const prompt = `You are a shared living memory assistant. Summarize what the user's stored memories below say in relation to their query. Base the insight ONLY on these memories.
 
 Query: "${query}"
 
@@ -151,7 +151,7 @@ export async function synthesizeDigest(
     .map((r, i) => `[${i + 1}] ${r.content.slice(0, 400)}`)
     .join("\n\n");
 
-  const prompt = `You are a second brain assistant. Based on these stored memories tagged "${tag}", write a single cohesive paragraph describing the current state of this area — what has been done, decided, and is being worked toward. Write as one flowing paragraph, not a list.
+  const prompt = `You are a shared living memory assistant. Based on these stored memories tagged "${tag}", write a single cohesive paragraph describing the current state of this area — what has been done, decided, and is being worked toward. Write as one flowing paragraph, not a list.
 
 Memories:
 ${memoriesList}

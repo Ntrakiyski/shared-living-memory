@@ -1,8 +1,8 @@
 # CURRENT_STATE.md
 
-> Baseline snapshot of the Second Brain architecture. Keep this file current as the foundation evolves.
+> Baseline snapshot of the Shared Living Memory architecture. Keep this file current as the foundation evolves.
 
-## What Is Second Brain?
+## What Is Shared Living Memory?
 
 A personal, self-hosted memory layer for AI tools. It gives Claude, ChatGPT, Cursor, Codex, and every other AI client access to the same persistent memory via the Model Context Protocol (MCP). The memory is stored in the user's own Cloudflare account — no third-party lock-in.
 
@@ -23,7 +23,7 @@ A personal, self-hosted memory layer for AI tools. It gives Claude, ChatGPT, Cur
 ## Repository Structure
 
 ```
-second-brain/
+shared-living-memory/
 ├── src/
 │   ├── index.ts              # Single-file Worker: all routes, MCP tools, core logic
 │   └── integrations/

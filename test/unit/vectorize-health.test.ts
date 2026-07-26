@@ -11,7 +11,7 @@ describe("checkVectorizeHealth", () => {
     });
     const health = await checkVectorizeHealth(env);
     expect(health.ok).toBe(true);
-    expect(health.indexName).toBe("second-brain-vectors_v2");
+    expect(health.indexName).toBe("shared-living-memory-vectors");
     expect(health.dimensions).toBe(384);
   });
 
@@ -34,7 +34,7 @@ describe("checkVectorizeHealth", () => {
     });
     const health = await checkVectorizeHealth(env);
     expect(health.ok).toBe(false);
-    expect(health.indexName).toBe("second-brain-vectors_v2");
+    expect(health.indexName).toBe("shared-living-memory-vectors");
     expect(health.error).toContain("index not found");
   });
 });

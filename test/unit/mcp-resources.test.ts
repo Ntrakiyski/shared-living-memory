@@ -25,7 +25,7 @@ describe("MCP resources", () => {
     const resource = (server as any)._registeredResources[MCP_ONBOARDING_RESOURCE_URI];
 
     expect(resource).toBeDefined();
-    expect(resource.name).toBe("second-brain-mcp-onboarding");
+    expect(resource.name).toBe("shared-living-memory-mcp-onboarding");
     expect(resource.metadata.mimeType).toBe("text/markdown");
 
     const result = resource.readCallback(new URL(MCP_ONBOARDING_RESOURCE_URI), {});
@@ -33,12 +33,12 @@ describe("MCP resources", () => {
       uri: MCP_ONBOARDING_RESOURCE_URI,
       mimeType: "text/markdown",
     });
-    expect(result.contents[0].text).toContain("npx skills add https://github.com/Ntrakiyski/second-brain");
-    expect(result.contents[0].text).toContain("second-brain-mcp-knowledgebase");
-    expect(result.contents[0].text).toContain("https://second-brain.nikolay-trakiyski.workers.dev/");
+    expect(result.contents[0].text).toContain("npx skills add https://github.com/Ntrakiyski/shared-living-memory");
+    expect(result.contents[0].text).toContain("shared-living-memory-mcp-knowledgebase");
+    expect(result.contents[0].text).toContain("https://shared-living-memory.nikolay-trakiyski.workers.dev/");
     expect(result.contents[0].text).toContain("workspace key");
     expect(result.contents[0].text).toContain("YOUR-WORKSPACE-KEY");
-    expect(result.contents[0].text).toContain("X-Second-Brain-User-Key");
+    expect(result.contents[0].text).toContain("X-Shared-Living-Memory-User-Key");
     expect(result.contents[0].text).not.toContain("deployment key");
     expect(result.contents[0].text).not.toContain("YOUR-DEPLOYMENT-TOKEN");
   });

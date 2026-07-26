@@ -17,8 +17,8 @@ export function req(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token !== null) headers["Authorization"] = `Bearer ${token}`;
   if (userCredentials) {
-    headers["X-Second-Brain-User"] = userCredentials.username;
-    headers["X-Second-Brain-User-Key"] = userCredentials.key;
+    headers["X-Shared-Living-Memory-User"] = userCredentials.username;
+    headers["X-Shared-Living-Memory-User-Key"] = userCredentials.key;
   }
   return new Request(`${BASE}${path}`, {
     method,

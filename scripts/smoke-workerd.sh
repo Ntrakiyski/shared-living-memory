@@ -16,7 +16,7 @@ if [[ ! -x "$WRANGLER_BIN" ]]; then
 fi
 
 if [[ -z "$ARTIFACT_DIR" ]]; then
-  ARTIFACT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/second-brain-workerd-smoke.XXXXXX")"
+  ARTIFACT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shared-living-memory-workerd-smoke.XXXXXX")"
   CREATED_ARTIFACT_DIR=1
 else
   mkdir -p "$ARTIFACT_DIR"
@@ -179,7 +179,7 @@ fi
 user_api_key="$(node -e '
 const fs = require("node:fs");
 const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-if (typeof body.key !== "string" || !body.key.startsWith("sbu_")) process.exit(1);
+if (typeof body.key !== "string" || !body.key.startsWith("slm_")) process.exit(1);
 process.stdout.write(body.key);
 ' "$USER_BODY")"
 

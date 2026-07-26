@@ -2,8 +2,8 @@
 'use strict';
 
 async function main() {
-  const baseUrl = process.env.SECOND_BRAIN_URL;
-  const token = process.env.SECOND_BRAIN_TOKEN;
+  const baseUrl = process.env.SHARED_LIVING_MEMORY_URL;
+  const token = process.env.SHARED_LIVING_MEMORY_TOKEN;
   if (!baseUrl || !token) return;
 
   let raw = '';

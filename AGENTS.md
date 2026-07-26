@@ -1,27 +1,27 @@
 # AGENTS.md
 
-## Project: Second Brain v2 — Multi-User Shared Memory
+## Project: Shared Living Memory v2 — Multi-User Shared Memory
 
-**Deployment:** [https://second-brain.nikolaytrakiyski.workers.dev](https://second-brain.nikolaytrakiyski.workers.dev/)
+**Deployment:** [https://shared-living-memory.nikolay-trakiyski.workers.dev](https://shared-living-memory.nikolay-trakiyski.workers.dev/)
 
 **Docs:** `docs/shared-memory/` — PRD, GOAL, task tickets, current state
 
-## Second Brain MCP Client Instructions
+## Shared Living Memory MCP Client Instructions
 
-Use this consolidated block when configuring Claude, Codex, ChatGPT, or another MCP-capable agent to use Second Brain as its durable memory.
+Use this consolidated block when configuring Claude, Codex, ChatGPT, or another MCP-capable agent to use Shared Living Memory as its durable memory.
 
-<!-- second-brain:mcp-client-instructions:start -->
-You have access to Second Brain through MCP. Treat it as the authoritative memory source for project context, decisions, preferences, tasks, prior discussions, evidence, and durable conclusions.
+<!-- shared-living-memory:mcp-client-instructions:start -->
+You have access to Shared Living Memory through MCP. Treat it as the authoritative memory source for project context, decisions, preferences, tasks, prior discussions, evidence, and durable conclusions.
 
 ### First-run identity setup
 
-- If Second Brain is connected only with the workspace key, open `https://second-brain.nikolay-trakiyski.workers.dev/` automatically when browser tools are available; otherwise give the human the link. Then have them enter the workspace key, create or select their username, copy the generated user API key, and provide the username + user API key to the agent or MCP client.
+- If Shared Living Memory is connected only with the workspace key, open `https://shared-living-memory.nikolay-trakiyski.workers.dev/` automatically when browser tools are available; otherwise give the human the link. Then have them enter the workspace key, create or select their username, copy the generated user API key, and provide the username + user API key to the agent or MCP client.
 - Use the workspace key as the workspace/transport key only. Use the username + user API key as the user identity for memory tools.
 - Never store the workspace key or user API key with `remember`.
 
 ### Mandatory memory behavior
 
-- Start every conversation with an intent-framed `recall`, not a bare keyword search. Good: `User wants to improve MCP resources in Second Brain — what should I know?`
+- Start every conversation with an intent-framed `recall`, not a bare keyword search. Good: `User wants to improve MCP resources in Shared Living Memory — what should I know?`
 - Before recommendations, action items, outreach ideas, implementation plans, or repeated suggestions, call `recall` to check whether this was already recommended, completed, rejected, or superseded.
 - Before asking a clarifying question, call `recall` to check whether the answer already exists. Ask only if memory is insufficient.
 - Store durable information automatically with `remember`: user goals, preferences, constraints, decisions, project context, plans, tasks, commitments, important opinions, technical conclusions, and useful sources.
@@ -61,8 +61,8 @@ You have access to Second Brain through MCP. Treat it as the authoritative memor
 - Add specific project, person, domain, client, repository, or product tags alongside broad tags.
 - Set `source` to the client or integration identity, such as `codex`, `claude-desktop`, `chatgpt`, `browser`, `ios`, `notion`, or a service identity name.
 
-If the Second Brain MCP tools are unavailable, tell the user immediately. Do not silently fall back to built-in memory.
-<!-- second-brain:mcp-client-instructions:end -->
+If the Shared Living Memory MCP tools are unavailable, tell the user immediately. Do not silently fall back to built-in memory.
+<!-- shared-living-memory:mcp-client-instructions:end -->
 
 ## Quick Commands
 
@@ -92,7 +92,7 @@ npm run typecheck        # generates worker-configuration.d.ts first, then tsc
 - To run a single test: `npm test -- test/unit/edges.test.ts`
 - **D1Mock** (`test/helpers/d1-mock.ts`, ~690+ lines) simulates D1 with `prepare().bind().all()/first()/run()`. Handler order matters — use `s.includes()` with guards.
 - **`req()` helper** (`test/helpers/make-request.ts`): exactly 3 args `(method, path, opts)` where opts = `{body?, token?, userCredentials?}`.
-- **User credentials in tests:** `userCredentials: { username, key }` sets `X-Second-Brain-User` / `X-Second-Brain-User-Key` headers.
+- **User credentials in tests:** `userCredentials: { username, key }` sets `X-Shared-Living-Memory-User` / `X-Shared-Living-Memory-User-Key` headers.
 - **Legacy entries** in tests use `owner_user_id: "_system"` — these are public and visible to all users.
 
 ## Architecture
@@ -100,12 +100,12 @@ npm run typecheck        # generates worker-configuration.d.ts first, then tsc
 **Single-file Worker.** The entire backend is `src/index.ts` (~4,200 lines). There is no router framework — URL pathname matching with if/else chains.
 
 **Two handler paths** wrapped in OAuthProvider:
-- `apiHandler` — serves `/mcp` (MCP protocol), resolves per-user identity from `X-Second-Brain-User` + `X-Second-Brain-User-Key` headers
+- `apiHandler` — serves `/mcp` (MCP protocol), resolves per-user identity from `X-Shared-Living-Memory-User` + `X-Shared-Living-Memory-User-Key` headers
 - `defaultHandler` — all REST routes + static assets from `public/`
 
 **Multi-user auth layers:**
 1. **Workspace key** (`AUTH_TOKEN`) — Bearer header, checked first on every request
-2. **User credentials** — `X-Second-Brain-User` (username) + `X-Second-Brain-User-Key` (`sbu_xxx.yyy` format)
+2. **User credentials** — `X-Shared-Living-Memory-User` (username) + `X-Shared-Living-Memory-User-Key` (`slm_xxx.yyy` format)
 3. **Visibility enforcement** — `buildVisibilityClause(userId)` adds `(owner_user_id = ? OR tags NOT LIKE '%"private"%')` to all queries
 4. **Ownership checks** — forget/link/unlink/update verify `owner_user_id` before mutating
 
@@ -129,8 +129,8 @@ npm run typecheck        # generates worker-configuration.d.ts first, then tsc
 
 ## Key Gotchas
 
-- **Auth is two-layer.** Every request needs `Bearer <AUTH_TOKEN>` (workspace key). User-specific requests also need `X-Second-Brain-User` + `X-Second-Brain-User-Key` headers. Neither layer is optional for user-scoped operations.
-- **`AUTH_TOKEN` is the workspace key only.** User API keys (`sbu_xxx.yyy`) go in `X-Second-Brain-User-Key`, never as Bearer. Confusing these causes "Invalid credentials".
+- **Auth is two-layer.** Every request needs `Bearer <AUTH_TOKEN>` (workspace key). User-specific requests also need `X-Shared-Living-Memory-User` + `X-Shared-Living-Memory-User-Key` headers. Neither layer is optional for user-scoped operations.
+- **`AUTH_TOKEN` is the workspace key only.** User API keys (`slm_xxx.yyy`) go in `X-Shared-Living-Memory-User-Key`, never as Bearer. Confusing these causes "Invalid credentials".
 - **`forgetEntry()` has no ownership check.** Always verify `owner_user_id` BEFORE calling it. The REST `POST /forget` and MCP `forget` handlers do this; direct calls don't.
 - **`_system` user** owns all pre-migration entries (public, visible to everyone). Their `status` is `'inactive'` so they can't authenticate.
 - **Visibility clause format:** `(owner_user_id = ? OR tags NOT LIKE '%"private"%')`. Private entries must include `"private"` in the JSON tags array.

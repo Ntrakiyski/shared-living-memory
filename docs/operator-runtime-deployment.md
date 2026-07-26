@@ -7,9 +7,9 @@
 
 ## 1. Purpose
 
-This guide defines how an agent runtime is attached to Second Brain after the Memory, Shared Knowledge Base, and Operator foundations are complete.
+This guide defines how an agent runtime is attached to Shared Living Memory after the Memory, Shared Knowledge Base, and Operator foundations are complete.
 
-The key architectural decision is that **Operator is a governed product capability; Hermes is one replaceable client of it**. Hermes may plan, research, and propose, but Second Brain remains the only authority for identity, visibility, policy, versioning, provenance, proposals, audit, and durable knowledge.
+The key architectural decision is that **Operator is a governed product capability; Hermes is one replaceable client of it**. Hermes may plan, research, and propose, but Shared Living Memory remains the only authority for identity, visibility, policy, versioning, provenance, proposals, audit, and durable knowledge.
 
 Replacing Hermes must require only a runtime change and service-credential rotation. It must never require moving canonical memory or teaching a new runtime how to write D1 or Vectorize directly.
 
@@ -19,11 +19,11 @@ Replacing Hermes must require only a runtime change and service-credential rotat
 Hermes or another operator runtime
   ├─ disposable local working state
   ├─ source/search tools with explicit allowlists and budgets
-  └─ one expiring Second Brain service credential
+  └─ one expiring Shared Living Memory service credential
                     │
                     │ TLS + governed MCP/API calls
                     ▼
-Second Brain Operator control plane
+Shared Living Memory Operator control plane
   ├─ service identity and scope validation
   ├─ policy decision: allow / proposal_required / deny
   ├─ mandatory audit envelope
@@ -36,7 +36,7 @@ Canonical storage (internal only): D1 + Vectorize + R2
 
 | Runtime may possess | Runtime must never possess |
 |---|---|
-| Governed Second Brain endpoint | D1 binding, database file, or database administration token |
+| Governed Shared Living Memory endpoint | D1 binding, database file, or database administration token |
 | One scoped, expiring service credential | Vectorize token, index binding, or direct vector mutation capability |
 | Approved source/search credentials | R2 bucket credentials or raw storage write access |
 | Bounded local queue and cache | Cloudflare account, deployment, migration, backup, or billing credentials |
@@ -104,10 +104,10 @@ If approved execution is introduced later, provision a separate executor identit
 
 Credential requirements:
 
-- return the raw secret once at provisioning and store only its hash in Second Brain;
+- return the raw secret once at provisioning and store only its hash in Shared Living Memory;
 - set an explicit expiry and rotate before it;
 - inject it through the runtime secret manager, never a repository, image, prompt, memory entry, event payload, or shell history;
-- transmit it only to the configured Second Brain origin over TLS;
+- transmit it only to the configured Shared Living Memory origin over TLS;
 - reject a credential when the identity or credential is inactive, expired, revoked, or claims scopes beyond its persisted grant.
 
 ## 5. Action policy
@@ -120,7 +120,7 @@ Credential requirements:
 | Human review | Never available to a service identity | Approve or reject a proposal, resolve policy exception |
 | Irreversible/security action | Never direct and never smuggled through a proposal | Hard forget, access-control change, credential administration, deployment, migration |
 
-Human approval is necessary but not sufficient for execution. At execution time Second Brain must recheck:
+Human approval is necessary but not sufficient for execution. At execution time Shared Living Memory must recheck:
 
 - proposal is reviewed, unexpired, and in the expected state;
 - payload hash and action type still match the reviewed object;
@@ -133,7 +133,7 @@ If any check fails, mark the proposal stale, expired, or failed as appropriate. 
 
 ## 6. Audit contract
 
-Second Brain, not Hermes, owns authoritative audit writes. Every governed mutation follows this order:
+Shared Living Memory, not Hermes, owns authoritative audit writes. Every governed mutation follows this order:
 
 ```text
 authenticate actor
@@ -151,7 +151,7 @@ Use one correlation ID per bounded job and one idempotency key per proposed effe
 
 The Hermes runtime receives only:
 
-- the governed Second Brain MCP/API endpoint;
+- the governed Shared Living Memory MCP/API endpoint;
 - its service credential through a secret manager;
 - an operator/runtime version label;
 - source allowlists and source credentials;
@@ -161,7 +161,7 @@ The Hermes runtime receives only:
 
 Runtime rules:
 
-- Restrict outbound network access to Second Brain and approved source providers.
+- Restrict outbound network access to Shared Living Memory and approved source providers.
 - Keep local working state bounded and disposable; encrypt it if it can contain private material.
 - Never treat local cache, chat history, or a model checkpoint as canonical memory.
 - Run one executive selection at a time. Parallel workers require distinct source/task leases and budgets.

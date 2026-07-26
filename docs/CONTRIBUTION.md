@@ -33,7 +33,7 @@ Start with a single markdown file describing what you want to build. Keep it sho
 **Example (shared-memory/GOAL.md):**
 ```
 # Goal: Multi-User Shared Memory Platform
-Extend Second Brain from single-user to multi-user...
+Extend Shared Living Memory from single-user to multi-user...
 ```
 
 **Recommended skill:** `grill-with-docs` — a relentless interview that stress-tests your plan and simultaneously builds documentation. It combines two sub-skills:

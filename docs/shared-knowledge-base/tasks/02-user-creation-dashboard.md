@@ -44,15 +44,15 @@
 
 **JavaScript — modify `connect()` function (line 2798-2824):**
 - Read username from dropdown (`#auth-username`) in addition to key from `#auth-token`
-- Send both `X-Second-Brain-User` and `X-Second-Brain-User-Key` headers with the validation request
-- Store `sb_username` in localStorage alongside `sb_url` and `sb_token`
+- Send both `X-Shared-Living-Memory-User` and `X-Shared-Living-Memory-User-Key` headers with the validation request
+- Store `slm_username` in localStorage alongside `slm_url` and `slm_token`
 - On subsequent loads, pre-select the stored username in the dropdown
 
 **JavaScript — modify `showApp()` function (line 2826-2833):**
 - No changes needed — it already hides overlay and loads data
 
 **JavaScript — modify `logout()` function (line 2903-2914):**
-- Also clear `sb_username` from localStorage
+- Also clear `slm_username` from localStorage
 
 ### `src/index.ts` — User creation endpoint
 
@@ -62,7 +62,7 @@
   - Validates: username is non-empty, alphanumeric + underscores, max 32 chars
   - Generates key via `generateApiKey()` from ticket 01
   - Hashes key, inserts into users table
-  - Returns: `{ ok: true, username: string, key: string }` (key is the raw `sbu_<id>.<secret>`)
+  - Returns: `{ ok: true, username: string, key: string }` (key is the raw `slm_<id>.<secret>`)
   - Requires workspace key (`AUTH_TOKEN`, same as existing auth)
 
 ### `test/integration/users-api.test.ts` — Registration flow tests

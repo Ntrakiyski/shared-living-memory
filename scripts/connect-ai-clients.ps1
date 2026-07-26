@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Wires up Second Brain for Claude Code and Codex CLI in one shot:
+  Wires up Shared Living Memory for Claude Code and Codex CLI in one shot:
     - appends global system instructions to ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md
     - registers the /mcp endpoint as an MCP server via OAuth (no token ever stored here)
 
@@ -14,16 +14,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$RawBase = "https://raw.githubusercontent.com/Ntrakiyski/second-brain/main"
+$RawBase = "https://raw.githubusercontent.com/Ntrakiyski/shared-living-memory/main"
 $InstructionSourcePath = "AGENTS.md"
-$InstructionSectionStart = "<!-- second-brain:mcp-client-instructions:start -->"
-$InstructionSectionEnd = "<!-- second-brain:mcp-client-instructions:end -->"
-$StartMarker = "<!-- second-brain:instructions:start -->"
-$EndMarker = "<!-- second-brain:instructions:end -->"
+$InstructionSectionStart = "<!-- shared-living-memory:mcp-client-instructions:start -->"
+$InstructionSectionEnd = "<!-- shared-living-memory:mcp-client-instructions:end -->"
+$StartMarker = "<!-- shared-living-memory:instructions:start -->"
+$EndMarker = "<!-- shared-living-memory:instructions:end -->"
 $SentinelPhrase = "At the start of EVERY conversation, call recall"
 
 if ([string]::IsNullOrWhiteSpace($WorkerUrl)) {
-  $WorkerUrl = Read-Host "Enter your Second Brain worker URL (e.g. https://your-worker.workers.dev)"
+  $WorkerUrl = Read-Host "Enter your Shared Living Memory worker URL (e.g. https://your-worker.workers.dev)"
 }
 
 $WorkerUrl = $WorkerUrl.TrimEnd("/")
@@ -94,16 +94,16 @@ Write-Host "-- MCP server registration (OAuth - no token needed here) --"
 
 if (Get-Command claude -ErrorAction SilentlyContinue) {
   $alreadyRegistered = $false
-  try { claude mcp get second-brain *> $null; $alreadyRegistered = $true } catch { $alreadyRegistered = $false }
+  try { claude mcp get shared-living-memory *> $null; $alreadyRegistered = $true } catch { $alreadyRegistered = $false }
 
   if ($alreadyRegistered) {
-    Write-Host "[Claude Code] 'second-brain' MCP server is already registered - skipping."
+    Write-Host "[Claude Code] 'shared-living-memory' MCP server is already registered - skipping."
   } else {
     try {
-      claude mcp add --transport http second-brain $McpUrl
-      Write-Host "[Claude Code] Registered 'second-brain'. You'll be prompted to authorize in your browser on first use."
+      claude mcp add --transport http shared-living-memory $McpUrl
+      Write-Host "[Claude Code] Registered 'shared-living-memory'. You'll be prompted to authorize in your browser on first use."
     } catch {
-      Write-Warning "[Claude Code] Failed to register 'second-brain' - you can add it manually with:`n  claude mcp add --transport http second-brain `"$McpUrl`""
+      Write-Warning "[Claude Code] Failed to register 'shared-living-memory' - you can add it manually with:`n  claude mcp add --transport http shared-living-memory `"$McpUrl`""
     }
   }
 } else {
@@ -112,16 +112,16 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
 
 if (Get-Command codex -ErrorAction SilentlyContinue) {
   $alreadyRegistered = $false
-  try { codex mcp get second-brain *> $null; $alreadyRegistered = $true } catch { $alreadyRegistered = $false }
+  try { codex mcp get shared-living-memory *> $null; $alreadyRegistered = $true } catch { $alreadyRegistered = $false }
 
   if ($alreadyRegistered) {
-    Write-Host "[Codex CLI] 'second-brain' MCP server is already registered - skipping."
+    Write-Host "[Codex CLI] 'shared-living-memory' MCP server is already registered - skipping."
   } else {
     try {
-      codex mcp add second-brain --url $McpUrl
-      Write-Host "[Codex CLI] Registered 'second-brain' and started the OAuth login flow."
+      codex mcp add shared-living-memory --url $McpUrl
+      Write-Host "[Codex CLI] Registered 'shared-living-memory' and started the OAuth login flow."
     } catch {
-      Write-Warning "[Codex CLI] Failed to register 'second-brain' - you can add it manually with:`n  codex mcp add second-brain --url `"$McpUrl`""
+      Write-Warning "[Codex CLI] Failed to register 'shared-living-memory' - you can add it manually with:`n  codex mcp add shared-living-memory --url `"$McpUrl`""
     }
   }
 } else {
@@ -136,6 +136,6 @@ Write-Host "    that's the one-time OAuth handshake. (If you connect both Claude
 Write-Host "    Codex in the same browser session, you may only be asked once.)"
 Write-Host "  - Also using the ChatGPT or Claude apps (not Codex CLI / Claude Code)? Their"
 Write-Host "    personalization / custom-instruction settings are account-level and have no"
-Write-Host "    public write API - paste the 'Second Brain MCP Client Instructions' block"
+Write-Host "    public write API - paste the 'Shared Living Memory MCP Client Instructions' block"
 Write-Host "    from AGENTS.md into ChatGPT's Settings -> Personalization -> Custom Instructions,"
 Write-Host "    and a similar block into claude.ai's profile preferences, by hand."

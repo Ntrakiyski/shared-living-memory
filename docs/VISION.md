@@ -44,7 +44,7 @@ The team layer. Multiple users and agents share a collective memory with visibil
 - Visibility enforcement — private entries stay private, public entries shared
 
 ### 3. Operator
-The governed control plane for any agent that operates the memory. It sits between an operator runtime and Second Brain's storage services, enforcing identity, scope, policy, approval, and audit rules on every action. Hermes is the first intended operator runtime, but it is a replaceable client of this layer — never the memory's canonical store or a privileged database process.
+The governed control plane for any agent that operates the memory. It sits between an operator runtime and Shared Living Memory's storage services, enforcing identity, scope, policy, approval, and audit rules on every action. Hermes is the first intended operator runtime, but it is a replaceable client of this layer — never the memory's canonical store or a privileged database process.
 
 **What this means:**
 - Any compatible agent can operate the memory through governed MCP/API tools — not just one vendor or runtime

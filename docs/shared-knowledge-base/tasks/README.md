@@ -1,17 +1,17 @@
-# Second Brain v2 — Multi-User Shared Memory Platform
+# Shared Living Memory v2 — Multi-User Shared Memory Platform
 
 ## What This Is
 
-Second Brain is a Cloudflare Worker-based personal memory platform. Single-file Worker (`src/index.ts`, ~3,500 lines), single-page dashboard (`public/index.html`, ~4,681 lines). Currently single-user. This project extends it to multi-user with ownership, visibility, and team sharing.
+Shared Living Memory is a Cloudflare Worker-based personal memory platform. Single-file Worker (`src/index.ts`, ~3,500 lines), single-page dashboard (`public/index.html`, ~4,681 lines). Currently single-user. This project extends it to multi-user with ownership, visibility, and team sharing.
 
 **Source of truth:** `PRD.md` — full user stories, implementation decisions, testing decisions, out-of-scope items.
 
-**Project conventions:** `second-brain/AGENTS.md` — commands, architecture, gotchas, test setup.
+**Project conventions:** `shared-living-memory/AGENTS.md` — commands, architecture, gotchas, test setup.
 
 ## How To Start
 
 1. Read `PRD.md` for the full specification
-2. Read `second-brain/AGENTS.md` for project conventions and commands
+2. Read `shared-living-memory/AGENTS.md` for project conventions and commands
 3. Read this file for ticket order and current status
 4. Pick the first ticket with no incomplete blockers (see table below)
 5. Read the ticket file in `tasks/` for exact file changes needed
@@ -20,7 +20,7 @@ Second Brain is a Cloudflare Worker-based personal memory platform. Single-file 
 ## Quick Commands
 
 ```bash
-cd second-brain
+cd shared-living-memory
 npm install              # install deps (uses legacy-peer-deps via .npmrc)
 npm test                 # run all unit tests (vitest)
 npm run typecheck        # wrangler types + tsc --noEmit

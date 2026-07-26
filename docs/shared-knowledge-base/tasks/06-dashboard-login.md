@@ -23,20 +23,20 @@
   - For backward compatibility during transition
 
 **JavaScript — `connect()` function (line 2798-2824):**
-- When username dropdown is selected: send `X-Second-Brain-User` + `X-Second-Brain-User-Key` headers
+- When username dropdown is selected: send `X-Shared-Living-Memory-User` + `X-Shared-Living-Memory-User-Key` headers
 - When "workspace key only" mode: send only `Authorization: Bearer <key>` (legacy)
-- Store mode in localStorage (`sb_auth_mode: 'user' | 'legacy'`)
+- Store mode in localStorage (`slm_auth_mode: 'user' | 'legacy'`)
 
 **JavaScript — `init()` function (line 2783-2796):**
-- On load, check `sb_auth_mode` from localStorage
+- On load, check `slm_auth_mode` from localStorage
 - If `'user'`: populate username dropdown, pre-fill stored username
 - If `'legacy'`: show legacy token input
 - If no stored auth: show Sign In tab by default
 
 **JavaScript — all API calls:**
 - Every `fetch()` call that sends `Authorization: Bearer <token>` must also include:
-  - `X-Second-Brain-User: <username>` (from stored `sb_username`)
-  - `X-Second-Brain-User-Key: <key>` (from stored `sb_key`)
+  - `X-Shared-Living-Memory-User: <username>` (from stored `slm_username`)
+  - `X-Shared-Living-Memory-User-Key: <key>` (from stored `slm_key`)
 - Update the `headers` object construction in:
   - `loadRecent()` (line 3124)
   - `loadTags()`
@@ -46,7 +46,7 @@
   - All other fetch calls in the dashboard JS
 
 **JavaScript — `logout()` function (line 2903-2914):**
-- Clear `sb_username`, `sb_key`, `sb_auth_mode` from localStorage
+- Clear `slm_username`, `slm_key`, `slm_auth_mode` from localStorage
 
 **CSS (lines 170-306 area):**
 - Style the "workspace key only" link as subtle text below the main form

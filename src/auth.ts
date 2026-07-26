@@ -16,7 +16,9 @@ import { CORS_HEADERS } from "./config";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-export const AUTH_PEPPER = "second-brain-v2"; // server-side pepper for HMAC
+export const AUTH_PEPPER = "shared-living-memory-v2"; // server-side pepper for HMAC
+// Existing keys cannot be re-hashed because only their hashes are stored.
+const LEGACY_AUTH_PEPPER = "second-brain-v2";
 
 // ─── HMAC / API key helpers ────────────────────────────────────────────────────
 
@@ -34,15 +36,15 @@ export function generateApiKey(): { publicId: string; secret: string; fullKey: s
   const publicId = crypto.randomUUID().replace(/-/g, "");
   const secret = Array.from(crypto.getRandomValues(new Uint8Array(24)))
     .map(b => b.toString(36).padStart(2, "0")).join("").slice(0, 32);
-  return { publicId, secret, fullKey: `sbu_${publicId}.${secret}` };
+  return { publicId, secret, fullKey: `slm_${publicId}.${secret}` };
 }
 
 // ─── Credential parsing / resolution ──────────────────────────────────────────
 
 function parseUserCredentials(request: Request): { username: string | null; key: string | null } {
   return {
-    username: request.headers.get("X-Second-Brain-User"),
-    key: request.headers.get("X-Second-Brain-User-Key"),
+    username: request.headers.get("X-Shared-Living-Memory-User"),
+    key: request.headers.get("X-Shared-Living-Memory-User-Key"),
   };
 }
 
@@ -63,10 +65,10 @@ export interface UserPrincipal {
   username: string;
 }
 
-function parseApiKey(apiKey: string): { publicId: string; secret: string } | null {
-  const match = apiKey.match(/^sbu_([A-Za-z0-9][A-Za-z0-9_-]{0,127})\.([^\s.]+)$/);
+function parseApiKey(apiKey: string): { publicId: string; secret: string; legacy: boolean } | null {
+  const match = apiKey.match(/^(slm|sbu)_([A-Za-z0-9][A-Za-z0-9_-]{0,127})\.([^\s.]+)$/);
   if (!match) return null;
-  return { publicId: match[1], secret: match[2] };
+  return { legacy: match[1] === "sbu", publicId: match[2], secret: match[3] };
 }
 
 function isReservedActorId(value: string): boolean {
@@ -82,15 +84,23 @@ async function activeUserById(userId: string, env: Env): Promise<ActiveUserRow |
 
 async function hashesMatch(rawSecret: string, storedHash: string): Promise<boolean> {
   if (typeof storedHash !== "string") return false;
-  const keyHash = await hmacKey(rawSecret, AUTH_PEPPER);
-  if (keyHash.length !== storedHash.length) return false;
+  const [keyHash, legacyKeyHash] = await Promise.all([
+    hmacKey(rawSecret, AUTH_PEPPER),
+    hmacKey(rawSecret, LEGACY_AUTH_PEPPER),
+  ]);
+  if (keyHash.length !== storedHash.length || legacyKeyHash.length !== storedHash.length) return false;
 
   const encoder = new TextEncoder();
   const a = encoder.encode(keyHash);
+  const legacy = encoder.encode(legacyKeyHash);
   const b = encoder.encode(storedHash);
   let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
+  let legacyDiff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a[i] ^ b[i];
+    legacyDiff |= legacy[i] ^ b[i];
+  }
+  return diff === 0 || legacyDiff === 0;
 }
 
 /** Resolve a personal API key to the active, non-system user that owns it. */
@@ -169,7 +179,7 @@ export async function resolveUser(
   const row = await (env.DB as any).prepare(
     "SELECT id, username, auth_key_hash FROM users WHERE normalized_username = ? AND status = 'active'"
   ).bind(normalized).first();
-  if (!row || parsed.publicId !== row.id || !isValidMcpActorId(row.id)) return null;
+  if (!row || (!parsed.legacy && parsed.publicId !== row.id) || !isValidMcpActorId(row.id)) return null;
   if (!await hashesMatch(parsed.secret, row.auth_key_hash as string)) return null;
 
   return { user_id: row.id, username: row.username };
@@ -319,7 +329,7 @@ export function loginHtml(error?: string): string {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#F4F1EA" />
-  <title>Second Brain</title>
+  <title>Shared Living Memory</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" />
@@ -354,8 +364,8 @@ export function loginHtml(error?: string): string {
 <body>
   <div class="auth-card">
     <div class="brain-logo"><i class="ti ti-brain"></i></div>
-    <h1>Second Brain</h1>
-    <p>Enter your personal Second Brain API key to connect to your memory layer.</p>
+    <h1>Shared Living Memory</h1>
+    <p>Enter your personal Shared Living Memory API key to connect to your memory layer.</p>
     <form method="POST">
       <input type="password" name="password" placeholder="Personal API key" autofocus autocomplete="current-password" />
       <button type="submit">Connect</button>

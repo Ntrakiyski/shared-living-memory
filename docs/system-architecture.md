@@ -1,11 +1,11 @@
-# Second Brain v2 — System Architecture & Data Science Reference
+# Shared Living Memory v2 — System Architecture & Data Science Reference
 
 ## 1. Overview
 
-Second Brain v2 is a **multi-user shared memory** platform for AI agents and humans. It provides persistent, semantically-searchable, graph-linked memory via the Model Context Protocol (MCP) and a web dashboard.
+Shared Living Memory v2 is a **multi-user shared memory** platform for AI agents and humans. It provides persistent, semantically-searchable, graph-linked memory via the Model Context Protocol (MCP) and a web dashboard.
 
 **Deployment:** Cloudflare Workers (~3900 lines across modules)
-**Live:** `https://second-brain.nikolaytrakiyski.workers.dev`
+**Live:** `https://shared-living-memory.nikolay-trakiyski.workers.dev`
 
 ### Infrastructure Map
 
@@ -40,8 +40,8 @@ Second Brain v2 is a **multi-user shared memory** platform for AI agents and hum
 
 | Binding | Resource | Purpose |
 |---------|----------|---------|
-| `DB` | D1 Database `second-brain-db` | Entries, edges, users tables |
-| `VECTORIZE` | Vectorize Index `second-brain-vectors_v2` | 384-dim cosine semantic search |
+| `DB` | D1 Database `shared-living-memory-db` | Entries, edges, users tables |
+| `VECTORIZE` | Vectorize Index `shared-living-memory-vectors` | 384-dim cosine semantic search |
 | `AI` | Workers AI | `@cf/baai/bge-small-en-v1.5` (embeddings) + `@cf/meta/llama-4-scout-17b-16e-instruct` (LLM) |
 | `OAUTH_KV` | KV Namespace | OAuth tokens, grants, clients + integration state |
 | `AUTH_TOKEN` | Secret (workspace key) | Bearer auth for all requests |
@@ -102,7 +102,7 @@ id                   TEXT PRIMARY KEY,
 username             TEXT NOT NULL UNIQUE,
 normalized_username  TEXT NOT NULL UNIQUE,
 auth_key_hash        TEXT NOT NULL,      -- HMAC-SHA-256(secret, pepper)
-auth_key_prefix      TEXT NOT NULL,      -- e.g. "sbu_abc123."
+auth_key_prefix      TEXT NOT NULL,      -- e.g. "slm_abc123."
 status               TEXT DEFAULT 'active',
 created_at           INTEGER NOT NULL,
 last_used_at         INTEGER
@@ -630,7 +630,7 @@ AND (contradiction_wins = 0)                      — never won a contradiction
 ### Digest Synthesis Prompt
 
 ```
-You are a second brain assistant. Based on these stored memories tagged "{tag}",
+You are a shared living memory assistant. Based on these stored memories tagged "{tag}",
 write a single cohesive paragraph describing the current state of this area —
 what has been done, decided, and is being worked toward. Write as one flowing
 paragraph, not a list.
@@ -682,13 +682,13 @@ Stored as entry tagged `["auto-pattern"]`. Hidden from normal recall until confi
 ### Human Request Auth
 
 1. **Workspace key** (`AUTH_TOKEN` secret) — Bearer header on every request
-2. **User credentials** — `X-Second-Brain-User` (username) + `X-Second-Brain-User-Key` (`sbu_xxx.yyy` format)
+2. **User credentials** — `X-Shared-Living-Memory-User` (username) + `X-Shared-Living-Memory-User-Key` (`slm_xxx.yyy` format)
 
 MCP clients may instead authenticate directly with a personal API key. Automated operators use dedicated service credentials and the actor/scoping path described in section 13; the workspace key is never treated as an identity.
 
 ### User Key Format
 
-`sbu_{publicId}.{secret}` — stored as HMAC-SHA-256 hash of secret portion
+`slm_{publicId}.{secret}` — stored as HMAC-SHA-256 hash of secret portion
 
 ### Visibility Enforcement
 
@@ -726,7 +726,7 @@ Provider pattern in `src/integrations/`:
 
 ## 13. Agent Governance (Pillar 3 — Operator)
 
-Infrastructure for external agents to operate on Second Brain with least-privilege identity, fail-closed audit, and human oversight. The normative runtime boundary is [Operator Runtime and Hermes Deployment](operator-runtime-deployment.md); Hermes behavior is governed by the [canonical charter](research/hermes-living-knowledge-agent-charter.md).
+Infrastructure for external agents to operate on Shared Living Memory with least-privilege identity, fail-closed audit, and human oversight. The normative runtime boundary is [Operator Runtime and Hermes Deployment](operator-runtime-deployment.md); Hermes behavior is governed by the [canonical charter](research/hermes-living-knowledge-agent-charter.md).
 
 Hermes is a replaceable client of this control plane. It is not a storage component and never receives direct D1, Vectorize, R2, migration, or deployment access.
 
@@ -763,7 +763,7 @@ Consequential service actions are stored as idempotent proposals with action typ
 
 ### Scheduled Jobs
 
-- **Second Brain cron** (`0 1 * * *`): nightly compression, graph pass, integration sync, cross-user contradiction detection
+- **Shared Living Memory cron** (`0 1 * * *`): nightly compression, graph pass, integration sync, cross-user contradiction detection
 - **Hermes** (external and replaceable): source scouting, bounded research, maintenance proposals, and morning digest through governed MCP/API calls only. It is deployed after Pillars 1–3 and starts in read-only shadow mode.
 
 ---

@@ -1,12 +1,12 @@
-# Second Brain v2 — PRD: Multi-User Shared Memory Platform
+# Shared Living Memory v2 — PRD: Multi-User Shared Memory Platform
 
 ## Problem Statement
 
-Second Brain is currently a single-user tool. One deployment, one owner, one `AUTH_TOKEN`. The owner's partner and teammates cannot use it independently — there is no user identity, no ownership tracking, and no visibility controls. If the owner's partner wants to capture memories, they either share the same token (no accountability) or cannot use the system at all. There is no way to keep certain memories private while sharing others with the team. The system treats all data as belonging to a single invisible owner.
+Shared Living Memory is currently a single-user tool. One deployment, one owner, one `AUTH_TOKEN`. The owner's partner and teammates cannot use it independently — there is no user identity, no ownership tracking, and no visibility controls. If the owner's partner wants to capture memories, they either share the same token (no accountability) or cannot use the system at all. There is no way to keep certain memories private while sharing others with the team. The system treats all data as belonging to a single invisible owner.
 
 ## Solution
 
-Extend Second Brain into a multi-user shared memory platform. Every user authenticates with their own credentials (username + key). Every memory tracks its owner. The `private` tag becomes system-enforced: private memories are invisible to other users, public memories are visible to the whole team. Tags become the organizing principle — workspace, project, and visibility are all tags. No separate workspace infrastructure. The team shares one brain, each person controls their own data.
+Extend Shared Living Memory into a multi-user shared memory platform. Every user authenticates with their own credentials (username + key). Every memory tracks its owner. The `private` tag becomes system-enforced: private memories are invisible to other users, public memories are visible to the whole team. Tags become the organizing principle — workspace, project, and visibility are all tags. No separate workspace infrastructure. The team shares one brain, each person controls their own data.
 
 ---
 
@@ -14,7 +14,7 @@ Extend Second Brain into a multi-user shared memory platform. Every user authent
 
 ### Authentication & Identity
 
-1. As a team member, I want to connect to the Second Brain deployment with my own username and key, so that my memories are attributed to me
+1. As a team member, I want to connect to the Shared Living Memory deployment with my own username and key, so that my memories are attributed to me
 2. As a new user, I want to create a username and receive an auto-generated key, so that I can start using the system immediately
 3. As a returning user, I want to select my username from a dropdown and enter my key, so that I can access my memories quickly
 4. As a user, I want my key to be shown once at creation and never stored in plaintext, so that my identity is secure
@@ -125,7 +125,7 @@ Extend Second Brain into a multi-user shared memory platform. Every user authent
 
 ### User Model
 
-New `users` table with columns: `id`, `username`, `normalized_username`, `auth_key_hash`, `auth_key_prefix`, `status`, `created_at`, `last_used_at`. Key format: `sbu_<public-user-id>.<secret>`. Storage: HMAC-SHA-256(server pepper, raw key) only. Raw key shown once at creation.
+New `users` table with columns: `id`, `username`, `normalized_username`, `auth_key_hash`, `auth_key_prefix`, `status`, `created_at`, `last_used_at`. Key format: `slm_<public-user-id>.<secret>`. Storage: HMAC-SHA-256(server pepper, raw key) only. Raw key shown once at creation.
 
 ### Memory Ownership
 
@@ -177,8 +177,8 @@ When a user is deactivated: public memories stay visible, private memories are d
 Every request carries:
 ```
 Authorization: Bearer <WORKSPACE_KEY>
-X-Second-Brain-User: <username>
-X-Second-Brain-User-Key: <user_key>
+X-Shared-Living-Memory-User: <username>
+X-Shared-Living-Memory-User-Key: <user_key>
 ```
 
 The server validates the workspace key, looks up user, verifies key hash, resolves internal `user_id`.

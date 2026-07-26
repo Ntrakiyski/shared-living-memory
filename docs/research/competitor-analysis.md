@@ -1,4 +1,4 @@
-# Competitor Analysis — Second Brain / Living Knowledge Organism
+# Competitor Analysis — Shared Living Memory / Living Knowledge Organism
 
 **Date:** 2026-07-13  
 **Scope:** 13 open-source memory systems for AI agents  
@@ -534,9 +534,9 @@ Not a memory system. Misclassified as a competitor.
 | No compression/consolidation | Most competitors | Memory grows unbounded |
 | Single storage backend | A-Mem (ChromaDB only) | Vendor lock-in |
 
-### What Second Brain Already Does Well
+### What Shared Living Memory Already Does Well
 
-Compared to competitors, Second Brain already has:
+Compared to competitors, Shared Living Memory already has:
 1. **Multi-user auth with visibility enforcement** — most competitors lack this
 2. **Contradiction detection and resolution** — only AgentMemory comes close
 3. **Auto-linking between related memories** — most competitors require manual linking
@@ -547,7 +547,7 @@ Compared to competitors, Second Brain already has:
 8. **Importance scoring** — LLM-classified importance levels
 9. **Status lifecycle** — canonical/draft/deprecated states
 
-### What Second Brain Should Add
+### What Shared Living Memory Should Add
 
 Based on competitor analysis:
 1. **Bi-temporal fact validity** (from Graphiti) — `valid_from`/`valid_to` on entries or a new `facts` table
@@ -567,4 +567,4 @@ The landscape shows a clear split:
 - **Research systems** (A-Mem, AgeMem, AgentMemory) focus on memory evolution and forgetting curves
 - **Infrastructure projects** (beads, memU) focus on storage format and human readability
 
-Second Brain is uniquely positioned as a **multi-user shared memory with contradiction handling** — no competitor combines these features. The main gaps are temporal modeling (validity windows), provenance (episode tracking), and memory lifecycle (spaced repetition decay).
+Shared Living Memory is uniquely positioned as a **multi-user shared memory with contradiction handling** — no competitor combines these features. The main gaps are temporal modeling (validity windows), provenance (episode tracking), and memory lifecycle (spaced repetition decay).

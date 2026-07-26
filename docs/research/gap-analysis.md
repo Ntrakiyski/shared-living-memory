@@ -1,4 +1,4 @@
-# Gap Analysis: Competitor Patterns vs. Second Brain Implementation
+# Gap Analysis: Competitor Patterns vs. Shared Living Memory Implementation
 
 **Date:** 2026-07-13  
 **Source:** `competitor-analysis.md` (13 systems) + `competitor-to-schema-mapping.md` (10 patterns)  
@@ -10,7 +10,7 @@
 
 Each of the 10 patterns from `competitor-to-schema-mapping.md` is assessed against:
 1. Which competitors actually implement it (with specifics)
-2. What Second Brain's codebase needs to change (file-level, function-level)
+2. What Shared Living Memory's codebase needs to change (file-level, function-level)
 3. Effort estimate
 4. Dependencies
 5. Impact on memory quality
@@ -32,7 +32,7 @@ Effort tiers: **Small** (< 1 day), **Medium** (1–3 days), **Large** (1+ weeks)
 
 **Only Graphiti has true bi-temporal separation.** MemPalace comes closest. The rest use simple recency.
 
-### What Second Brain needs to change
+### What Shared Living Memory needs to change
 
 **Schema — 3 new columns on `entries` + new `facts` table:**
 - `src/db.ts:92–100` — add ALTER TABLE statements for `valid_from`, `valid_to`, `recorded_at` columns on `entries`
@@ -60,7 +60,7 @@ Effort tiers: **Small** (< 1 day), **Medium** (1–3 days), **Large** (1+ weeks)
 
 ### Impact: **Critical**
 
-This is the single highest-value gap. Without bi-temporal validity, Second Brain cannot answer "what did we believe about X at time Y?" — the most common governance query. Graphiti's entire value proposition rests on this.
+This is the single highest-value gap. Without bi-temporal validity, Shared Living Memory cannot answer "what did we believe about X at time Y?" — the most common governance query. Graphiti's entire value proposition rests on this.
 
 ---
 
@@ -78,7 +78,7 @@ This is the single highest-value gap. Without bi-temporal validity, Second Brain
 
 **Graphiti is the gold standard.** Episode = immutable raw source. Derived facts link to episodes. Compression never touches episodes.
 
-### What Second Brain needs to change
+### What Shared Living Memory needs to change
 
 **Schema — new `episodes` table + entry linkage:**
 - `db/schema.sql` — add `episodes` table (id, source_url, content_hash, raw_content, content_type, ingested_at, ingested_by, owner_user_id)
@@ -120,11 +120,11 @@ Without episodes, compression is destructive. Every compressed digest loses the 
 | **AgentMemory** | SM-2-inspired retention scoring. `retention_score = e^(-λ × days_since_recall)`. Configurable half-life per memory type. Memories decay unless reinforced. Auto-forget when retention drops below threshold. |
 | **AgeMem** | 7-day half-life recency decay. Hybrid scoring: `0.6 × cosine + 0.25 × recency_decay + 0.15 × learning_score`. |
 | **Graphiti** | `valid_to` timestamps invalidate facts structurally, but no gradual forgetting curve. |
-| **Second Brain (current)** | `getHalfLifeMs()` at `helpers.ts:79` returns fixed half-lives per tag type (7d for tasks, 180d for context, 30d default). `recall_count` incremented on recall but only used as `1 + log1p(rc)` multiplier at `recall.ts:86`. No actual forgetting — memories never lose rank due to irrelevance. |
+| **Shared Living Memory (current)** | `getHalfLifeMs()` at `helpers.ts:79` returns fixed half-lives per tag type (7d for tasks, 180d for context, 30d default). `recall_count` incremented on recall but only used as `1 + log1p(rc)` multiplier at `recall.ts:86`. No actual forgetting — memories never lose rank due to irrelevance. |
 
-**The key gap:** Second Brain has time decay in *reranking* but no *retention score* that degrades independently. A memory recalled 100 days ago with high recall_count still scores well. AgentMemory's model would penalize it because it hasn't been recalled *recently*.
+**The key gap:** Shared Living Memory has time decay in *reranking* but no *retention score* that degrades independently. A memory recalled 100 days ago with high recall_count still scores well. AgentMemory's model would penalize it because it hasn't been recalled *recently*.
 
-### What Second Brain needs to change
+### What Shared Living Memory needs to change
 
 **Schema — 3 new columns on `entries`:**
 ```sql
@@ -168,11 +168,11 @@ This is the difference between a memory system that "forgets" gracefully and one
 | **AgentMemory** | `contradicts`, `supersedes`, `derives_from`, `conflicts_with` — each with confidence 0.0–1.0. Confidence used in retrieval scoring. |
 | **Graphiti** | Relationships are typed with `valid_from`/`valid_to`. Entity types are extensible via Pydantic models. |
 | **Memori** | Semantic triples (SPO) with type system: entities, actions, events, facts. |
-| **Second Brain (current)** | `EDGE_TYPES` at `graph.ts:37` has 7 types: `relates_to`, `supersedes`, `caused_by`, `decided`, `about_person`, `part_of_project`, `follows`. `weight` (REAL, 0–1) exists on edges. No `confidence` column. No `contradicts`, `derives_from`, `supports` types. |
+| **Shared Living Memory (current)** | `EDGE_TYPES` at `graph.ts:37` has 7 types: `relates_to`, `supersedes`, `caused_by`, `decided`, `about_person`, `part_of_project`, `follows`. `weight` (REAL, 0–1) exists on edges. No `confidence` column. No `contradicts`, `derives_from`, `supports` types. |
 
-**Key gap:** Second Brain has `weight` but not `confidence`. The distinction matters: `weight` is link strength (how related), `confidence` is certainty (how sure we are about this relationship). Also missing `contradicts` and `derives_from` — the two most important types for a research memory system.
+**Key gap:** Shared Living Memory has `weight` but not `confidence`. The distinction matters: `weight` is link strength (how related), `confidence` is certainty (how sure we are about this relationship). Also missing `contradicts` and `derives_from` — the two most important types for a research memory system.
 
-### What Second Brain needs to change
+### What Shared Living Memory needs to change
 
 **Schema — `edges` table:**
 - `db/schema.sql:39` — add `confidence REAL DEFAULT 1.0` column
@@ -225,11 +225,11 @@ Typed relations make the graph machine-readable, not just human-navigable. `deri
 | **Graphiti** | Raw episodes are the evidence. Every derived fact links to its source episode. |
 | **MemPalace** | Verbatim "drawers" — the original text IS the evidence. Section-level granularity. |
 | **Technical KB Report** | Recommends passage-level indexing for citable research. |
-| **Second Brain (current)** | Entries are flat text blobs. No sub-entry granularity. When recall returns an entry, you get the entire content — no "which 2 sentences support this claim?" |
+| **Shared Living Memory (current)** | Entries are flat text blobs. No sub-entry granularity. When recall returns an entry, you get the entire content — no "which 2 sentences support this claim?" |
 
-**The problem:** Second Brain returns entries (which can be paragraphs or pages). There's no way to say "this specific sentence from entry X supports the query." For research use cases, citation requires passage-level granularity.
+**The problem:** Shared Living Memory returns entries (which can be paragraphs or pages). There's no way to say "this specific sentence from entry X supports the query." For research use cases, citation requires passage-level granularity.
 
-### What Second Brain needs to change
+### What Shared Living Memory needs to change
 
 **Schema — new `evidence_passages` table:**
 ```sql
@@ -276,7 +276,7 @@ CREATE TABLE IF NOT EXISTS evidence_passages (
 
 ### Impact: **Critical for citable research**
 
-Without passage-level evidence, every claim in Second Brain is "trust me." With it, the system can say "this claim is supported by lines 42–47 of the source paper." This is the difference between a note-taking app and a research tool.
+Without passage-level evidence, every claim in Shared Living Memory is "trust me." With it, the system can say "this claim is supported by lines 42–47 of the source paper." This is the difference between a note-taking app and a research tool.
 
 ---
 
@@ -289,11 +289,11 @@ Without passage-level evidence, every claim in Second Brain is "trust me." With 
 | **Honcho** | Background "deriver" worker extracts conclusions from conversations asynchronously. Representations are pre-computed snapshots. Two services: Storage (API) + Insights (async reasoning). |
 | **Graphiti** | Episode ingestion triggers background entity/relationship extraction. |
 | **AgentMemory** | LLM-driven consolidation runs in background (L0→L1→L2). |
-| **Second Brain (current)** | All processing is either synchronous in request handlers OR via `ctx.waitUntil()` in the cron handler at `index.ts:206`. The nightly cron at `0 1 * * *` runs compression + graph pass + integration sync. No queue-based processing. |
+| **Shared Living Memory (current)** | All processing is either synchronous in request handlers OR via `ctx.waitUntil()` in the cron handler at `index.ts:206`. The nightly cron at `0 1 * * *` runs compression + graph pass + integration sync. No queue-based processing. |
 
 **The problem:** `ctx.waitUntil()` has a ~30 second timeout on Workers. Complex extraction (contradiction detection, claim extraction, auto-linking) can exceed this. There's no retry mechanism, no priority queue, no dead-letter handling.
 
-### What Second Brain needs to change
+### What Shared Living Memory needs to change
 
 **Schema — new `extraction_queue` table:**
 ```sql
@@ -343,9 +343,9 @@ This decouples capture from processing. Currently, if capture takes too long (LL
 | **TencentDB** | Every scene extraction creates a backup before mutation. If extraction fails, roll back to previous state. |
 | **beads** | Dolt provides git-like snapshots — every change is atomic and revertable. |
 | **MemPalace** | Verbatim storage means no mutation — originals are never changed. |
-| **Second Brain (current)** | `remember`, `update`, `append` mutate entries directly. `compressTag()` at `lifecycle.ts:163` overwrites content with digest. No rollback capability. |
+| **Shared Living Memory (current)** | `remember`, `update`, `append` mutate entries directly. `compressTag()` at `lifecycle.ts:163` overwrites content with digest. No rollback capability. |
 
-### What Second Brain needs to change
+### What Shared Living Memory needs to change
 
 **Schema — new `entry_snapshots` table:**
 ```sql
@@ -391,9 +391,9 @@ Safety net for automated mutations. Low probability of use but high value when n
 |------------|----------------|
 | **MemPalace** | Pluggable backends: ChromaDB, Milvus, Qdrant, pgvector, sqlite. `MemoryStore` interface. |
 | **Graphiti** | Pluggable graph backends: Neo4j, FalkorDB, Neptune, Kuzu. |
-| **Second Brain (current)** | Tightly coupled to D1 + Vectorize. Every query uses `env.DB.prepare()` and `env.VECTORIZE.query()` directly. No abstraction layer. |
+| **Shared Living Memory (current)** | Tightly coupled to D1 + Vectorize. Every query uses `env.DB.prepare()` and `env.VECTORIZE.query()` directly. No abstraction layer. |
 
-### What Second Brain needs to change
+### What Shared Living Memory needs to change
 
 - Define `MemoryStore` interface (as sketched in `competitor-to-schema-mapping.md`)
 - Wrap all D1/Vectorize calls behind this interface
@@ -406,7 +406,7 @@ Safety net for automated mutations. Low probability of use but high value when n
 
 ### Impact: **Low** (for current scale)
 
-Premature abstraction. Second Brain runs on Cloudflare with D1 + Vectorize — there's no second backend to support. Document the interface for future reference but don't implement until there's a concrete reason (e.g., migrating to a different platform, adding a local-only mode).
+Premature abstraction. Shared Living Memory runs on Cloudflare with D1 + Vectorize — there's no second backend to support. Document the interface for future reference but don't implement until there's a concrete reason (e.g., migrating to a different platform, adding a local-only mode).
 
 ---
 
@@ -418,9 +418,9 @@ Premature abstraction. Second Brain runs on Cloudflare with D1 + Vectorize — t
 |------------|----------------|
 | **AgeMem** | Generates paraphrase variants of the query before search. "how does gradient checkpointing work" → ["activation checkpointing memory tradeoff", "selective recomputation backward pass"]. All variants searched, results merged via RRF. |
 | **MemPalace** | Hybrid v4 with keyword boosting + temporal proximity. |
-| **Second Brain (current)** | Single query → embed → vector search → keyword search → RRF fuse. No paraphrase expansion. `tokenizeQuery()` at `helpers.ts:107` splits into tokens but doesn't generate alternatives. |
+| **Shared Living Memory (current)** | Single query → embed → vector search → keyword search → RRF fuse. No paraphrase expansion. `tokenizeQuery()` at `helpers.ts:107` splits into tokens but doesn't generate alternatives. |
 
-### What Second Brain needs to change
+### What Shared Living Memory needs to change
 
 **Recall — `src/recall.ts:296–309`:**
 - Before embedding, call Cloudflare AI to generate 2–3 paraphrase variants:
@@ -460,9 +460,9 @@ Improves recall for paraphrase-sensitive queries. Diminishing returns for well-p
 |------------|----------------|
 | **MemPalace** | All memories stored verbatim — no summarization. 96.6% R@5 without LLM. |
 | **memU** | Raw source files copied verbatim into `resource/`. |
-| **Second Brain (current)** | `compressTag()` at `lifecycle.ts:163` replaces entry content with LLM-generated digest. Original text is lost. Tags get `rolled-up` appended. |
+| **Shared Living Memory (current)** | `compressTag()` at `lifecycle.ts:163` replaces entry content with LLM-generated digest. Original text is lost. Tags get `rolled-up` appended. |
 
-### What Second Brain needs to change
+### What Shared Living Memory needs to change
 
 This pattern is **fully subsumed by Pattern 2 (Episodes)**. Once episodes exist:
 1. `episodes.raw_content` = immutable original (verbatim)
@@ -609,7 +609,7 @@ Day 10–14 (Evidence Passages):
 
 ---
 
-## What Second Brain Already Does Better Than Competitors
+## What Shared Living Memory Already Does Better Than Competitors
 
 Before building anything, acknowledge what's already ahead:
 
@@ -617,10 +617,10 @@ Before building anything, acknowledge what's already ahead:
 2. **Contradiction detection with structural resolution** — only AgentMemory comes close
 3. **Auto-linking between related memories** — most competitors require manual linking
 4. **Compression pipeline with eligibility guards** — most competitors have no compression
-5. **Pattern derivation across memories** — unique to Second Brain
+5. **Pattern derivation across memories** — unique to Shared Living Memory
 6. **Graph expansion in recall (BFS)** — most competitors do flat retrieval
 7. **RRF fusion (dense + keyword)** — production-quality hybrid search
 8. **Importance scoring with contradiction adjustment** — adaptive, not static
 9. **Status lifecycle (canonical/draft/deprecated)** — structured memory lifecycle
 
-The gaps are real but the foundation is strong. Phase 1 alone (3 days) closes the most critical gaps (episodes, decay, typed relations) and puts Second Brain ahead of every competitor on the feature matrix.
+The gaps are real but the foundation is strong. Phase 1 alone (3 days) closes the most critical gaps (episodes, decay, typed relations) and puts Shared Living Memory ahead of every competitor on the feature matrix.

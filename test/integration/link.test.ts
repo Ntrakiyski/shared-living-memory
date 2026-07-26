@@ -77,7 +77,7 @@ describe("POST /link", () => {
     const secret = "link-secret";
     db.users.push({
       id: "link-owner", username: "link-owner", normalized_username: "link-owner",
-      auth_key_hash: await hmacKey(secret, AUTH_PEPPER), auth_key_prefix: "sbu_link", status: "active", created_at: 1,
+      auth_key_hash: await hmacKey(secret, AUTH_PEPPER), auth_key_prefix: "slm_link", status: "active", created_at: 1,
     });
     const a = db.entries.find((entry: any) => entry.id === "a")!;
     const b = db.entries.find((entry: any) => entry.id === "b")!;
@@ -87,7 +87,7 @@ describe("POST /link", () => {
 
     const res = await worker.fetch(req("POST", "/link", {
       body: { source_id: "a", target_id: "b" },
-      userCredentials: { username: "link-owner", key: `sbu_link-owner.${secret}` },
+      userCredentials: { username: "link-owner", key: `slm_link-owner.${secret}` },
     }), env, ctx);
 
     expect(res.status).toBe(400);

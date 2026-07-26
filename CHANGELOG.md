@@ -92,12 +92,12 @@
 
 ### Multi-User Team Memory
 
-Second Brain v2 transforms the single-user memory system into a **multi-user shared memory platform** where a team can store, recall, and cross-reference memories together — with strict privacy boundaries.
+Shared Living Memory v2 transforms the single-user memory system into a **multi-user shared memory platform** where a team can store, recall, and cross-reference memories together — with strict privacy boundaries.
 
 ### New Features
 
 #### Accounts & Auth
-- **Per-user accounts** with individual API keys (`sbu_xxx.yyy` format, HMAC-SHA-256 hashed)
+- **Per-user accounts** with individual API keys (`slm_xxx.yyy` format, HMAC-SHA-256 hashed)
 - **Two-step auth flow:** workspace key connects to the server → select or create your account
 - **User key generation** from the dashboard with one-time key reveal
 - **Workspace owner** can create and deactivate accounts
@@ -138,7 +138,7 @@ Second Brain v2 transforms the single-user memory system into a **multi-user sha
 - **`users` table** with `id`, `username`, `normalized_username`, `auth_key_hash`, `auth_key_prefix`, `status`
 - **`owner_user_id` column** on entries, backfilled with `_system` for legacy entries
 - **`buildVisibilityClause(userId)`** helper enforcing `(owner_user_id = ? OR tags NOT LIKE '%"private"%')`
-- **`resolveUser(request, env)`** validates `X-Second-Brain-User` + `X-Second-Brain-User-Key` headers
+- **`resolveUser(request, env)`** validates `X-Shared-Living-Memory-User` + `X-Shared-Living-Memory-User-Key` headers
 - **`escapeLikePattern(s)`** helper escapes `%` and `_` in tag patterns
 - **Per-user MCP** — `apiHandler.fetch` resolves userId from headers, all 10 MCP tools scoped
 

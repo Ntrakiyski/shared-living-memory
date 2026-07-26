@@ -1,7 +1,7 @@
 /**
  * Recall / search pipeline
  *
- * Purpose: Semantic + keyword hybrid search over the second-brain entry store.
+ * Purpose: Semantic + keyword hybrid search over the shared-living-memory entry store.
  *          Embeds the query, runs Vectorize cosine search and D1 keyword LIKE
  *          search in parallel, fuses via Reciprocal Rank Fusion, reranks with
  *          time-decay / importance / tag-boost scoring, deduplicates, optionally

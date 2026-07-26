@@ -1,6 +1,6 @@
 # 13 — Client Credential Propagation
 
-**What to build:** MCP server carries user credentials. Browser extension lets user select identity and stores credentials. CLI accepts credentials via flags or config. iOS shortcuts carry credentials. Obsidian plugin carries credentials. All clients send `X-Second-Brain-User` and `X-Second-Brain-User-Key` headers.
+**What to build:** MCP server carries user credentials. Browser extension lets user select identity and stores credentials. CLI accepts credentials via flags or config. iOS shortcuts carry credentials. Obsidian plugin carries credentials. All clients send `X-Shared-Living-Memory-User` and `X-Shared-Living-Memory-User-Key` headers.
 
 **Blocked by:** Tickets 01, 05
 
@@ -33,11 +33,11 @@
 **Browser extension (`integrations/browser-extension/` or similar):**
 - Add user selection UI to extension popup
 - Store `username` and `key` alongside existing `token` and `url`
-- Send `X-Second-Brain-User` and `X-Second-Brain-User-Key` headers with all requests
+- Send `X-Shared-Living-Memory-User` and `X-Shared-Living-Memory-User-Key` headers with all requests
 
 **CLI (`integrations/cli/` or scripts):**
 - Add `--user` and `--user-key` flags to CLI commands
-- Alternatively, read from config file (`~/.second-brain/config.json`)
+- Alternatively, read from config file (`~/.shared-living-memory/config.json`)
 - Send user headers with all API calls
 
 **iOS shortcuts:**
