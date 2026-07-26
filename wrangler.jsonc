@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "shared-living-memory",
+	"name": "second-brain",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-06-17",
 	"compatibility_flags": [
