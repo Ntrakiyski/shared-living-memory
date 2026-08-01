@@ -291,8 +291,10 @@ A prelaunch failure blocks Stage A. Once the pilot begins, a single safety failu
 - Modify: `src/types.ts`
 - Modify: `src/ingest.ts`
 - Modify: `src/entry-version-service.ts`
+- Modify: `src/db.ts`
 - Modify: `src/routes.ts`
 - Modify: `src/mcp.ts`
+- Modify: `db/schema.sql`
 - Modify: `public/index.html`
 - Modify: `public/utils.js` only if shared response parsing belongs there
 - Test: `test/unit/capture-entry.test.ts`
@@ -300,6 +302,7 @@ A prelaunch failure blocks Stage A. Once the pilot begins, a single safety failu
 - Test: `test/integration/entry-version-service.test.ts`
 - Test: `test/integration/export.test.ts`
 - Test: `test/integration/private-artifact-visibility.test.ts`
+- Test: `test/integration/database-migrations.test.ts`
 - Test: `test/ui/dashboard-security.test.ts`
 
 **Contract:**
@@ -345,6 +348,7 @@ type CaptureResponse = CaptureStoredResponse | CaptureDuplicateResponse;
 - [ ] Reject payloads over 32 KiB, more than 25 tags, tags over 64 characters, and source URLs over 2,048 characters before model/vector work.
 - [ ] Add a narrow shared ingest check for PEM private-key blocks plus structurally valid GitHub (`github_pat_`, `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`), Slack (`xoxb-`, `xoxp-`, `xoxa-`, `xoxr-`, `xoxs-`), Stripe live secret (`sk_live_`), and OpenAI project/service-account (`sk-proj-`, `sk-svcacct-`) token formats. Return 422 `secret_detected`; log only detector name and actor ID. Do not scan general personal information or generic `Bearer` text.
 - [ ] Add `source_url` and `source_title` to manual REST/MCP capture by reusing the existing episode/document envelope. Do not add URL fetching, attachments, batch ingestion, or a new source subsystem.
+- [ ] Add schema migration 11 with `documents.title_origin = explicit|generated`, defaulting existing unmarked rows conservatively to `generated`. Every new document persists the discriminator; titleless replacements refresh only generated titles, explicit incoming titles remain explicit, and restore carries the historical origin. Do not infer provenance from title equality or repurpose `documents.version`.
 - [ ] Make duplicate blocking a typed HTTP 409 `CaptureDuplicateResponse`, display “Not stored—already matches …,” and retain the input for review. Make `apiCapture()` throw for every other non-2xx/application error. Keep user text on failure; show action, ID, visibility, warnings, and conflict/merge outcome only for a true stored response.
 - [ ] Replace ambiguous `/export` behavior with required `mode=my_data|team_public`.
 - [ ] Define `my_data` as the authenticated owner's entries and complete owner-authorized history.
@@ -384,10 +388,12 @@ npm run typecheck
 - [ ] Add a failing reindex test with a current entry vector and multiple current-episode passage vectors. Assert ownership/visibility metadata and `passageId` survive rebuild.
 - [ ] Refactor the current reindex helper to reuse the version vector staging path in `src/entry-version-service.ts`; do not maintain a second entry-only vector format.
 - [ ] Rebuild only current entry projections and current-episode passages. Delete stale vector IDs after successful upsert.
+- [ ] Fail closed for legacy entries whose `current_episode_id` is null. Return metadata-only IDs/counts in the administrative failure report, block readiness, and require an operator to review/version those rows before retrying; never fabricate lineage or retain the legacy entry-only vector format.
 - [ ] Make reindex return `{entries_processed, passages_processed, failed, stale_deleted}` and fail the administrative request when any item fails.
 - [ ] Define the deployment preflight assertion that `wrangler vectorize list-metadata-index` contains the string index `owner_user_id` and boolean index `is_private`; Task 9 wires this assertion into `scripts/release-preflight.sh`.
 - [ ] Keep D1 reauthorization after Vectorize filtering; never add an unfiltered semantic fallback.
 - [ ] Add a remote staging canary with two users and four memories: Alice private, Bob private, Alice public, and a semantic paraphrase target. Against real staging AI/Vectorize, verify own-private/public recall, other-private exclusion, and duplicate detection.
+- [ ] Treat that remote canary as deferred until Tasks 5 and 9 provide an active staging admin and isolated resources. Task 2 builds and locally verifies the script but does not bootstrap, provision, deploy, or mutate external state.
 - [ ] After staging verification, create both metadata indexes before any re-upsert. Cloudflare requires metadata indexes to exist before affected vectors are inserted.
 - [ ] Re-upsert all current entry and passage vectors, wait for processing, then rerun the canaries.
 - [ ] Treat zero filtered results for the known semantic canary as readiness failure even though a normal zero-result query is valid.
@@ -507,7 +513,7 @@ npm run typecheck
 - [ ] Remove or anonymize integration mappings and OAuth references that can lead back to deleted content.
 - [ ] Define the only retained erasure receipt as actor ID, operation ID, timestamp, target UUID/hash, counts, and status. It contains no content, tags, URL, source title, prompt, query, or output excerpt.
 - [ ] Change legacy MCP audit to allowlisted metadata: tool, actor, target IDs, client, duration, outcome, error code, input/output hashes, requested/granted scopes. Never serialize arbitrary tool inputs or outputs.
-- [ ] Add schema migration 11 to null every legacy `input_summary`, `output_summary`, and free-text `error` value after recording a pre-migration D1 Time Travel bookmark. Retain `error_code`, hashes, and already-redacted fields only when they meet the allowlist.
+- [ ] Add schema migration 12 to null every legacy `input_summary`, `output_summary`, and free-text `error` value after recording a pre-migration D1 Time Travel bookmark. Retain `error_code`, hashes, and already-redacted fields only when they meet the allowlist.
 - [ ] Route the supported human mutation set—capture, append, edit, deprecate, restore, visibility, permanent delete, user/key administration, and recall feedback—through the existing mandatory-audit pattern. Persist intent before mutation and fail closed if that write fails. If the mutation commits but audit finalization fails, return 202 `{ok:true,audit_status:"pending",correlation_id}`, create reconciliation, and tell clients not to retry; never report a committed non-idempotent mutation as failed.
 - [ ] Rename the dashboard action to `Permanently delete` and require explicit confirmation. Normal correction is delivered in Task 7.
 - [ ] Require MCP `forget` to receive `confirm_entry_id` equal to `entry_id`; its description states that agents must prefer `set_status: deprecated` and must not invoke permanent deletion implicitly.
@@ -560,7 +566,7 @@ An additional failure-path assertion makes Vectorize deletion fail, expects 202/
 - [ ] Add a small People panel for admins: create user, see role/active status, promote/demote without removing the final admin, rotate, and deactivate. Once deactivation starts it is irreversible because private data is purged; a returning person receives a new user/key after the prior cleanup completes.
 - [ ] Keep browser sessions non-persistent by default. Tell users to store keys in a password manager; do not add passwords or another identity provider for this pilot.
 - [ ] Add a break-glass runbook using Cloudflare operator access and a direct D1 administrative repair only when both admins are unavailable. Every use requires immediate workspace/personal-key rotation and incident review.
-- [ ] Require deactivation requests to include an active replacement custodian for public entries and `private_export_acknowledgement: completed|waived`. Reject deactivation without both and record the fixed acknowledgement code/timestamp in the mandatory deactivation audit receipt. The user exports while still active; deactivation then purges private data, transfers public custody, preserves `created_by_user_id`, and disables the key.
+- [ ] Require deactivation requests to include an active replacement custodian for public entries and `private_export_acknowledgement: completed|waived`. Reject deactivation without both and record the fixed acknowledgement code/timestamp in the mandatory deactivation audit receipt; do not add duplicate acknowledgement columns to `user_deactivations`. The user exports while still active; deactivation then purges private data, transfers public custody, preserves `created_by_user_id`, and disables the key.
 - [ ] Test the exact order: authenticated `my_data` export succeeds, acknowledgement is recorded, deactivation completes, post-deactivation export/auth fails, private content is gone, and public recall names the original author plus new custodian.
 - [ ] Before launch, rotate `AUTH_TOKEN` to a generated high-entropy value and provision a backup admin under separate control. This is an operator action, not a value committed to the repository.
 
@@ -610,7 +616,8 @@ npm run typecheck
 
 - [ ] Replace every old Second Brain hostname, header, skill name, and `sbu_` key prefix with the current contract.
 - [ ] Make `npx skills add ... --list` expose `shared-living-memory-mcp-knowledgebase` and make the documented install command succeed on a clean temporary directory.
-- [ ] Add `MCP_OAUTH_ENABLED` defaulting to false. When false, reject OAuth authorization, dynamic registration, and token issuance while preserving the direct personal-bearer external-token path. Clear pre-pilot OAuth KV grants before inviting users.
+- [ ] Add `MCP_OAUTH_ENABLED` defaulting to false. When false, intercept OAuth authorization, dynamic registration, token issuance, and OAuth discovery metadata before the provider wrapper while preserving the direct personal-bearer external-token path.
+- [ ] Clear only the pre-pilot OAuth KV prefixes `client:`, `grant:`, and `token:` before inviting users. Never wipe unrelated integration or application keys.
 - [ ] Remove OAuth setup from the participant path and label it unsupported until key-version revocation and a full authorize → token → MCP → rotate/deactivate test are implemented.
 - [ ] Provide exact personal-bearer examples for Codex, Claude Code, and a generic remote MCP client. Mark unverified clients as unsupported instead of claiming automatic configuration.
 - [ ] Fix checked-in hooks only if they remain advertised. If retained, use personal bearer auth and `query`, not `q`; otherwise move them under an explicit experimental heading.
@@ -697,7 +704,7 @@ npm run typecheck
 - Test: `test/integration/forget.test.ts`
 - Test: `test/integration/database-migrations.test.ts`
 
-**Schema migration 12:**
+**Schema migration 13:**
 
 ```sql
 CREATE TABLE recall_events (
@@ -736,6 +743,7 @@ No query string, result content, prompt, model answer, or free-text feedback is 
 - [ ] Add `POST /recall-feedback` with owner enforcement, one mutable rating per event, and the fixed reason codes above.
 - [ ] Add dashboard helpful/not-helpful controls and an MCP `rate_recall` tool. Feedback is analytics-only for the entire pilot.
 - [ ] Add admin-only `GET /pilot-metrics?days=14` with cohort size, first-capture rate, weekly active humans, recalls, zero-result rate, semantic-unavailable rate, rated count, helpful rate/reasons, and p50/p95 duration.
+- [ ] Define first-capture rate exactly: denominator is active eligible human pilot users; numerator is those whose first owned capture occurs within 24 hours of `users.created_at`. Exclude system, service, and canary actors from both.
 - [ ] Retain recall events/feedback for 30 days, delete a deactivated user's rows when private-data purge is selected, and add the post-pilot purge command to the operator runbook.
 - [ ] Extend erasure after these tables are introduced: delete feedback first, then every recall event whose `result_entry_ids` contains the erased entry ID using SQLite `json_each`; prove no deleted UUID remains.
 - [ ] Derive capture/onboarding counts from existing users/entries/episodes. Do not add a generalized analytics event bus.
@@ -770,6 +778,7 @@ Provisioning Cloudflare resources, rotating secrets, deploying Workers, and enab
 - Modify: `src/routes.ts`
 - Modify: `src/pilot-metrics.ts`
 - Modify: `src/vector-cleanup.ts`
+- Modify: `db/schema.sql`
 - Modify: `package.json`
 - Modify: `package-lock.json`
 - Modify: `vitest.config.ts`
@@ -780,6 +789,7 @@ Provisioning Cloudflare resources, rotating secrets, deploying Workers, and enab
 - Create: `docs/team-pilot/operator-runbook.md`
 - Create: `docs/team-pilot/recovery-runbook.md`
 - Test: `test/integration/health.test.ts`
+- Test: `test/integration/database-migrations.test.ts`
 - Test: `test/unit/worker-entrypoint.test.ts`
 
 **Steps:**
@@ -793,6 +803,7 @@ Provisioning Cloudflare resources, rotating secrets, deploying Workers, and enab
 - [ ] Add response security headers `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Permissions-Policy` denying unused sensors, and framing denial. Treat a strict nonce-based CSP as post-pilot because the current single-file dashboard contains inline assets.
 - [ ] Split scheduled work by purpose. Keep vector cleanup, deactivation resume, mandatory-audit reconciliation, and visibility/awareness repair active and monitored. Gate only compression, staleness mutation, graph/contradiction generation behind `DERIVED_KNOWLEDGE_JOBS_ENABLED=false`, and Notion mirroring behind `INTEGRATION_SYNC_ENABLED=false` for the pilot; never exit the whole scheduled handler.
 - [ ] Add a five-minute trigger for the fixed canary and repair/reconciliation jobs. Retain the daily trigger for lifecycle/integration dispatch, but prove the two disabled feature flags prevent derived-knowledge and integration writes during the pilot.
+- [ ] Add schema migration 14 for one minimal content-free operational-job status table keyed by fixed job name, with last-started/completed timestamps, outcome code, and deployment ID. Use it for readiness freshness instead of in-memory isolate state; store no query, memory, prompt, token, or error text.
 - [ ] Make readiness return 503 when D1 or Vectorize is unreachable, or the latest fixed semantic canary is older than ten minutes/failed. Metadata-index existence remains a release-preflight check because it is not an application authorization boundary. Keep liveness separate and cheap.
 - [ ] Mark readiness unhealthy when the oldest vector cleanup exceeds 10 minutes, mandatory-audit reconciliation exceeds 5 minutes, active deactivation exceeds 30 minutes, or the five-minute repair/canary run is older than 10 minutes. Surface awareness repair older than 24 hours and 20+ auth failures in five minutes as operator warnings without letting unauthenticated traffic force readiness down.
 - [ ] Provision a dedicated non-team `pilot-canary` user that owns no real memory, store its personal key only as an encrypted GitHub Actions secret, record its ID in `PILOT_CANARY_USER_ID`, and tag its entries `system:pilot-canary` with recall client `canary`. Run semantic recall every five minutes and alert on failure without storing canary content in audit/log text. Run complete capture → recall → permanent-delete once per day and during every release preflight rather than creating/deleting data every five minutes.
@@ -984,9 +995,9 @@ This ordering preserves the strongest lesson from the comparison: first make evi
 
 ### Recommended execution shape
 
-- Implement Tasks 1, 2, and 5 as separate branches/worktrees because they touch distinct critical boundaries.
-- Merge them before Tasks 3, 4, 6, and 7 to reduce contract conflicts.
-- Implement Task 8 only after recall response shape is stable.
+- Execute and review in dependency order: Task 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10.
+- Task 3 consumes Task 2's canonical passage/vector identity; Task 4 establishes migration 12 and erasure/audit semantics before Task 5 offboarding; Task 6 consumes Task 5 personal-key bootstrap; Task 8 consumes the stable recall, erasure, deactivation, and correction contracts from Tasks 3–7.
+- Use a fresh implementation agent and an independent review for each task, but keep this single integration worktree so every later task is verified against the accepted prior contracts.
 - Implement Task 9 before any production migration or teammate invitation.
 - Run Task 10 as a dedicated release rehearsal. After its prelaunch acceptance/documentation passes, start the Section 8 learning window; do not fold failed findings into ad hoc patches without updating this plan.
 
