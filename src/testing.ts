@@ -96,9 +96,7 @@ export { hmacKey, generateApiKey, requireAuthAsync, resolveUser } from "./auth";
 export {
   initializeDatabase,
   _resetDbReady,
-  assertVectorizeMetadataIndexes,
   checkVectorizeHealth,
-  evaluateKnownSemanticCanary,
   VECTORIZE_INDEX_NAME,
   VectorizeHealth,
   getSystemUserId,

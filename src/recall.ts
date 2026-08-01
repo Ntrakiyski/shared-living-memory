@@ -682,7 +682,11 @@ export async function recallEntries(
     const vectorizeTopK = Math.min(topK * VECTORIZE_TOP_K_MULTIPLIER, 50);
     const denseQuery = async (): Promise<{ matches: VectorizeMatch[] }> => {
       try {
-        const scoped = await queryVisibleVectors(values, env, { topK: vectorizeTopK, userId });
+        const scoped = await queryVisibleVectors(values, env, {
+          topK: vectorizeTopK,
+          userId,
+          includeHistoricalEpisodes: knownAt !== undefined || asOf !== undefined,
+        });
         return { matches: scoped.matches };
       } catch (e) {
         // This is the authoritative signal that the Vectorize index is unreachable —
@@ -702,7 +706,11 @@ export async function recallEntries(
 
     if (!semanticUnavailable && results.matches.length && results.matches[0].score < DUPLICATE_FLAG_THRESHOLD) {
       try {
-        const scoped = await queryVisibleVectors(values, env, { topK: 50, userId });
+        const scoped = await queryVisibleVectors(values, env, {
+          topK: 50,
+          userId,
+          includeHistoricalEpisodes: knownAt !== undefined || asOf !== undefined,
+        });
         results = { matches: scoped.matches };
       } catch (e) {
         // Narrow query already succeeded with real matches, so the index works.

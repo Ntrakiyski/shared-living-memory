@@ -12,7 +12,7 @@ function collect(value, found = []) {
   const property = normalized.get("propertyname") ?? normalized.get("property");
   const type = normalized.get("indextype") ?? normalized.get("type");
   if (typeof property === "string" && typeof type === "string") {
-    found.push({ property: property.toLowerCase(), type: type.toLowerCase() });
+    found.push({ property, type: type.toLowerCase() });
   }
   for (const item of Object.values(value)) collect(item, found);
   return found;

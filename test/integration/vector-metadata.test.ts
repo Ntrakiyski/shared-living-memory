@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import worker, { _resetDbReady, drainVectorCleanupQueue, reindexAllVectors } from "../../src/testing";
+import worker, {
+  _resetDbReady,
+  drainVectorCleanupQueue,
+  forgetEntry,
+  reindexAllVectors,
+} from "../../src/testing";
 import { makeTestEnv, makeTestDb, makeVectorizeMock } from "../helpers/make-env";
 import { req } from "../helpers/make-request";
 import type { Env } from "../../src/testing";
@@ -379,6 +384,202 @@ describe("Vector Metadata & Filtering", () => {
       "Re-index cleanup queue diagnostic update failed",
       expect.objectContaining({ entry_id: "cleanup-diagnostic" }),
     );
+  });
+
+  it("cleans only newly staged IDs when guarded projection persistence loses a race", async () => {
+    const deleteByIds = vi.fn().mockResolvedValue({ mutationId: "cleanup-ok" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        upsert: vi.fn().mockImplementation(async () => {
+          Object.assign(db.entries[0], {
+            revision: 2,
+            current_episode_id: "episode-race-winner",
+            vector_ids: '["ev:episode-race-winner:0"]',
+          });
+          return { mutationId: "staged" };
+        }),
+        deleteByIds,
+      }),
+    });
+    db.entries.push({
+      id: "race", content: "losing projection", tags: "[]", source: "api", created_at: 1000,
+      vector_ids: '["ev:episode-race-loser:0"]', owner_user_id: "alice-id", revision: 1,
+      visibility: "private", current_episode_id: "episode-race-loser",
+    });
+    db.episodes.push({
+      id: "episode-race-loser", entry_id: "race", mutation_id: "mutation-race-loser",
+      materialized_content: "losing projection",
+    });
+    db.passages.push({
+      id: "race-passage", entry_id: "race", episode_id: "episode-race-loser",
+      content: "newly staged passage", vector_ids: '["legacy-race-passage"]',
+    });
+
+    const result = await reindexAllVectors(env);
+
+    expect(result).toMatchObject({ entries_processed: 0, failed: 1, stale_deleted: 0 });
+    expect(result.failures).toEqual([expect.objectContaining({
+      entry_id: "race",
+      code: "projection_persist_failed",
+    })]);
+    expect(deleteByIds).toHaveBeenCalledOnce();
+    expect(deleteByIds).toHaveBeenCalledWith(["pv:race-passage"]);
+    expect(deleteByIds.mock.calls[0][0]).not.toContain("ev:episode-race-loser:0");
+    expect(db.entries[0]).toMatchObject({
+      revision: 2,
+      current_episode_id: "episode-race-winner",
+      vector_ids: '["ev:episode-race-winner:0"]',
+    });
+    expect(db.passages[0].vector_ids).toBe('["legacy-race-passage"]');
+    expect(db.vector_cleanup_queue).toEqual([]);
+  });
+
+  it("directly deletes new-only vectors when the aborted-cleanup queue insert fails", async () => {
+    const deleteByIds = vi.fn().mockResolvedValue({ mutationId: "cleanup-ok" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        upsert: vi.fn().mockImplementation(async () => {
+          Object.assign(db.entries[0], {
+            revision: 2,
+            current_episode_id: "episode-queue-race-winner",
+            vector_ids: '["ev:episode-queue-race-winner:0"]',
+          });
+          return { mutationId: "staged" };
+        }),
+        deleteByIds,
+      }),
+    });
+    db.entries.push({
+      id: "queue-race", content: "losing projection", tags: "[]", source: "api", created_at: 1000,
+      vector_ids: '["ev:episode-queue-race-loser:0"]', owner_user_id: "alice-id", revision: 1,
+      visibility: "private", current_episode_id: "episode-queue-race-loser",
+    });
+    db.episodes.push({
+      id: "episode-queue-race-loser", entry_id: "queue-race", mutation_id: "mutation-queue-race-loser",
+      materialized_content: "losing projection",
+    });
+    db.passages.push({
+      id: "queue-race-passage", entry_id: "queue-race", episode_id: "episode-queue-race-loser",
+      content: "newly staged passage", vector_ids: '["legacy-queue-race-passage"]',
+    });
+    const originalPrepare = env.DB.prepare.bind(env.DB);
+    vi.spyOn(env.DB, "prepare").mockImplementation((sql: string) => {
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      if (normalized.startsWith("INSERT INTO vector_cleanup_queue")
+          && normalized.includes("VALUES")) {
+        return {
+          bind: () => ({ run: vi.fn().mockRejectedValue(new Error("D1 queue outage")) }),
+        } as unknown as D1PreparedStatement;
+      }
+      return originalPrepare(sql);
+    });
+
+    const result = await reindexAllVectors(env);
+
+    expect(result.failures).toEqual([expect.objectContaining({ code: "projection_persist_failed" })]);
+    expect(deleteByIds).toHaveBeenCalledOnce();
+    expect(deleteByIds).toHaveBeenCalledWith(["pv:queue-race-passage"]);
+    expect(db.vector_cleanup_queue).toEqual([]);
+  });
+
+  it("reports a safe unreconciled error when queueing and direct new-only cleanup both fail", async () => {
+    const deleteByIds = vi.fn().mockRejectedValue(new Error("Vectorize cleanup outage"));
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        upsert: vi.fn().mockImplementation(async () => {
+          Object.assign(db.entries[0], {
+            revision: 2,
+            current_episode_id: "episode-double-failure-winner",
+            vector_ids: '["ev:episode-double-failure-winner:0"]',
+          });
+          return { mutationId: "staged" };
+        }),
+        deleteByIds,
+      }),
+    });
+    db.entries.push({
+      id: "double-failure", content: "sensitive losing content", tags: "[]", source: "api",
+      created_at: 1000, vector_ids: '["ev:episode-double-failure-loser:0"]',
+      owner_user_id: "alice-id", revision: 1, visibility: "private",
+      current_episode_id: "episode-double-failure-loser",
+    });
+    db.episodes.push({
+      id: "episode-double-failure-loser", entry_id: "double-failure",
+      mutation_id: "mutation-double-failure-loser", materialized_content: "sensitive losing content",
+    });
+    db.passages.push({
+      id: "double-failure-passage", entry_id: "double-failure",
+      episode_id: "episode-double-failure-loser", content: "sensitive passage",
+      vector_ids: '["legacy-double-failure-passage"]',
+    });
+    const originalPrepare = env.DB.prepare.bind(env.DB);
+    vi.spyOn(env.DB, "prepare").mockImplementation((sql: string) => {
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      if (normalized.startsWith("INSERT INTO vector_cleanup_queue")
+          && normalized.includes("VALUES")) {
+        return {
+          bind: () => ({ run: vi.fn().mockRejectedValue(new Error("D1 queue outage")) }),
+        } as unknown as D1PreparedStatement;
+      }
+      return originalPrepare(sql);
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await reindexAllVectors(env);
+
+    expect(result.failures).toEqual([expect.objectContaining({ code: "projection_persist_failed" })]);
+    expect(deleteByIds).toHaveBeenCalledOnce();
+    expect(deleteByIds).toHaveBeenCalledWith(["pv:double-failure-passage"]);
+    expect(consoleError).toHaveBeenCalledWith(
+      "Re-index aborted cleanup unreconciled",
+      { entry_id: "double-failure", error: "Vectorize cleanup outage" },
+    );
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("sensitive");
+    expect(db.vector_cleanup_queue).toEqual([]);
+  });
+
+  it("keeps raced new-only IDs durably queued so a later forget cannot miss them", async () => {
+    const deleteByIds = vi.fn()
+      .mockRejectedValueOnce(new Error("orphan cleanup outage"))
+      .mockResolvedValue({ mutationId: "later-ok" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        upsert: vi.fn().mockImplementation(async () => {
+          Object.assign(db.entries[0], {
+            revision: 2,
+            current_episode_id: "episode-race-winner",
+            vector_ids: '["ev:episode-race-winner:0"]',
+          });
+          return { mutationId: "staged" };
+        }),
+        deleteByIds,
+      }),
+    });
+    db.entries.push({
+      id: "race-forget", content: "losing projection", tags: "[]", source: "api", created_at: 1000,
+      vector_ids: '["ev:episode-race-loser:0"]', owner_user_id: "alice-id", revision: 1,
+      visibility: "private", current_episode_id: "episode-race-loser",
+    });
+    db.episodes.push({
+      id: "episode-race-loser", entry_id: "race-forget", mutation_id: "mutation-race-loser",
+      materialized_content: "losing projection",
+    });
+    db.passages.push({
+      id: "race-forget-passage", entry_id: "race-forget", episode_id: "episode-race-loser",
+      content: "newly staged passage", vector_ids: '["legacy-race-passage"]',
+    });
+
+    const result = await reindexAllVectors(env);
+    expect(result.failures).toEqual([expect.objectContaining({ code: "projection_persist_failed" })]);
+    expect(db.vector_cleanup_queue).toHaveLength(1);
+    expect(JSON.parse(db.vector_cleanup_queue[0].vector_ids)).toEqual(["pv:race-forget-passage"]);
+
+    await expect(forgetEntry("race-forget", env)).resolves.toMatchObject({ status: "deleted" });
+    expect(db.vector_cleanup_queue).toEqual([]);
+    expect(deleteByIds.mock.calls.map(([ids]) => ids)).toEqual([
+      ["pv:race-forget-passage"],
+      ["ev:episode-race-winner:0", "legacy-race-passage", "pv:race-forget-passage"],
+    ]);
   });
 
   it("POST /vectorize-pending?reindex=true triggers re-index", async () => {

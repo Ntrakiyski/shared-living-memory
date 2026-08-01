@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 
 const EXIT = {
   config: 2,
@@ -13,6 +14,7 @@ const EXIT = {
   cleanup: 18,
 };
 const productionOrigin = "https://shared-living-memory.nikolay-trakiyski.workers.dev";
+export const REQUEST_TIMEOUT_MS = 10_000;
 
 class CanaryFailure extends Error {
   constructor(code, exitCode, details = {}) {
@@ -23,56 +25,90 @@ class CanaryFailure extends Error {
   }
 }
 
-const rawBaseUrl = process.env.SLM_BASE_URL?.trim();
-const adminKey = process.env.SLM_ADMIN_KEY?.trim();
-if (!rawBaseUrl || !adminKey) {
-  console.error("CANARY_CONFIG_MISSING");
-  process.exit(EXIT.config);
+let baseUrl;
+let adminKey;
+
+export function buildCanaryScenario(suffix) {
+  return {
+    contents: {
+      alicePrivate: `Canary ${suffix}: A crimson ledger rests beneath the attic floorboards.`,
+      bobPrivate: `Canary ${suffix}: A cobalt folder is sealed inside the basement cabinet.`,
+      alicePublic: `Canary ${suffix}: The records handbook recommends guarded storage for accounting volumes.`,
+      semantic: `Canary ${suffix}: A rehearsal creature adores softly glowing amber illumination.`,
+    },
+    probes: [
+      {
+        name: "alice-own-private",
+        actor: "alice",
+        query: "Where is her hidden financial notebook concealed?",
+        expected: "alicePrivate",
+        forbidden: ["bobPrivate"],
+      },
+      {
+        name: "bob-own-private",
+        actor: "bob",
+        query: "Where does he conceal the blue document binder?",
+        expected: "bobPrivate",
+        forbidden: ["alicePrivate"],
+      },
+      {
+        name: "bob-public-privacy-decoy",
+        actor: "bob",
+        query: "What guidance is shared about protecting financial books?",
+        expected: "alicePublic",
+        forbidden: ["alicePrivate"],
+      },
+      {
+        name: "alice-semantic",
+        actor: "alice",
+        query: "Which colour temperature is favored by the staging mascot?",
+        expected: "semantic",
+        forbidden: [],
+      },
+    ],
+  };
 }
 
-let baseUrl;
-try {
-  baseUrl = new URL(rawBaseUrl);
-} catch {
-  console.error("CANARY_URL_INVALID");
-  process.exit(EXIT.config);
+export async function fetchWithTimeout(
+  fetchImpl,
+  input,
+  init = {},
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  consume = async response => response,
+) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(input, { ...init, signal: controller.signal });
+    return await consume(response);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
-const configuredProduction = process.env.SLM_PRODUCTION_URL?.trim();
-let configuredProductionOrigin;
-try {
-  configuredProductionOrigin = configuredProduction
-    ? new URL(configuredProduction).origin
-    : undefined;
-} catch {
-  console.error("CANARY_PRODUCTION_URL_INVALID");
-  process.exit(EXIT.config);
-}
-const forbiddenOrigins = new Set([
-  new URL(productionOrigin).origin,
-  ...(configuredProductionOrigin ? [configuredProductionOrigin] : []),
-]);
-if (forbiddenOrigins.has(baseUrl.origin)) {
-  console.error("CANARY_PRODUCTION_REFUSED");
-  process.exit(EXIT.config);
-}
-baseUrl.pathname = baseUrl.pathname.replace(/\/$/, "");
 
 async function request(path, { method = "GET", body, user } = {}) {
-  const response = await fetch(new URL(`${baseUrl.pathname}${path}`, baseUrl), {
-    method,
-    headers: {
-      Authorization: `Bearer ${user?.key ?? adminKey}`,
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+  return fetchWithTimeout(
+    fetch,
+    new URL(`${baseUrl.pathname}${path}`, baseUrl),
+    {
+      method,
+      headers: {
+        Authorization: `Bearer ${user?.key ?? adminKey}`,
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    data = null;
-  }
-  return { response, data };
+    REQUEST_TIMEOUT_MS,
+    async response => {
+      let data;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+      return { response, data };
+    },
+  );
 }
 
 async function createUser(username) {
@@ -121,81 +157,117 @@ async function pollFor(user, query, expectedId) {
   });
 }
 
-const suffix = `${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 6)}`;
-const contents = {
-  alicePrivate: `Canary ${suffix}: Alice keeps the cedar notebook in a locked drawer.`,
-  bobPrivate: `Canary ${suffix}: Bob stores the cobalt folder in a sealed cabinet.`,
-  alicePublic: `Canary ${suffix}: The team lunch is scheduled for Thursday.`,
-  semantic: `Canary ${suffix}: A rehearsal creature adores softly glowing amber illumination.`,
-};
-const created = [];
-let primaryFailure;
-
-try {
-  const alice = await createUser(`canary_a_${suffix}`.slice(0, 32));
-  const bob = await createUser(`canary_b_${suffix}`.slice(0, 32));
-  const ids = {};
-  ids.alicePrivate = await capture(alice, contents.alicePrivate, "private");
-  created.push([alice, ids.alicePrivate]);
-  ids.bobPrivate = await capture(bob, contents.bobPrivate, "private");
-  created.push([bob, ids.bobPrivate]);
-  ids.alicePublic = await capture(alice, contents.alicePublic, "public");
-  created.push([alice, ids.alicePublic]);
-  ids.semantic = await capture(alice, contents.semantic, "private");
-  created.push([alice, ids.semantic]);
-
-  const aliceOwn = await pollFor(alice, "cedar notebook locked drawer", ids.alicePrivate);
-  if (aliceOwn.some(result => result.id === ids.bobPrivate)) {
-    throw new CanaryFailure("CANARY_OTHER_PRIVATE_VISIBLE", EXIT.privacy);
+function configure() {
+  const rawBaseUrl = process.env.SLM_BASE_URL?.trim();
+  adminKey = process.env.SLM_ADMIN_KEY?.trim();
+  if (!rawBaseUrl || !adminKey) {
+    console.error("CANARY_CONFIG_MISSING");
+    process.exit(EXIT.config);
   }
-  await pollFor(bob, "cobalt folder sealed cabinet", ids.bobPrivate);
-  const bobProbe = await recall(bob, "cedar notebook locked drawer");
-  if (bobProbe.some(result => result.id === ids.alicePrivate)) {
-    throw new CanaryFailure("CANARY_OTHER_PRIVATE_VISIBLE", EXIT.privacy);
-  }
+
   try {
-    await pollFor(bob, "team meal weekday", ids.alicePublic);
-  } catch (error) {
-    if (error instanceof CanaryFailure && error.code === "CANARY_SEMANTIC_UNAVAILABLE") throw error;
-    throw new CanaryFailure("CANARY_PUBLIC_MISSING", EXIT.public, error.details);
+    baseUrl = new URL(rawBaseUrl);
+  } catch {
+    console.error("CANARY_URL_INVALID");
+    process.exit(EXIT.config);
   }
-  // No content token is repeated here: keyword fallback cannot satisfy the
-  // known semantic readiness check if filtered Vectorize returns zero results.
-  await pollFor(alice, "Which colour temperature is favored by the staging mascot?", ids.semantic);
+  const configuredProduction = process.env.SLM_PRODUCTION_URL?.trim();
+  let configuredProductionOrigin;
+  try {
+    configuredProductionOrigin = configuredProduction
+      ? new URL(configuredProduction).origin
+      : undefined;
+  } catch {
+    console.error("CANARY_PRODUCTION_URL_INVALID");
+    process.exit(EXIT.config);
+  }
+  const forbiddenOrigins = new Set([
+    new URL(productionOrigin).origin,
+    ...(configuredProductionOrigin ? [configuredProductionOrigin] : []),
+  ]);
+  if (forbiddenOrigins.has(baseUrl.origin)) {
+    console.error("CANARY_PRODUCTION_REFUSED");
+    process.exit(EXIT.config);
+  }
+  baseUrl.pathname = baseUrl.pathname.replace(/\/$/, "");
+}
 
-  const duplicate = await request("/capture", {
-    method: "POST",
-    user: alice,
-    body: { content: contents.semantic, visibility: "private", tags: ["system:semantic-canary"] },
-  });
-  if (duplicate.response.status !== 409
-      || duplicate.data?.action !== "blocked_duplicate"
-      || duplicate.data?.match_id !== ids.semantic) {
-    throw new CanaryFailure("CANARY_DUPLICATE_NOT_BLOCKED", EXIT.duplicate, {
-      status: duplicate.response.status,
+async function main() {
+  configure();
+  const suffix = `${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 6)}`;
+  const scenario = buildCanaryScenario(suffix);
+  const { contents, probes } = scenario;
+  const created = [];
+  let primaryFailure;
+
+  try {
+    const alice = await createUser(`canary_a_${suffix}`.slice(0, 32));
+    const bob = await createUser(`canary_b_${suffix}`.slice(0, 32));
+    const actors = { alice, bob };
+    const ids = {};
+    ids.alicePrivate = await capture(alice, contents.alicePrivate, "private");
+    created.push([alice, ids.alicePrivate]);
+    ids.bobPrivate = await capture(bob, contents.bobPrivate, "private");
+    created.push([bob, ids.bobPrivate]);
+    ids.alicePublic = await capture(alice, contents.alicePublic, "public");
+    created.push([alice, ids.alicePublic]);
+    ids.semantic = await capture(alice, contents.semantic, "private");
+    created.push([alice, ids.semantic]);
+
+    for (const probe of probes) {
+      let results;
+      try {
+        results = await pollFor(actors[probe.actor], probe.query, ids[probe.expected]);
+      } catch (error) {
+        if (probe.name !== "bob-public-privacy-decoy"
+            || (error instanceof CanaryFailure && error.code === "CANARY_SEMANTIC_UNAVAILABLE")) {
+          throw error;
+        }
+        throw new CanaryFailure("CANARY_PUBLIC_MISSING", EXIT.public, error.details);
+      }
+      if (probe.forbidden.some(key => results.some(result => result.id === ids[key]))) {
+        throw new CanaryFailure("CANARY_OTHER_PRIVATE_VISIBLE", EXIT.privacy);
+      }
+    }
+
+    const duplicate = await request("/capture", {
+      method: "POST",
+      user: alice,
+      body: { content: contents.semantic, visibility: "private", tags: ["system:semantic-canary"] },
     });
-  }
-  console.log(JSON.stringify({ ok: true, code: "CANARY_OK", checks: 6 }));
-} catch (error) {
-  primaryFailure = error instanceof CanaryFailure
-    ? error
-    : new CanaryFailure("CANARY_REQUEST_FAILED", EXIT.semanticUnavailable);
-} finally {
-  let cleanupFailed = false;
-  for (const [user, id] of created.reverse()) {
-    try {
-      const { response } = await request("/forget", { method: "POST", user, body: { id } });
-      if (!response.ok) cleanupFailed = true;
-    } catch {
-      cleanupFailed = true;
+    if (duplicate.response.status !== 409
+        || duplicate.data?.action !== "blocked_duplicate"
+        || duplicate.data?.match_id !== ids.semantic) {
+      throw new CanaryFailure("CANARY_DUPLICATE_NOT_BLOCKED", EXIT.duplicate, {
+        status: duplicate.response.status,
+      });
+    }
+    console.log(JSON.stringify({ ok: true, code: "CANARY_OK", checks: probes.length + 1 }));
+  } catch (error) {
+    primaryFailure = error instanceof CanaryFailure
+      ? error
+      : new CanaryFailure("CANARY_REQUEST_FAILED", EXIT.semanticUnavailable);
+  } finally {
+    let cleanupFailed = false;
+    for (const [user, id] of created.reverse()) {
+      try {
+        const { response } = await request("/forget", { method: "POST", user, body: { id } });
+        if (!response.ok) cleanupFailed = true;
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+    if (!primaryFailure && cleanupFailed) {
+      primaryFailure = new CanaryFailure("CANARY_CLEANUP_FAILED", EXIT.cleanup);
     }
   }
-  if (!primaryFailure && cleanupFailed) {
-    primaryFailure = new CanaryFailure("CANARY_CLEANUP_FAILED", EXIT.cleanup);
+
+  if (primaryFailure) {
+    console.error(JSON.stringify({ ok: false, code: primaryFailure.code, ...primaryFailure.details }));
+    process.exit(primaryFailure.exitCode);
   }
 }
 
-if (primaryFailure) {
-  console.error(JSON.stringify({ ok: false, code: primaryFailure.code, ...primaryFailure.details }));
-  process.exit(primaryFailure.exitCode);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
 }

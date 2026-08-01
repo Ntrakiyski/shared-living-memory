@@ -232,6 +232,8 @@ export async function reindexAllVectors(
       ...passageIds.flatMap(ids => ids ?? []),
     ])];
     const newTrackedIds = new Set(staged.allVectorIds);
+    const oldTrackedIdSet = new Set(oldTrackedIds);
+    const newlyStagedIds = staged.allVectorIds.filter(id => !oldTrackedIdSet.has(id));
     const staleIds = oldTrackedIds.filter(id => !newTrackedIds.has(id));
     const cleanupQueueId = staleIds.length ? crypto.randomUUID() : null;
     const now = Date.now();
@@ -245,8 +247,16 @@ export async function reindexAllVectors(
       ),
       ...plannedPassages.map(passage => env.DB.prepare(
         `UPDATE passages SET vector_ids = ?
-         WHERE id = ? AND entry_id = ? AND episode_id = ?`,
-      ).bind(JSON.stringify([passage.vectorId]), passage.id, entry.id, entry.current_episode_id)),
+         WHERE id = ? AND entry_id = ? AND episode_id = ?
+           AND EXISTS (
+             SELECT 1 FROM entries e
+             WHERE e.id = ? AND e.owner_user_id = ?
+               AND e.revision = ? AND e.current_episode_id = ?
+           )`,
+      ).bind(
+        JSON.stringify([passage.vectorId]), passage.id, entry.id, entry.current_episode_id,
+        entry.id, entry.owner_user_id, entry.revision, entry.current_episode_id,
+      )),
     ];
     if (cleanupQueueId) {
       statements.push(env.DB.prepare(
@@ -259,7 +269,7 @@ export async function reindexAllVectors(
       ).bind(
         cleanupQueueId,
         JSON.stringify(staleIds),
-        `semantic-reindex:${entry.current_episode_id}`,
+        `entry-version:${entry.id}:semantic-reindex:${entry.current_episode_id}`,
         now,
         now,
         entry.id,
@@ -276,6 +286,54 @@ export async function reindexAllVectors(
       }
     } catch (error) {
       console.error("Re-index projection persistence failed", { entry_id: entry.id, error: safeErrorMessage(error) });
+      if (newlyStagedIds.length) {
+        const abortedCleanupId = crypto.randomUUID();
+        try {
+          await env.DB.prepare(
+            `INSERT INTO vector_cleanup_queue (
+               id, vector_ids, reason, attempts, last_error, created_at, updated_at
+             ) VALUES (?, ?, ?, 0, NULL, ?, ?)`,
+          ).bind(
+            abortedCleanupId,
+            JSON.stringify(newlyStagedIds),
+            `entry-version:${entry.id}:semantic-reindex-aborted:${entry.current_episode_id}`,
+            Date.now(),
+            Date.now(),
+          ).run();
+          try {
+            await env.VECTORIZE.deleteByIds(newlyStagedIds);
+            await env.DB.prepare(
+              `DELETE FROM vector_cleanup_queue WHERE id = ?`,
+            ).bind(abortedCleanupId).run();
+          } catch (cleanupError) {
+            try {
+              await env.DB.prepare(
+                `UPDATE vector_cleanup_queue
+                 SET attempts = attempts + 1, last_error = ?, updated_at = ?
+                 WHERE id = ?`,
+              ).bind(safeErrorMessage(cleanupError), Date.now(), abortedCleanupId).run();
+            } catch (diagnosticError) {
+              console.error("Re-index aborted cleanup diagnostic update failed", {
+                entry_id: entry.id,
+                error: safeErrorMessage(diagnosticError),
+              });
+            }
+          }
+        } catch (queueError) {
+          console.error("Re-index aborted cleanup queue insert failed", {
+            entry_id: entry.id,
+            error: safeErrorMessage(queueError),
+          });
+          try {
+            await env.VECTORIZE.deleteByIds(newlyStagedIds);
+          } catch (cleanupError) {
+            console.error("Re-index aborted cleanup unreconciled", {
+              entry_id: entry.id,
+              error: safeErrorMessage(cleanupError),
+            });
+          }
+        }
+      }
       fail("projection_persist_failed");
       continue;
     }

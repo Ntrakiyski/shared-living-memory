@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const projectRoot = resolve(import.meta.dirname, "../..");
@@ -14,6 +15,22 @@ function run(script: string, env: Record<string, string> = {}, input?: string) {
     env: { PATH: process.env.PATH ?? "", ...env } as unknown as NodeJS.ProcessEnv,
     input,
   });
+}
+
+function inspectCanaryExport(expression: string) {
+  return spawnSync(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `import * as canary from ${JSON.stringify(pathToFileURL(canaryScript).href)}; console.log(JSON.stringify(${expression}));`,
+  ], {
+    cwd: projectRoot,
+    encoding: "utf8",
+    env: { PATH: process.env.PATH ?? "" } as unknown as NodeJS.ProcessEnv,
+  });
+}
+
+function meaningfulTokens(value: string): Set<string> {
+  return new Set(value.toLowerCase().match(/[a-z]+/g)?.filter(token => token.length >= 4) ?? []);
 }
 
 describe("semantic deployment scripts", () => {
@@ -53,7 +70,7 @@ describe("semantic deployment scripts", () => {
     expect(malformed.stderr).toContain("CANARY_PRODUCTION_URL_INVALID");
   });
 
-  it("uses personal bearer auth, registers partial captures for cleanup, and avoids keyword overlap", () => {
+  it("uses personal bearer auth and registers partial captures for cleanup", () => {
     const source = readFileSync(canaryScript, "utf8");
     expect(source).toContain("Authorization: `Bearer ${user?.key ?? adminKey}`");
     expect(source).not.toContain("X-Shared-Living-Memory-User");
@@ -65,29 +82,128 @@ describe("semantic deployment scripts", () => {
     expect(firstRegistration).toBeGreaterThan(firstCapture);
     expect(secondCapture).toBeGreaterThan(firstRegistration);
 
-    const target = source.match(/semantic: `Canary \$\{suffix\}: ([^`]+)`/)?.[1] ?? "";
-    const query = source.match(/pollFor\(alice, "([^"]+)", ids\.semantic\)/)?.[1] ?? "";
-    const meaningfulTokens = (value: string) => new Set(
-      value.toLowerCase().match(/[a-z]+/g)?.filter(token => token.length >= 4) ?? [],
-    );
-    const targetTokens = meaningfulTokens(target);
-    const overlap = [...meaningfulTokens(query)].filter(token => targetTokens.has(token));
-    expect(target).not.toBe("");
-    expect(query).not.toBe("");
-    expect(overlap).toEqual([]);
+  });
+
+  it("defines four token-disjoint semantic probes including a public privacy decoy", () => {
+    const inspected = inspectCanaryExport("canary.buildCanaryScenario('unit_test')");
+
+    expect(inspected.status).toBe(0);
+    const scenario = JSON.parse(inspected.stdout) as {
+      contents: Record<string, string>;
+      probes: Array<{
+        name: string;
+        actor: "alice" | "bob";
+        query: string;
+        expected: string;
+        forbidden: string[];
+      }>;
+    };
+    expect(Object.keys(scenario.contents)).toEqual([
+      "alicePrivate",
+      "bobPrivate",
+      "alicePublic",
+      "semantic",
+    ]);
+    expect(scenario.probes.map(probe => probe.name)).toEqual([
+      "alice-own-private",
+      "bob-own-private",
+      "bob-public-privacy-decoy",
+      "alice-semantic",
+    ]);
+    expect(scenario.probes.find(probe => probe.name === "bob-public-privacy-decoy")).toMatchObject({
+      actor: "bob",
+      expected: "alicePublic",
+      forbidden: ["alicePrivate"],
+    });
+    for (const probe of scenario.probes) {
+      const queryTokens = meaningfulTokens(probe.query);
+      for (const target of [probe.expected, ...probe.forbidden]) {
+        const targetTokens = meaningfulTokens(scenario.contents[target]);
+        expect([...queryTokens].filter(token => targetTokens.has(token)), `${probe.name}:${target}`)
+          .toEqual([]);
+      }
+    }
+  });
+
+  it("aborts every canary fetch after a fixed timeout", () => {
+    const inspected = inspectCanaryExport(`await (async () => {
+      const started = Date.now();
+      let aborted = false;
+      const hangingFetch = (_input, init) => new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          aborted = true;
+          reject(new Error("aborted"));
+        });
+      });
+      try {
+        await canary.fetchWithTimeout(hangingFetch, "https://staging.example.test", {}, 15);
+      } catch {}
+      return { aborted, elapsed: Date.now() - started };
+    })()`);
+
+    expect(inspected.status).toBe(0);
+    const result = JSON.parse(inspected.stdout) as { aborted: boolean; elapsed: number };
+    expect(result.aborted).toBe(true);
+    expect(result.elapsed).toBeGreaterThanOrEqual(10);
+    expect(result.elapsed).toBeLessThan(500);
+  });
+
+  it("keeps the canary timeout active through response-body decoding", () => {
+    const inspected = inspectCanaryExport(`await (async () => {
+      const started = Date.now();
+      let aborted = false;
+      const headersOnlyFetch = (_input, init) => Promise.resolve({
+        json: () => new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("body aborted"));
+          });
+        }),
+      });
+      try {
+        await canary.fetchWithTimeout(
+          headersOnlyFetch,
+          "https://staging.example.test",
+          {},
+          15,
+          response => response.json(),
+        );
+      } catch {}
+      return { aborted, elapsed: Date.now() - started };
+    })()`);
+
+    expect(inspected.status).toBe(0);
+    const result = JSON.parse(inspected.stdout) as { aborted: boolean; elapsed: number };
+    expect(result.aborted).toBe(true);
+    expect(result.elapsed).toBeGreaterThanOrEqual(10);
+    expect(result.elapsed).toBeLessThan(500);
   });
 
   it("accepts required metadata indexes and ignores extras", () => {
     const result = run(indexScript, {}, JSON.stringify({
-      indexes: [
-        { propertyName: "owner_user_id", type: "string" },
-        { propertyName: "is_private", type: "boolean" },
-        { propertyName: "extra", type: "string" },
+      result: [
+        { propertyName: "owner_user_id", indexType: "string" },
+        { propertyName: "is_private", indexType: "boolean" },
+        { propertyName: "extra", indexType: "string" },
       ],
     }));
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("VECTOR_METADATA_INDEXES_OK");
+  });
+
+  it("requires exact metadata property names from current Wrangler JSON", () => {
+    const result = run(indexScript, {}, JSON.stringify({
+      result: [
+        { propertyName: "OWNER_USER_ID", indexType: "string" },
+        { propertyName: "IS_PRIVATE", indexType: "boolean" },
+      ],
+    }));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "VECTOR_METADATA_INDEXES_INVALID:owner_user_id_missing,is_private_missing",
+    );
   });
 
   it("fails metadata preflight with safe deterministic codes", () => {

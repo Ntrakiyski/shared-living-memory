@@ -589,6 +589,11 @@ export async function forgetEntry(id: string, env: Env): Promise<ForgetResult> {
   const { results: passages } = await env.DB.prepare(
     `SELECT id, vector_ids FROM passages WHERE entry_id = ?`
   ).bind(id).all<{ id: string; vector_ids: string }>();
+  const cleanupPrefix = `entry-version:${id}:`;
+  const { results: cleanupRows } = await env.DB.prepare(
+    `SELECT id, vector_ids FROM vector_cleanup_queue
+     WHERE substr(reason, 1, ?) = ?`,
+  ).bind(cleanupPrefix.length, cleanupPrefix).all<{ id: string; vector_ids: string }>();
 
   // Validate every tracking record before mutating either store. Continuing with
   // malformed metadata could orphan vectors whose IDs can no longer be recovered.
@@ -596,6 +601,9 @@ export async function forgetEntry(id: string, env: Env): Promise<ForgetResult> {
     ...parseTrackedVectorIds(row.vector_ids, `entry ${id}`),
     ...passages.flatMap((passage) =>
       parseTrackedVectorIds(passage.vector_ids, `passage ${passage.id}`)
+    ),
+    ...cleanupRows.flatMap((item) =>
+      parseTrackedVectorIds(item.vector_ids, `cleanup queue ${item.id}`)
     ),
   ])];
 
@@ -628,6 +636,9 @@ export async function forgetEntry(id: string, env: Env): Promise<ForgetResult> {
     env.DB.prepare(`DELETE FROM passages WHERE entry_id = ?`).bind(id),
     env.DB.prepare(`DELETE FROM episodes WHERE entry_id = ?`).bind(id),
     env.DB.prepare(`DELETE FROM entry_snapshots WHERE entry_id = ?`).bind(id),
+    ...cleanupRows.map(item =>
+      env.DB.prepare(`DELETE FROM vector_cleanup_queue WHERE id = ?`).bind(item.id)
+    ),
     env.DB.prepare(`DELETE FROM entries WHERE id = ?`).bind(id),
   ]);
 
