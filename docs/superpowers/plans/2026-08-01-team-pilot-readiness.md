@@ -387,7 +387,7 @@ npm run typecheck
 
 - [ ] Add a failing reindex test with a current entry vector and multiple current-episode passage vectors. Assert ownership/visibility metadata and `passageId` survive rebuild.
 - [ ] Refactor the current reindex helper to reuse the version vector staging path in `src/entry-version-service.ts`; do not maintain a second entry-only vector format.
-- [ ] Rebuild only current entry projections and current-episode passages. Delete stale vector IDs after successful upsert. If guarded D1 projection persistence loses a race, durably clean only newly staged IDs (`new - old`) and preserve overlapping last-known-good IDs.
+- [ ] Rebuild only current entry projections and current-episode passages. Persist the entry plus the exact planned passage set atomically: a missing/changed passage guard must prevent every projection update, not commit zero-change partial state. Delete stale vector IDs after successful persistence. If guarded D1 projection persistence loses a race, durably clean only newly staged IDs (`new - old`) and preserve overlapping last-known-good IDs.
 - [ ] Fail closed for legacy entries whose `current_episode_id` is null. Return metadata-only IDs/counts in the administrative failure report, block readiness, and require an operator to review/version those rows before retrying; never fabricate lineage or retain the legacy entry-only vector format.
 - [ ] Make reindex return `{entries_processed, passages_processed, failed, stale_deleted}` and fail the administrative request when any item fails.
 - [ ] Define the deployment preflight assertion that `wrangler vectorize list-metadata-index` contains the string index `owner_user_id` and boolean index `is_private`; Task 9 wires this assertion into `scripts/release-preflight.sh`.
