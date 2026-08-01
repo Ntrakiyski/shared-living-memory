@@ -59,13 +59,12 @@ describe("Cross-user conflict detection", () => {
 
       const { ctx } = makeCtx();
       const res = await worker.fetch(
-        req("POST", "/capture", { body: { content: "I enjoy hiking in the mountains too" } }),
+        req("POST", "/capture", { body: { content: "I enjoy hiking in the mountains too", visibility: "public" } }),
         env, ctx,
       );
       const data = await res.json() as any;
       expect(data.ok).toBe(true);
-      expect(data.crossUserNote).toBeDefined();
-      expect(data.crossUserNote).toContain("alice");
+      expect(data.warnings).toContain("Similar content exists in alice's public memories");
     });
 
     it("does not block capture when cross-user similarity found", async () => {

@@ -65,6 +65,36 @@ export interface RecallMatch {
 
 // ─── Ingestion capture result ──────────────────────────────────────────────────
 
+export type CaptureVisibility = "private" | "public";
+
+export interface CaptureRequest {
+  content: string;
+  tags?: string[];
+  source?: string;
+  source_url?: string;
+  source_title?: string;
+  visibility?: CaptureVisibility;
+}
+
+export interface CaptureStoredResponse {
+  ok: true;
+  id: string;
+  action: "stored" | "merged" | "replaced" | "stored_separately";
+  visibility: CaptureVisibility;
+  warnings: string[];
+}
+
+export interface CaptureDuplicateResponse {
+  ok: false;
+  error: "duplicate";
+  action: "blocked_duplicate";
+  match_id: string;
+  match_score: number;
+  warnings: string[];
+}
+
+export type CaptureResponse = CaptureStoredResponse | CaptureDuplicateResponse;
+
 export type CaptureResult =
   | { status: "blocked"; matchId: string; score: number }
   | { status: "stored"; id: string; crossUserNote?: string; awareness?: AwarenessDelivery }

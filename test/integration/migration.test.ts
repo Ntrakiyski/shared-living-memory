@@ -104,7 +104,7 @@ describe("Migration & Ownership", () => {
     const { ctx, flush } = makeCtx();
     await worker.fetch(req("GET", "/list"), env, ctx);
     await flush();
-    const res = await worker.fetch(req("GET", "/export"), env, ctx);
+    const res = await worker.fetch(req("GET", "/export?mode=team_public"), env, ctx);
     expect(res.status).toBe(200);
     const data = await res.json() as any;
     expect(data.ok).toBe(true);

@@ -53,4 +53,39 @@ describe("private child artifacts", () => {
     expect(await missing.text()).toBe(hiddenBody);
     expect(hiddenBody).not.toContain("historical secret");
   });
+
+  it("never exposes Alice's prior private text after she edits and publishes the entry", async () => {
+    const bobSecret = "bob-private-artifacts";
+    db.users.push({
+      id: "bob", username: "Bob", normalized_username: "bob",
+      auth_key_hash: await hmacKey(bobSecret, AUTH_PEPPER), auth_key_prefix: "slm_bob",
+      status: "active", created_at: 1,
+    });
+    const bobCredentials = { username: "Bob", key: `slm_bob.${bobSecret}` };
+
+    const captured = await worker.fetch(req("POST", "/capture", {
+      body: { content: "Alice confidential first draft" },
+      userCredentials: credentials,
+    }), env, ctx);
+    const capturedBody = await captured.json() as any;
+    expect(capturedBody.visibility).toBe("private");
+
+    const updated = await worker.fetch(req("POST", "/update", {
+      body: { id: capturedBody.id, content: "Harmless team note" },
+      userCredentials: credentials,
+    }), env, ctx);
+    expect(updated.status).toBe(200);
+    const entry = db.entries.find((candidate: any) => candidate.id === capturedBody.id);
+    entry.visibility = "public";
+    entry.tags = JSON.stringify(JSON.parse(entry.tags).filter((tag: string) => tag !== "private"));
+
+    const exported = await worker.fetch(req("GET", "/export?mode=team_public", {
+      userCredentials: bobCredentials,
+    }), env, ctx);
+    const exportText = await exported.text();
+
+    expect(exported.status).toBe(200);
+    expect(exportText).toContain("Harmless team note");
+    expect(exportText).not.toContain("Alice confidential first draft");
+  });
 });

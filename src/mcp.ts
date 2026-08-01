@@ -32,7 +32,7 @@ import {
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { captureEntry, appendToEntry } from "./ingest";
+import { CaptureRejectedError, captureEntry, appendToEntry } from "./ingest";
 import { commitEntryVersion, EntryVersionError } from "./entry-version-service";
 import { recallEntries, renderRecallText } from "./recall";
 import type { RecallMatch } from "./recall";
@@ -428,8 +428,10 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
         result = { content: [{ type: "text", text: `Error: ${error}` }] };
       }
       const durationMs = Date.now() - t0;
-      const outputText = result.content?.[0]?.text ?? "";
-      ctx.waitUntil(logToolCall(env, runId, toolName, input as Record<string, unknown>, outputText, durationMs, error).catch(() => {}));
+      // Audit shape and outcome only. Tool arguments/results routinely contain
+      // memory content and may contain credentials supplied by mistake.
+      const inputShape = { fields: Object.keys(input).sort() };
+      ctx.waitUntil(logToolCall(env, runId, toolName, inputShape, null, durationMs, error ? "tool_error" : undefined).catch(() => {}));
       if (runId) ctx.waitUntil(endRun(env, runId, toolCount).catch(() => {}));
       return result;
     };
@@ -444,29 +446,46 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
         content: z.string().describe("The idea, task, or note to store"),
         tags: z.array(z.string()).optional().describe("Optional tags for filtering"),
         source: z.string().optional().describe("Origin: phone, browser, voice, claude"),
+        source_url: z.string().optional().describe("Optional source URL recorded with the memory"),
+        source_title: z.string().optional().describe("Optional source title recorded with the memory"),
+        visibility: z.enum(["private", "public"]).default("private").describe("Who can see the memory; omitted is private"),
       },
     },
-    audited("remember", async ({ content, tags, source }) => {
-      const result = await captureEntry(content, tags ?? [], source ?? "claude", env, ctx, userId);
+    audited("remember", async ({ content, tags, source, source_url, source_title, visibility }) => {
+      let result;
+      try {
+        result = await captureEntry(content, tags ?? [], source ?? "claude", env, ctx, userId, {
+          sourceUrl: source_url,
+          sourceTitle: source_title,
+          visibility,
+        });
+      } catch (error) {
+        if (!(error instanceof CaptureRejectedError)) throw error;
+        if (error.code === "secret_detected") {
+          console.warn("capture rejected", { detector: error.detector, actor_id: userId });
+        }
+        return { isError: true, content: [{ type: "text" as const, text: `Not stored: ${error.code}.` }] };
+      }
       if (result.status === "blocked") {
         return { content: [{ type: "text", text: `Duplicate detected (${(result.score * 100).toFixed(0)}% match) — not stored. Existing entry ID: ${result.matchId}` }] };
       }
+      const visibilityText = ` (visibility: ${result.visibility})`;
       if (result.status === "contradiction") {
-        return { content: [{ type: "text", text: `Stored. ID: ${result.id} — resolved contradiction with entry ${result.resolvedConflict}${result.reason ? `: ${result.reason}` : ""}.` }] };
+        return { content: [{ type: "text", text: `Stored. ID: ${result.id}${visibilityText} — resolved contradiction with entry ${result.resolvedConflict}${result.reason ? `: ${result.reason}` : ""}.` }] };
       }
       if (result.status === "contradiction_protected") {
-        return { content: [{ type: "text", text: `Stored as draft (ID: ${result.id}) — conflicts with a canonical memory (${result.canonicalId}), which was kept${result.reason ? `: ${result.reason}` : ""}.` }] };
+        return { content: [{ type: "text", text: `Stored as draft (ID: ${result.id}, visibility: ${result.visibility}) — conflicts with a canonical memory (${result.canonicalId}), which was kept${result.reason ? `: ${result.reason}` : ""}.` }] };
       }
       if (result.status === "replaced") {
-        return { content: [{ type: "text", text: `Memory updated — new content replaced outdated entry (ID: ${result.id}).` }] };
+        return { content: [{ type: "text", text: `Memory updated — new content replaced outdated entry (ID: ${result.id}, visibility: ${result.visibility}).` }] };
       }
       if (result.status === "merged") {
-        return { content: [{ type: "text", text: `Memories merged — combined into existing entry (ID: ${result.id}).` }] };
+        return { content: [{ type: "text", text: `Memories merged — combined into existing entry (ID: ${result.id}, visibility: ${result.visibility}).` }] };
       }
       if (result.status === "flagged") {
-        return { content: [{ type: "text", text: `Stored with ID: ${result.id} — note: similar entry exists (${(result.score * 100).toFixed(0)}% match, ID: ${result.matchId}). Tagged as duplicate-candidate.` }] };
+        return { content: [{ type: "text", text: `Stored with ID: ${result.id}${visibilityText} — note: similar entry exists (${(result.score * 100).toFixed(0)}% match, ID: ${result.matchId}). Tagged as duplicate-candidate.` }] };
       }
-      return { content: [{ type: "text", text: `Stored. ID: ${result.id}` }] };
+      return { content: [{ type: "text", text: `Stored. ID: ${result.id}${visibilityText}` }] };
     })
   );
 

@@ -471,7 +471,7 @@ describe("GET /recall", () => {
     });
 
     const captureCtx = { waitUntil: (_: Promise<any>) => {} } as any as ExecutionContext;
-    const captureResult = await captureEntry("I moved to Seattle", [], "api", captureEnv, captureCtx);
+    const captureResult = await captureEntry("I moved to Seattle", [], "api", captureEnv, captureCtx, undefined, { visibility: "public" });
 
     expect(captureResult.status).toBe("contradiction");
     if (captureResult.status !== "contradiction") return;

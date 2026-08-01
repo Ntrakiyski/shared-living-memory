@@ -208,6 +208,7 @@ async function seedVersionedEntry(
     materializedContent: input.content,
     tags: ["status:draft", ...(input.private === false ? [] : ["private"])],
     source: "test",
+    visibility: input.private === false ? "public" : "private",
     epistemicStatus: input.epistemicStatus ?? "candidate",
     now,
   }, harness.env);

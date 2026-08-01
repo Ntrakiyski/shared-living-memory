@@ -29,6 +29,7 @@ export interface CommitEntryVersionInput {
   tags?: string[];
   source?: string;
   sourceUrl?: string | null;
+  visibility?: EntryVisibility;
   contentType?: string;
   title?: string;
   restoredFromSnapshotId?: string;
@@ -561,10 +562,11 @@ export async function commitEntryVersion(
   const contentType = input.contentType
     ?? current?.current_content_type
     ?? (sourceUrl ? "research" : "text");
-  // Visibility is its own governed field. Tags only establish the initial
-  // value; ordinary version writes cannot silently publish or privatize data.
+  // Existing versions retain visibility. New captures are private unless the
+  // caller explicitly publishes them.
   const visibility: EntryVisibility = current?.visibility
-    ?? (tags.includes("private") ? "private" : "public");
+    ?? input.visibility
+    ?? "private";
   const validFrom = input.validFrom === undefined
     ? (current?.valid_from ?? now)
     : input.validFrom;

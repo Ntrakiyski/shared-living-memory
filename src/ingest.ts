@@ -13,7 +13,7 @@
  *   5. reindexAllVectors — bulk migration helper to add ownership metadata
  */
 
-import type { AwarenessDelivery, Env } from "./types";
+import type { AwarenessDelivery, CaptureVisibility, Env } from "./types";
 import { chunkText, embed } from "./helpers";
 import { classifyEntry, extractHashtags } from "./classification";
 import { checkDuplicateAndContradiction } from "./duplicates";
@@ -267,7 +267,7 @@ function scheduleClassifyAndTag(
 
 export type CaptureResult =
   | { status: "blocked"; matchId: string; score: number }
-  | { status: "stored"; id: string; crossUserNote?: string; awareness?: AwarenessDelivery }
+  | { status: "stored"; id: string; visibility: CaptureVisibility; crossUserNote?: string; awareness?: AwarenessDelivery }
   | {
       status: "flagged";
       id: string;
@@ -275,12 +275,56 @@ export type CaptureResult =
       score: number;
       crossUserNote?: string;
       mergeSkipped?: "target_not_owned" | "target_protected";
+      visibility: CaptureVisibility;
       awareness?: AwarenessDelivery;
     }
-  | { status: "contradiction"; id: string; resolvedConflict: string; reason?: string; awareness?: AwarenessDelivery }
-  | { status: "contradiction_protected"; id: string; canonicalId: string; reason?: string; awareness?: AwarenessDelivery }
-  | { status: "merged"; id: string }
-  | { status: "replaced"; id: string };
+  | { status: "contradiction"; id: string; visibility: CaptureVisibility; resolvedConflict: string; reason?: string; awareness?: AwarenessDelivery }
+  | { status: "contradiction_protected"; id: string; visibility: CaptureVisibility; canonicalId: string; reason?: string; awareness?: AwarenessDelivery }
+  | { status: "merged"; id: string; visibility: CaptureVisibility }
+  | { status: "replaced"; id: string; visibility: CaptureVisibility };
+
+export type CaptureRejectionCode =
+  | "content_too_large"
+  | "too_many_tags"
+  | "tag_too_long"
+  | "source_url_too_long"
+  | "secret_detected";
+
+export class CaptureRejectedError extends Error {
+  constructor(readonly code: CaptureRejectionCode, readonly detector?: string) {
+    super(code);
+    this.name = "CaptureRejectedError";
+  }
+}
+
+interface CaptureOptions {
+  visibility?: CaptureVisibility;
+  sourceUrl?: string;
+  sourceTitle?: string;
+}
+
+const SECRET_DETECTORS = [
+  ["pem_private_key", /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/],
+  ["github_token", /\b(?:github_pat_[A-Za-z0-9_]{82}|gh[pousr]_[A-Za-z0-9]{36})\b/],
+  ["slack_token", /\bxox[bpaors]-[A-Za-z0-9-]{30,}\b/],
+  ["stripe_live_secret", /\bsk_live_[A-Za-z0-9]{24,}\b/],
+  ["openai_project_key", /\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}\b/],
+] as const;
+
+function validateCaptureInput(content: string, tags: string[], sourceUrl?: string): void {
+  if (new TextEncoder().encode(content).byteLength > 32 * 1024) {
+    throw new CaptureRejectedError("content_too_large");
+  }
+  if (tags.length > 25) throw new CaptureRejectedError("too_many_tags");
+  if (tags.some((tag) => Array.from(tag).length > 64)) {
+    throw new CaptureRejectedError("tag_too_long");
+  }
+  if (sourceUrl && sourceUrl.length > 2_048) {
+    throw new CaptureRejectedError("source_url_too_long");
+  }
+  const match = SECRET_DETECTORS.find(([, pattern]) => pattern.test(content));
+  if (match) throw new CaptureRejectedError("secret_detected", match[0]);
+}
 
 export async function captureEntry(
   rawContent: string,
@@ -288,14 +332,19 @@ export async function captureEntry(
   source: string,
   env: Env,
   ctx: ExecutionContext,
-  userId?: string
+  userId?: string,
+  options: CaptureOptions = {},
 ): Promise<CaptureResult> {
+  const inferredSourceUrl = /^https?:\/\//i.test(source) ? source : undefined;
+  const requestedSourceUrl = options.sourceUrl ?? inferredSourceUrl;
+  validateCaptureInput(rawContent, tags, requestedSourceUrl);
   const raw = rawContent.trim();
   const { cleanContent, hashtags } = extractHashtags(raw);
   const c = cleanContent || raw;
   const t = [...new Set([...tags.map(tag => tag.toLowerCase()), ...hashtags])];
   const actorUserId = userId ?? await getSystemUserId(env);
-  const sourceUrl = /^https?:\/\//i.test(source) ? source : null;
+  const sourceUrl = requestedSourceUrl ?? null;
+  const visibility = options.visibility ?? "private";
   const researchLike = sourceUrl !== null
     || /^(research|paper|document)$/i.test(source)
     || /^(#{1,4})\s+/m.test(rawContent);
@@ -318,7 +367,7 @@ export async function captureEntry(
     const newContent = mergeAction.action === "merge" ? mergeAction.merged_content : c;
 
     const targetRow = await env.DB.prepare(
-      `SELECT content, tags, source, importance_score, owner_user_id, revision
+      `SELECT content, tags, source, importance_score, owner_user_id, revision, visibility
        FROM entries WHERE id = ?`
     ).bind(targetId).first() as Record<string, any> | null;
 
@@ -338,7 +387,7 @@ export async function captureEntry(
         if ((targetRow.importance_score as number) >= 4 || targetStatus === "canonical") {
           mergeSkipped = "target_protected";
         } else {
-          await commitEntryVersion({
+          const committed = await commitEntryVersion({
             kind: mergeAction.action,
             actorUserId,
             entryId: targetId,
@@ -353,8 +402,8 @@ export async function captureEntry(
           scheduleClassifyAndTag(targetId, newContent, actorUserId, env, ctx);
 
           return mergeAction.action === "merge"
-            ? { status: "merged", id: targetId }
-            : { status: "replaced", id: targetId };
+            ? { status: "merged", id: targetId, visibility: targetRow.visibility === "private" ? "private" : "public" }
+            : { status: "replaced", id: targetId, visibility: targetRow.visibility === "private" ? "private" : "public" };
         }
       }
     }
@@ -381,7 +430,7 @@ export async function captureEntry(
       matchedEntryId: crossUserSimilar.entryId,
       matchedOwnerUserId: crossUserSimilar.ownerUserId,
       similarity: crossUserSimilar.score,
-      newEntryIsPublic: !finalTags.includes("private"),
+      newEntryIsPublic: visibility === "public",
     });
   }
 
@@ -396,6 +445,8 @@ export async function captureEntry(
       tags: finalTags,
       source,
       sourceUrl,
+      title: options.sourceTitle,
+      visibility,
       contentType: researchLike ? "research" : "text",
       epistemicStatus: "candidate",
     }, env);
@@ -411,6 +462,7 @@ export async function captureEntry(
     throw error;
   }
   const id = committed.entryId;
+  const effectiveVisibility = visibility;
 
   let awareness: AwarenessDelivery | undefined;
   if (awarenessIntentId) {
@@ -453,6 +505,7 @@ export async function captureEntry(
         status: "contradiction_protected",
         id,
         canonicalId: conflictId,
+        visibility: effectiveVisibility,
         reason: contradiction.reason,
         ...(awareness ? { awareness } : {}),
       };
@@ -476,6 +529,7 @@ export async function captureEntry(
       status: "contradiction",
       id,
       resolvedConflict: conflictId,
+      visibility: effectiveVisibility,
       reason: contradiction.reason,
       ...(awareness ? { awareness } : {}),
     };
@@ -491,6 +545,7 @@ export async function captureEntry(
       id,
       matchId: dup.matchId,
       score: dup.score,
+      visibility: effectiveVisibility,
       crossUserNote,
       ...(mergeSkipped ? { mergeSkipped } : {}),
       ...(awareness ? { awareness } : {}),
@@ -500,6 +555,7 @@ export async function captureEntry(
   return {
     status: "stored",
     id,
+    visibility: effectiveVisibility,
     crossUserNote,
     ...(awareness ? { awareness } : {}),
   };

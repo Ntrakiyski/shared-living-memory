@@ -89,7 +89,7 @@ describe("Vector Metadata & Filtering", () => {
   it("Public entry vectors have is_private=false", async () => {
     const { ctx, flush } = makeCtx();
     await worker.fetch(
-      req("POST", "/capture", { body: { content: "Public note" }, userCredentials: { username: "alice", key: aliceKey } }),
+      req("POST", "/capture", { body: { content: "Public note", visibility: "public" }, userCredentials: { username: "alice", key: aliceKey } }),
       env, ctx
     );
     await flush();

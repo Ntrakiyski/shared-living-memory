@@ -182,7 +182,7 @@ describe("commitEntryVersion", () => {
     expect(entry.current_episode_id).toBe(result.episodeId);
     expect(entry.revision).toBe(1);
     expect(entry.created_by_user_id).toBe(actorUserId);
-    expect(entry.visibility).toBe("public");
+    expect(entry.visibility).toBe("private");
     expect(entry.vector_sync_pending).toBe(0);
     expect(entry.updated_at).toBe(1_234);
     expect(JSON.parse(entry.vector_ids)).toEqual(result.vectorIds);
@@ -207,6 +207,18 @@ describe("commitEntryVersion", () => {
     expect(harness.db.count("passages")).toBe(0);
     expect([...harness.vectors.keys()].every((id) => id.startsWith(`ev:${result.episodeId}:`))).toBe(true);
     expect([...harness.vectors.keys()].every((id) => new TextEncoder().encode(id).length <= 64)).toBe(true);
+  });
+
+  it("defaults new captures to private without using tags as the security decision", async () => {
+    const omitted = await capture(harness, { tags: ["work"] });
+    const explicitPublic = await capture(harness, {
+      entryId: "entry-public",
+      tags: ["private"],
+      visibility: "public",
+    });
+
+    expect(row<any>(harness.db, "SELECT visibility FROM entries WHERE id = ?", omitted.entryId).visibility).toBe("private");
+    expect(row<any>(harness.db, "SELECT visibility FROM entries WHERE id = ?", explicitPublic.entryId).visibility).toBe("public");
   });
 
   it("snapshots the complete prior visible state before a guarded update", async () => {

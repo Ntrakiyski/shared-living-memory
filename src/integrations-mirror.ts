@@ -92,6 +92,7 @@ function makeMirrorStore(
         tags: projectedTags(input.tags, visibility),
         source: record.provider,
         sourceUrl: input.sourceUrl ?? null,
+        visibility,
         contentType: "research",
         title: input.title,
         mutationId: mirrorMutationId,

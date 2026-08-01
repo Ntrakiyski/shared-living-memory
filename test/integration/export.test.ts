@@ -1,25 +1,30 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import worker from "../../src/testing";
-import { makeTestEnv, makeTestDb } from "../helpers/make-env";
+import { AUTH_PEPPER, hmacKey } from "../../src/auth";
+import { makeTestDb, makeTestEnv } from "../helpers/make-env";
 import { req } from "../helpers/make-request";
 import type { Env } from "../../src/testing";
 import { D1Mock } from "../helpers/d1-mock";
-import { AUTH_PEPPER, hmacKey } from "../../src/auth";
 
 const ctx = { waitUntil: (_: Promise<any>) => {} } as any;
 
-function seedEntry(db: D1Mock, id: string, content: string, tags: string[] = [], created_at = 1000) {
-  db.entries.push({ id, content, tags: JSON.stringify(tags), source: "api", created_at, vector_ids: '["v1"]', recall_count: 0, importance_score: 0, contradiction_wins: 0, contradiction_losses: 0 });
-}
-
-async function seedExportActor(db: D1Mock) {
-  const secret = "export-secret";
+async function seedActor(db: D1Mock, id: string) {
+  const secret = `${id}-secret`;
   db.users.push({
-    id: "export-owner", username: "export-owner", normalized_username: "export-owner",
-    auth_key_hash: await hmacKey(secret, AUTH_PEPPER), auth_key_prefix: "slm_export",
+    id, username: id, normalized_username: id,
+    auth_key_hash: await hmacKey(secret, AUTH_PEPPER), auth_key_prefix: `slm_${id}`,
     status: "active", created_at: 1,
   });
-  return { username: "export-owner", key: `slm_export-owner.${secret}` };
+  return { username: id, key: `slm_${id}.${secret}` };
+}
+
+function seedEntry(db: D1Mock, values: Record<string, unknown>) {
+  db.entries.push({
+    id: "entry", content: "Memory", tags: "[]", source: "api", created_at: 1,
+    updated_at: 1, vector_ids: "[]", owner_user_id: "alice", created_by_user_id: "alice",
+    visibility: "private", revision: 1, current_episode_id: null,
+    ...values,
+  });
 }
 
 describe("GET /export", () => {
@@ -31,154 +36,96 @@ describe("GET /export", () => {
     env = makeTestEnv(db);
   });
 
-  it("requires auth", async () => {
-    const res = await worker.fetch(req("GET", "/export", { token: null }), env, ctx);
-    expect(res.status).toBe(401);
+  it("requires authentication and an explicit supported mode", async () => {
+    expect((await worker.fetch(req("GET", "/export?mode=my_data", { token: null }), env, ctx)).status).toBe(401);
+
+    const missing = await worker.fetch(req("GET", "/export"), env, ctx);
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({
+      ok: false,
+      error: "mode is required and must be my_data or team_public",
+    });
+
+    const invalid = await worker.fetch(req("GET", "/export?mode=all_public"), env, ctx);
+    expect(invalid.status).toBe(400);
   });
 
-  it("returns all public entries when the count exceeds the /list cap of 100", async () => {
-    for (let i = 0; i < 150; i++) seedEntry(db, `e${i}`, `Memory ${i}`, [], 1000 + i);
+  it("my_data exports only the owner entries with complete owner-authorized history", async () => {
+    const alice = await seedActor(db, "alice");
+    seedEntry(db, { id: "mine", current_episode_id: "mine-current" });
+    seedEntry(db, { id: "other", owner_user_id: "bob", created_by_user_id: "bob", visibility: "public" });
+    db.episodes.push(
+      { id: "mine-old", entry_id: "mine", content: "mine old", materialized_content: "mine old", created_at: 1 },
+      { id: "mine-current", entry_id: "mine", content: "mine current", materialized_content: "mine current", created_at: 2 },
+      { id: "other-episode", entry_id: "other", content: "other history", materialized_content: "other history", created_at: 1 },
+    );
+    db.entry_snapshots.push(
+      { id: "mine-snapshot", entry_id: "mine", content: "mine snapshot", created_at: 1 },
+      { id: "other-snapshot", entry_id: "other", content: "other snapshot", created_at: 1 },
+    );
+    db.passages.push(
+      { id: "mine-passage", entry_id: "mine", episode_id: "mine-old", document_id: "mine-doc", content: "mine passage", created_at: 1, vector_ids: "[]" },
+      { id: "mine-legacy-passage", entry_id: "mine", episode_id: "mine-current", document_id: "mine-legacy-doc", content: "mine legacy passage", created_at: 2, vector_ids: "[]" },
+      { id: "mine-cross-owner-passage", entry_id: "mine", episode_id: "mine-current", document_id: "other-doc", content: "owned passage with foreign document reference", created_at: 3, vector_ids: "[]" },
+      { id: "other-passage", entry_id: "other", episode_id: "other-episode", document_id: "other-doc", content: "other passage", created_at: 1, vector_ids: "[]" },
+    );
+    db.documents.push(
+      { id: "mine-doc", episode_id: "mine-old", owner_user_id: "alice", title: "Mine", created_at: 1 },
+      { id: "mine-legacy-doc", episode_id: null, owner_user_id: "alice", title: "Mine legacy", created_at: 2 },
+      { id: "other-doc", episode_id: "other-episode", owner_user_id: "bob", title: "Other", created_at: 1 },
+    );
+    db.document_sections.push(
+      { id: "mine-section", document_id: "mine-doc", title: "Mine", order_index: 0 },
+      { id: "mine-legacy-section", document_id: "mine-legacy-doc", title: "Mine legacy", order_index: 0 },
+      { id: "other-section", document_id: "other-doc", title: "Other", order_index: 0 },
+    );
 
-    const res = await worker.fetch(req("GET", "/export"), env, ctx);
+    const res = await worker.fetch(req("GET", "/export?mode=my_data", { userCredentials: alice }), env, ctx);
+    const data = await res.json() as any;
+
     expect(res.status).toBe(200);
-    const data = await res.json() as any;
-    expect(data.ok).toBe(true);
-    expect(data.version).toBe(3);
-    expect(typeof data.exported_at).toBe("number");
-    expect(data.entries).toHaveLength(150);
-    // newest first
-    expect(data.entries[0].id).toBe("e149");
-  });
-
-  it("includes edges and parses tags to real arrays", async () => {
-    seedEntry(db, "a", "Memory A", ["work", "kind:semantic"]);
-    seedEntry(db, "b", "Memory B", ["idea"]);
-    db.edges.push({ id: "edge-1", source_id: "a", target_id: "b", type: "relates_to", weight: 0.7, provenance: "inferred", metadata: "{}", created_at: 1, updated_at: 1 });
-
-    const res = await worker.fetch(req("GET", "/export"), env, ctx);
-    const data = await res.json() as any;
-    const a = data.entries.find((e: any) => e.id === "a");
-    expect(a.tags).toEqual(["work", "kind:semantic"]); // array, not a JSON string
-    expect(data.edges).toEqual([
-      { source_id: "a", target_id: "b", type: "relates_to", weight: 0.7, provenance: "inferred", created_at: 1, confidence: 1 },
-    ]);
-  });
-
-  it("never includes vector_ids (deployment-specific, import re-embeds)", async () => {
-    seedEntry(db, "a", "Memory A");
-
-    const res = await worker.fetch(req("GET", "/export"), env, ctx);
-    const data = await res.json() as any;
+    expect(data.mode).toBe("my_data");
+    expect(data.entries.map((entry: any) => entry.id)).toEqual(["mine"]);
+    expect(data.episodes.map((episode: any) => episode.id).sort()).toEqual(["mine-current", "mine-old"]);
+    expect(data.snapshots.map((snapshot: any) => snapshot.id)).toEqual(["mine-snapshot"]);
+    expect(data.passages.map((passage: any) => passage.id).sort()).toEqual(["mine-cross-owner-passage", "mine-legacy-passage", "mine-passage"]);
+    expect(data.documents.map((document: any) => document.id).sort()).toEqual(["mine-doc", "mine-legacy-doc"]);
+    expect(data.document_sections.map((section: any) => section.id).sort()).toEqual(["mine-legacy-section", "mine-section"]);
+    expect(JSON.stringify(data)).not.toContain("other history");
     expect(data.entries[0]).not.toHaveProperty("vector_ids");
   });
 
-  it("exports an empty brain as a valid structure with empty arrays", async () => {
-    const res = await worker.fetch(req("GET", "/export"), env, ctx);
+  it("team_public exports current public projections and scalar source metadata without history", async () => {
+    const bob = await seedActor(db, "bob");
+    seedEntry(db, { id: "public", content: "Current public", visibility: "public", current_episode_id: "public-current" });
+    seedEntry(db, { id: "private", content: "Current private", visibility: "private", current_episode_id: "private-current" });
+    db.episodes.push(
+      { id: "public-current", entry_id: "public", content: "Current public", materialized_content: "Current public", source_url: "https://example.test/source", content_type: "research", created_at: 2 },
+      { id: "public-old", entry_id: "public", content: "historical secret", materialized_content: "historical secret", created_at: 1 },
+      { id: "private-current", entry_id: "private", content: "Current private", materialized_content: "Current private", created_at: 2 },
+    );
+    db.documents.push({ id: "public-doc", episode_id: "public-current", owner_user_id: "alice", title: "Safe source title", source_url: "https://example.test/source", created_at: 2 });
+
+    const res = await worker.fetch(req("GET", "/export?mode=team_public", { userCredentials: bob }), env, ctx);
+    const data = await res.json() as any;
+
     expect(res.status).toBe(200);
-    const data = await res.json() as any;
-    expect(data.ok).toBe(true);
-    expect(data.entries).toEqual([]);
-    expect(data.edges).toEqual([]);
-  });
-
-  // ── Export modes ────────────────────────────────────────────────────────────
-
-  it("default mode returns all public entries (backward compatible)", async () => {
-    db.entries.push(
-      { id: "pub1", content: "Public A", tags: "[]", source: "api", created_at: 1000, vector_ids: "[]", owner_user_id: "_system" },
-      { id: "priv1", content: "Private A", tags: '["private"]', source: "api", created_at: 2000, vector_ids: "[]", owner_user_id: "_system" },
-    );
-
-    const res = await worker.fetch(req("GET", "/export"), env, ctx);
-    const data = await res.json() as any;
-    expect(data.ok).toBe(true);
-    expect(data.entries).toHaveLength(1);
-    expect(data.entries[0].id).toBe("pub1");
-  });
-
-  it("mode=all_public returns all users' public entries", async () => {
-    db.entries.push(
-      { id: "pub1", content: "My public", tags: "[]", source: "api", created_at: 1000, vector_ids: "[]", owner_user_id: "_system" },
-      { id: "pub2", content: "Other public", tags: "[]", source: "api", created_at: 2000, vector_ids: "[]", owner_user_id: "other-user" },
-      { id: "priv1", content: "My private", tags: '["private"]', source: "api", created_at: 3000, vector_ids: "[]", owner_user_id: "_system" },
-    );
-
-    const res = await worker.fetch(req("GET", "/export?mode=all_public"), env, ctx);
-    const data = await res.json() as any;
-    expect(data.ok).toBe(true);
-    expect(data.mode).toBe("all_public");
-    expect(data.entries).toHaveLength(2);
-    expect(data.entries.map((e: any) => e.id).sort()).toEqual(["pub1", "pub2"]);
-  });
-
-  it("mode=my_public returns only the user's public entries", async () => {
-    const userCredentials = await seedExportActor(db);
-    db.entries.push(
-      { id: "pub1", content: "My public", tags: "[]", source: "api", created_at: 1000, vector_ids: "[]", owner_user_id: "export-owner" },
-      { id: "pub2", content: "Other public", tags: "[]", source: "api", created_at: 2000, vector_ids: "[]", owner_user_id: "other-user" },
-      { id: "priv1", content: "My private", tags: '["private"]', source: "api", created_at: 3000, vector_ids: "[]", owner_user_id: "export-owner" },
-    );
-
-    const res = await worker.fetch(req("GET", "/export?mode=my_public", { userCredentials }), env, ctx);
-    const data = await res.json() as any;
-    expect(data.ok).toBe(true);
-    expect(data.mode).toBe("my_public");
-    expect(data.entries).toHaveLength(1);
-    expect(data.entries[0].id).toBe("pub1");
-  });
-
-  it("mode=my_private returns only the user's private entries", async () => {
-    const userCredentials = await seedExportActor(db);
-    db.entries.push(
-      { id: "pub1", content: "My public", tags: "[]", source: "api", created_at: 1000, vector_ids: "[]", owner_user_id: "export-owner" },
-      { id: "priv1", content: "My private", tags: '["private"]', source: "api", created_at: 2000, vector_ids: "[]", owner_user_id: "export-owner" },
-      { id: "priv2", content: "Other private", tags: '["private"]', source: "api", created_at: 3000, vector_ids: "[]", owner_user_id: "other-user" },
-    );
-
-    const res = await worker.fetch(req("GET", "/export?mode=my_private", { userCredentials }), env, ctx);
-    const data = await res.json() as any;
-    expect(data.ok).toBe(true);
-    expect(data.mode).toBe("my_private");
-    expect(data.entries).toHaveLength(1);
-    expect(data.entries[0].id).toBe("priv1");
-  });
-
-  it("edges are filtered to match exported entry set", async () => {
-    const userCredentials = await seedExportActor(db);
-    db.entries.push(
-      { id: "pub1", content: "Public A", tags: "[]", source: "api", created_at: 1000, vector_ids: "[]", owner_user_id: "export-owner" },
-      { id: "priv1", content: "Private A", tags: '["private"]', source: "api", created_at: 2000, vector_ids: "[]", owner_user_id: "export-owner" },
-    );
-    db.edges.push(
-      { id: "e1", source_id: "pub1", target_id: "priv1", type: "relates_to", weight: 0.8, provenance: "inferred", metadata: "{}", created_at: 1, updated_at: 1 },
-      { id: "e2", source_id: "pub1", target_id: "pub1", type: "relates_to", weight: 0.5, provenance: "inferred", metadata: "{}", created_at: 1, updated_at: 1 },
-    );
-
-    // my_private only exports priv1, so only edges with both endpoints in {priv1} should be included
-    const res = await worker.fetch(req("GET", "/export?mode=my_private", { userCredentials }), env, ctx);
-    const data = await res.json() as any;
-    expect(data.entries).toHaveLength(1);
-    expect(data.entries[0].id).toBe("priv1");
-    // Edge e1 connects pub1→priv1 — pub1 is not exported, so e1 is excluded
-    // Edge e2 connects pub1→pub1 — pub1 is not exported, so e2 is excluded
-    expect(data.edges).toHaveLength(0);
-  });
-
-  it("returns total_count in response", async () => {
-    db.entries.push(
-      { id: "pub1", content: "Public A", tags: "[]", source: "api", created_at: 1000, vector_ids: "[]", owner_user_id: "_system" },
-      { id: "pub2", content: "Public B", tags: "[]", source: "api", created_at: 2000, vector_ids: "[]", owner_user_id: "_system" },
-    );
-
-    const res = await worker.fetch(req("GET", "/export"), env, ctx);
-    const data = await res.json() as any;
-    expect(data.total_count).toBe(2);
-  });
-
-  it("invalid mode returns 400", async () => {
-    const res = await worker.fetch(req("GET", "/export?mode=invalid"), env, ctx);
-    expect(res.status).toBe(400);
-    const data = await res.json() as any;
-    expect(data.ok).toBe(false);
+    expect(data.mode).toBe("team_public");
+    expect(data.entries).toEqual([
+      expect.objectContaining({
+        id: "public",
+        content: "Current public",
+        source_url: "https://example.test/source",
+        source_title: "Safe source title",
+      }),
+    ]);
+    expect(data).not.toHaveProperty("episodes");
+    expect(data).not.toHaveProperty("snapshots");
+    expect(data).not.toHaveProperty("passages");
+    expect(data).not.toHaveProperty("documents");
+    expect(data).not.toHaveProperty("document_sections");
+    expect(data).not.toHaveProperty("edges");
+    expect(JSON.stringify(data)).not.toContain("historical secret");
+    expect(JSON.stringify(data)).not.toContain("Current private");
   });
 });

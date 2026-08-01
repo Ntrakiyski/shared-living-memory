@@ -1047,6 +1047,20 @@
         opacity: 0.4;
       }
 
+      .capture-visibility {
+        display: flex;
+        gap: 16px;
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+
+      .capture-visibility label {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        cursor: pointer;
+      }
+
       /* sources toggle */
       .sources-toggle {
         display: flex;
@@ -3113,7 +3127,12 @@
               </div>
             </div>
             <div class="input-bar">
-              <div class="input-hint">Tip: add <span class="hint-tags">#tags</span> anywhere in your message</div>
+              <div class="input-hint">
+                <div class="capture-visibility" aria-label="Memory visibility">
+                  <label><input type="radio" name="remember-visibility" id="remember-visibility-private" value="private" checked /> My private</label>
+                  <label><input type="radio" name="remember-visibility" id="remember-visibility-public" value="public" /> Team public</label>
+                </div>
+              </div>
               <div class="input-inner">
                 <button id="remember-clear-btn" class="refresh-btn" onclick="clearRemember()" style="display: none" title="Clear Chat">
                   <i class="ti ti-trash"></i>
@@ -3398,8 +3417,13 @@
         <button class="menu-item" id="service-identities-menu-item" onclick="openServiceIdentities()" style="display: none">
           <i class="ti ti-robot"></i> Service identities
         </button>
-        <button class="menu-item" onclick="exportMemories('json')"><i class="ti ti-download"></i> Export as JSON</button>
-        <button class="menu-item" onclick="exportMemories('markdown')"><i class="ti ti-markdown"></i> Export as Markdown</button>
+        <label class="digest-note" for="export-mode">Export contents</label>
+        <select class="filter-field" id="export-mode">
+          <option value="my_data">My data — includes private entries and complete history</option>
+          <option value="team_public">Team public — current public entries only; no history</option>
+        </select>
+        <button class="menu-item" onclick="exportMemories('json')"><i class="ti ti-download"></i> Export selected contents as JSON</button>
+        <button class="menu-item" onclick="exportMemories('markdown')"><i class="ti ti-markdown"></i> Export selected contents as Markdown</button>
         <button class="menu-item danger" onclick="logout()"><i class="ti ti-logout"></i> Disconnect</button>
       </div>
     </div>
@@ -3853,13 +3877,16 @@
         return json.result?.content?.[0]?.text ?? ''
       }
 
-      async function apiCapture(content, tags, source) {
+      async function apiCapture(content, tags, source, visibility) {
         const res = await fetch(`${WORKER_URL}/capture`, {
           method: 'POST',
           headers: authHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ content, tags, source: source || 'web-ui' }),
+          body: JSON.stringify({ content, tags, source: source || 'web-ui', visibility }),
         })
-        return res.json()
+        const data = await res.json().catch(() => ({}))
+        if (res.status === 409 && data.error === 'duplicate' && data.action === 'blocked_duplicate') return data
+        if (!res.ok || data.ok !== true) throw new Error(data.error || `Server error: ${res.status}`)
+        return data
       }
 
       async function apiList(n = 50, params = {}) {
@@ -4255,6 +4282,8 @@
         const input = document.getElementById('remember-input')
         const raw = input.value.trim()
         if (!raw) return
+        const visibility = document.getElementById('remember-visibility-public').checked ? 'public' : 'private'
+        if (visibility === 'public' && !confirm('Team public makes this memory visible to everyone in the workspace. Continue?')) return
         const msgs = document.getElementById('remember-messages')
         const tags = [],
           tagRe = /#([a-zA-Z0-9_-]+)/g
@@ -4267,18 +4296,19 @@
         if (introEl) introEl.remove()
         appendHashtagText(userRow, raw)
         msgs.appendChild(userRow)
-        input.value = ''
-        autoResize(input)
         msgs.scrollTop = msgs.scrollHeight
         const loadingEl = appendLoading(msgs)
         msgs.scrollTop = msgs.scrollHeight
         try {
-          const result = await apiCapture(content || raw, tags, 'web-ui')
+          const result = await apiCapture(content || raw, tags, 'web-ui', visibility)
           loadingEl.remove()
-          if (result.duplicate) {
-            appendBrainBubble(msgs, 'Already kept \u2014 I have something very similar, so I skipped the duplicate.', 'sys-note')
+          if (result.action === 'blocked_duplicate') {
+            appendBrainBubble(msgs, `Not stored—already matches ${result.match_id}.`, 'sys-note')
           } else {
-            appendBrainBubble(msgs, "Kept. I'll remember that.", 'sys-note')
+            const warningText = result.warnings.length ? ` Warnings: ${result.warnings.join('; ')}` : ''
+            appendBrainBubble(msgs, `Stored — action: ${result.action}; ID: ${result.id}; visibility: ${result.visibility}.${warningText}`, 'sys-note')
+            input.value = ''
+            autoResize(input)
             if (tags.length) {
               const confirmEl = document.createElement('div')
               confirmEl.className = 'confirm-block'
@@ -4288,9 +4318,9 @@
             updateStatus()
           }
           document.getElementById('remember-clear-btn').style.display = 'flex'
-        } catch {
+        } catch (error) {
           loadingEl.remove()
-          appendBrainBubble(msgs, 'Something went wrong. Try again.', 'sys-note')
+          appendBrainBubble(msgs, `Not stored. ${error.message || 'Try again.'}`, 'sys-note')
         }
         msgs.scrollTop = msgs.scrollHeight
       }
@@ -5329,9 +5359,8 @@
       async function exportMemories(format) {
         closeMenu()
         try {
-          // /export returns everything — entries AND edges — in one shot; /list caps
-          // at 100 rows, which used to silently truncate bigger brains
-          const res = await fetch(`${WORKER_URL}/export`, { headers: authHeaders() })
+          const mode = document.getElementById('export-mode').value
+          const res = await fetch(`${WORKER_URL}/export?mode=${encodeURIComponent(mode)}`, { headers: authHeaders() })
           if (!res.ok) throw new Error(`Server error: ${res.status}`)
           const data = await res.json()
           const entries = data.entries || []
@@ -5370,8 +5399,22 @@
               })
               lines.push('')
             }
+            if (mode === 'my_data') {
+              lines.push('## Complete history')
+              lines.push('')
+              lines.push('```json')
+              lines.push(JSON.stringify({
+                episodes: data.episodes || [],
+                snapshots: data.snapshots || [],
+                passages: data.passages || [],
+                documents: data.documents || [],
+                document_sections: data.document_sections || [],
+              }, null, 2))
+              lines.push('```')
+              lines.push('')
+            }
             content = lines.join('\n')
-            filename = `shared-living-memory-export-${ts}.md`
+            filename = `shared-living-memory-${mode}-${ts}.md`
             mime = 'text/markdown'
           }
 

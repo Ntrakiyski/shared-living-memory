@@ -14,7 +14,7 @@
  *   domain functions from the respective modules, and returns a JSON response.
  */
 
-import { type Env } from "./types";
+import { type CaptureRequest, type CaptureResponse, type Env } from "./types";
 import { loginHtml, hmacKey, generateApiKey, AUTH_PEPPER, requireAuthAsync, resolveUserByApiKey, isAuthorized, json } from "./auth";
 import { CORS_HEADERS, graceMs, LLM_MODEL, COMPRESSION_MIN_AGE_MS, compressionEligibilitySql, VECTORIZE_FIX_HINT } from "./config";
 import { initializeDatabase, checkVectorizeHealth } from "./db";
@@ -29,7 +29,7 @@ import {
   getEdgeHistory,
   restoreEdgeVersion,
 } from "./graph";
-import { captureEntry, storeEntry, appendToEntry, reindexAllVectors } from "./ingest";
+import { CaptureRejectedError, captureEntry, storeEntry, appendToEntry, reindexAllVectors } from "./ingest";
 import { commitEntryVersion, EntryVersionError } from "./entry-version-service";
 import { setEntryVisibility, VisibilityTransitionError } from "./visibility";
 import {
@@ -651,71 +651,80 @@ export const defaultHandler = {
       const { error: authErr, user_id } = await requireAuthAsync(request, env);
       if (authErr) return authErr;
 
-      let body: { content?: string; tags?: string[]; source?: string };
+      let body: Partial<CaptureRequest>;
       try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
-      if (!body.content?.trim()) return json({ ok: false, error: "content is required" }, 400);
+      if (typeof body.content !== "string" || !body.content.trim()) {
+        return json({ ok: false, error: "content is required" }, 400);
+      }
+      if (body.tags !== undefined && (!Array.isArray(body.tags) || body.tags.some((tag) => typeof tag !== "string"))) {
+        return json({ ok: false, error: "tags must be an array of strings" }, 400);
+      }
+      if (body.visibility !== undefined && body.visibility !== "private" && body.visibility !== "public") {
+        return json({ ok: false, error: "visibility must be private or public" }, 400);
+      }
+      if (body.source_url !== undefined && typeof body.source_url !== "string") {
+        return json({ ok: false, error: "source_url must be a string" }, 400);
+      }
+      if (body.source_title !== undefined && typeof body.source_title !== "string") {
+        return json({ ok: false, error: "source_title must be a string" }, 400);
+      }
 
-      const result = await captureEntry(body.content, body.tags ?? [], body.source ?? "api", env, ctx, user_id);
+      let result;
+      try {
+        result = await captureEntry(
+          body.content,
+          body.tags ?? [],
+          typeof body.source === "string" ? body.source : "api",
+          env,
+          ctx,
+          user_id,
+          {
+            visibility: body.visibility,
+            sourceUrl: body.source_url,
+            sourceTitle: body.source_title,
+          },
+        );
+      } catch (error) {
+        if (error instanceof CaptureRejectedError) {
+          if (error.code === "secret_detected") {
+            console.warn("capture rejected", { detector: error.detector, actor_id: user_id ?? "_system" });
+          }
+          return json({ ok: false, error: error.code }, 422);
+        }
+        throw error;
+      }
 
       if (result.status === "blocked") {
-        return json({
+        const response: CaptureResponse = {
           ok: false,
-          duplicate: true,
-          matchId: result.matchId,
-          score: parseFloat((result.score * 100).toFixed(1)),
-          message: "Near-exact duplicate detected — not stored",
-        });
+          error: "duplicate",
+          action: "blocked_duplicate",
+          match_id: result.matchId,
+          match_score: result.score,
+          warnings: [],
+        };
+        return json(response, 409);
       }
-      if (result.status === "contradiction") {
-        return json({
-          ok: true,
-          id: result.id,
-          resolved_conflict: result.resolvedConflict,
-          reason: result.reason,
-          ...(result.awareness ? { awareness: result.awareness } : {}),
-        });
-      }
-      if (result.status === "contradiction_protected") {
-        return json({
-          ok: true,
-          id: result.id,
-          status: "draft",
-          kept_canonical: result.canonicalId,
-          reason: result.reason,
-          ...(result.awareness ? { awareness: result.awareness } : {}),
-        });
-      }
-      if (result.status === "replaced") {
-        return json({ ok: true, id: result.id, action: "replaced", message: "New memory replaced an outdated existing entry" });
-      }
-      if (result.status === "merged") {
-        return json({ ok: true, id: result.id, action: "merged", message: "Memories merged into a single combined entry" });
-      }
-      if (result.status === "flagged") {
-        const storedSeparately = result.mergeSkipped !== undefined;
-        return json({
-          ok: true,
-          id: result.id,
-          ...(storedSeparately ? {
-            action: "stored_separately",
-            merge_skipped: result.mergeSkipped,
-          } : {}),
-          warning: "similar",
-          matchId: result.matchId,
-          score: parseFloat((result.score * 100).toFixed(1)),
-          message: storedSeparately
-            ? "Stored as a separate memory; the similar entry was not modified"
-            : "Stored but similar entry exists — tagged as duplicate-candidate",
-          ...(result.crossUserNote ? { crossUserNote: result.crossUserNote } : {}),
-          ...(result.awareness ? { awareness: result.awareness } : {}),
-        });
-      }
-      return json({
+      const warnings = [
+        "crossUserNote" in result ? result.crossUserNote : undefined,
+        result.status === "flagged" ? `Similar entry exists: ${result.matchId}` : undefined,
+        result.status === "flagged" && result.mergeSkipped ? `Merge skipped: ${result.mergeSkipped}` : undefined,
+        result.status === "contradiction" ? `Conflicts with entry ${result.resolvedConflict}${result.reason ? `: ${result.reason}` : ""}` : undefined,
+        result.status === "contradiction_protected" ? `Canonical entry kept: ${result.canonicalId}${result.reason ? `: ${result.reason}` : ""}` : undefined,
+        "awareness" in result && result.awareness
+          ? `Awareness ${result.awareness.status}${"reconciliationId" in result.awareness ? `: ${result.awareness.reconciliationId}` : ""}`
+          : undefined,
+      ].filter((warning): warning is string => Boolean(warning));
+      const response: CaptureResponse = {
         ok: true,
         id: result.id,
-        ...(result.crossUserNote ? { crossUserNote: result.crossUserNote } : {}),
-        ...(result.awareness ? { awareness: result.awareness } : {}),
-      });
+        action: result.status === "flagged" || result.status === "contradiction" || result.status === "contradiction_protected"
+          ? "stored_separately"
+          : result.status,
+        visibility: result.visibility,
+        warnings,
+      };
+      return json(response);
     }
 
     // POST /append
@@ -1142,19 +1151,16 @@ export const defaultHandler = {
       }
     }
 
-    // GET /export — complete backup: every entry plus the edges table. Single
-    // unbounded SELECTs are acceptable here: D1 handles tens of thousands of rows in
-    // one read and this route runs on explicit user action only. If response size
-    // ever becomes a problem, add ?after= cursor support then, not now.
+    // GET /export — either an owner's complete backup or a history-free public
+    // projection. The mode is required so callers cannot accidentally choose the
+    // broader audience by omission.
     if (url.pathname === "/export" && request.method === "GET") {
       const { error: authErr, user_id } = await requireAuthAsync(request, env);
       if (authErr) return authErr;
 
-      const VALID_MODES = ["my_public", "all_public", "my_private"] as const;
-      type ExportMode = typeof VALID_MODES[number];
-      const mode = url.searchParams.get("mode") as ExportMode | null;
-      if (mode && !VALID_MODES.includes(mode)) {
-        return json({ ok: false, error: `Invalid mode. Valid modes: ${VALID_MODES.join(", ")}` }, 400);
+      const mode = url.searchParams.get("mode");
+      if (mode !== "my_data" && mode !== "team_public") {
+        return json({ ok: false, error: "mode is required and must be my_data or team_public" }, 400);
       }
 
       let entrySql = `SELECT id, content, tags, source, created_at, updated_at,
@@ -1163,113 +1169,101 @@ export const defaultHandler = {
         recall_count, importance_score, contradiction_wins, contradiction_losses,
         retention_score, last_recalled_at
         FROM entries`;
-      const bindings: any[] = [];
-
-      if (mode === "my_public") {
-        entrySql += ` WHERE owner_user_id = ? AND visibility = 'public'`;
+      const bindings: unknown[] = [];
+      if (mode === "my_data") {
+        entrySql += ` WHERE owner_user_id = ?`;
         bindings.push(user_id);
-      } else if (mode === "my_private") {
-        entrySql += ` WHERE owner_user_id = ? AND visibility = 'private'`;
-        bindings.push(user_id);
-      } else {
-        // Default / all_public: exclude private entries
-        entrySql += ` WHERE visibility = 'public'`;
-      }
+      } else entrySql += ` WHERE visibility = 'public'`;
       entrySql += ` ORDER BY created_at DESC`;
 
-      const { results: entryRows } = await env.DB.prepare(entrySql).bind(...bindings).all() as { results: Record<string, any>[] };
-
-      // Export the immutable provenance/version tree as well as the current
-      // projection. Vector IDs are deliberately omitted because an import must
-      // re-embed for its destination index.
-      const entryIds = new Set(entryRows.map(r => r.id as string));
-      const [edgeResult, episodeResult, snapshotResult, passageResult, documentResult, sectionResult] = await Promise.all([
-        env.DB.prepare(
-          `SELECT source_id, target_id, type, weight, provenance, created_at,
-                  confidence, metadata, updated_at FROM edges`,
-        ).all(),
-        env.DB.prepare(`SELECT * FROM episodes ORDER BY created_at, id`).all(),
-        env.DB.prepare(`SELECT * FROM entry_snapshots ORDER BY created_at, id`).all(),
-        env.DB.prepare(`SELECT * FROM passages ORDER BY created_at, id`).all(),
-        env.DB.prepare(`SELECT * FROM documents ORDER BY created_at, id`).all(),
-        env.DB.prepare(`SELECT * FROM document_sections ORDER BY document_id, order_index, id`).all(),
-      ]) as Array<{ results: Record<string, any>[] }>;
-
-      const edges = edgeResult.results
-        .filter(r => entryIds.has(r.source_id) && entryIds.has(r.target_id))
-        .map(r => ({
-          source_id: r.source_id,
-          target_id: r.target_id,
-          type: r.type,
-          weight: r.weight,
-          confidence: r.confidence ?? 1.0,
-          provenance: r.provenance,
-          metadata: r.metadata,
-          created_at: r.created_at,
-          updated_at: r.updated_at,
-        }));
-
-      const episodes = episodeResult.results.filter(row => entryIds.has(row.entry_id));
-      const episodeIds = new Set(episodes.map(row => row.id as string));
-      const snapshots = snapshotResult.results.filter(row => entryIds.has(row.entry_id));
-      const passages = passageResult.results
-        .filter(row => entryIds.has(row.entry_id))
-        .map(({ vector_ids: _vectorIds, ...row }) => row);
-      const documents = documentResult.results.filter(row =>
-        typeof row.episode_id === "string"
-          ? episodeIds.has(row.episode_id)
-          : passages.some(passage => passage.document_id === row.id));
-      const documentIds = new Set(documents.map(row => row.id as string));
-      const document_sections = sectionResult.results.filter(row => documentIds.has(row.document_id));
-
-      // vector_ids are deliberately excluded — they're deployment-specific and an
-      // import tool re-embeds anyway. Tags are parsed so the file holds real arrays.
-      const entries = entryRows.map(r => ({
-        id: r.id,
-        content: r.content,
-        tags: JSON.parse(r.tags ?? "[]"),
-        source: r.source,
-        created_at: r.created_at,
-        updated_at: r.updated_at,
-        owner_user_id: r.owner_user_id,
-        created_by_user_id: r.created_by_user_id,
-        visibility: r.visibility,
-        current_episode_id: r.current_episode_id,
-        revision: r.revision,
-        valid_from: r.valid_from,
-        valid_to: r.valid_to,
-        recorded_at: r.recorded_at,
-        epistemic_status: r.epistemic_status,
-        recall_count: r.recall_count ?? 0,
-        importance_score: r.importance_score ?? 0,
-        contradiction_wins: r.contradiction_wins ?? 0,
-        contradiction_losses: r.contradiction_losses ?? 0,
-        retention_score: r.retention_score ?? 1,
-        last_recalled_at: r.last_recalled_at ?? null,
+      const { results: queriedEntryRows } = await env.DB.prepare(entrySql).bind(...bindings).all() as { results: Record<string, any>[] };
+      const entryRows = queriedEntryRows.filter((entry) => mode === "my_data"
+        ? entry.owner_user_id === user_id
+        : entry.visibility === "public");
+      const entries = await Promise.all(entryRows.map(async (row) => {
+        const episode = row.current_episode_id
+          ? await env.DB.prepare(`SELECT source_url, content_type FROM episodes WHERE id = ?`).bind(row.current_episode_id).first<Record<string, any>>()
+          : null;
+        const document = row.current_episode_id
+          ? await env.DB.prepare(`SELECT title, source_url FROM documents WHERE episode_id = ? AND owner_user_id = ?`).bind(row.current_episode_id, row.owner_user_id).first<Record<string, any>>()
+          : null;
+        return {
+          id: row.id,
+          content: row.content,
+          tags: JSON.parse(row.tags ?? "[]"),
+          source: row.source,
+          source_url: document?.source_url ?? episode?.source_url ?? null,
+          source_title: document?.title ?? null,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+          owner_user_id: row.owner_user_id,
+          created_by_user_id: row.created_by_user_id,
+          visibility: row.visibility,
+          current_episode_id: row.current_episode_id,
+          revision: row.revision,
+          valid_from: row.valid_from,
+          valid_to: row.valid_to,
+          recorded_at: row.recorded_at,
+          epistemic_status: row.epistemic_status,
+          recall_count: row.recall_count ?? 0,
+          importance_score: row.importance_score ?? 0,
+          contradiction_wins: row.contradiction_wins ?? 0,
+          contradiction_losses: row.contradiction_losses ?? 0,
+          retention_score: row.retention_score ?? 1,
+          last_recalled_at: row.last_recalled_at ?? null,
+        };
       }));
-      return json({
+      const base = {
         ok: true,
         exported_at: Date.now(),
-        version: 3,
-        mode: mode ?? "all_public",
+        version: 4,
+        mode,
         total_count: entries.length,
         entries,
-        episodes,
-        snapshots,
-        passages,
-        documents,
-        document_sections,
-        edges,
-        integrity: {
-          entries: entries.length,
-          episodes: episodes.length,
-          snapshots: snapshots.length,
-          passages: passages.length,
-          documents: documents.length,
-          document_sections: document_sections.length,
-          edges: edges.length,
-        },
-      });
+      };
+      if (mode === "team_public") return json(base);
+
+      const history = await Promise.all(entryRows.map(async (entry) => {
+        const [{ results: episodes }, { results: snapshots }] = await Promise.all([
+          env.DB.prepare(`SELECT * FROM episodes WHERE entry_id = ? ORDER BY created_at DESC, id DESC`).bind(entry.id).all<Record<string, any>>(),
+          env.DB.prepare(`SELECT * FROM entry_snapshots WHERE entry_id = ? ORDER BY created_at DESC, id DESC`).bind(entry.id).all<Record<string, any>>(),
+        ]);
+        const episodeArtifacts = await Promise.all(episodes.map(async (episode) => {
+          const [{ results: passageRows }, document] = await Promise.all([
+            env.DB.prepare(`SELECT * FROM passages WHERE entry_id = ? AND episode_id = ? ORDER BY start_offset, id`).bind(entry.id, episode.id).all<Record<string, any>>(),
+            env.DB.prepare(`SELECT * FROM documents WHERE episode_id = ? AND owner_user_id = ?`).bind(episode.id, user_id).first<Record<string, any>>(),
+          ]);
+          const passageDocumentIds = [...new Set(passageRows
+            .map((passage) => passage.document_id)
+            .filter((id): id is string => typeof id === "string" && id !== document?.id))];
+          const linkedDocuments = (await Promise.all(passageDocumentIds.map((id) =>
+            env.DB.prepare(`SELECT * FROM documents WHERE id = ? AND owner_user_id = ?`).bind(id, user_id).first<Record<string, any>>(),
+          ))).filter((item): item is Record<string, any> => item !== null && item.owner_user_id === user_id);
+          const currentDocuments: Record<string, any>[] = document && document.owner_user_id === user_id ? [document] : [];
+          const documents = [...currentDocuments, ...linkedDocuments];
+          const sections = (await Promise.all(documents.map(async (item) =>
+            (await env.DB.prepare(`SELECT * FROM document_sections WHERE document_id = ? ORDER BY order_index, id`).bind(item.id).all<Record<string, any>>()).results,
+          ))).flat();
+          return {
+            passages: passageRows.map(({ vector_ids: _vectorIds, ...passage }) => passage),
+            documents,
+            sections,
+          };
+        }));
+        return { episodes, snapshots, episodeArtifacts };
+      }));
+      const entryIds = new Set(entryRows.map((entry) => entry.id));
+      const edgeRows = (await env.DB.prepare(
+        `SELECT source_id, target_id, type, weight, provenance, created_at,
+                confidence, metadata, updated_at FROM edges`,
+      ).all<Record<string, any>>()).results;
+      const episodes = history.flatMap((item) => item.episodes);
+      const snapshots = history.flatMap((item) => item.snapshots);
+      const passages = history.flatMap((item) => item.episodeArtifacts.flatMap((artifact) => artifact.passages));
+      const documents = history.flatMap((item) => item.episodeArtifacts.flatMap((artifact) => artifact.documents));
+      const document_sections = history.flatMap((item) => item.episodeArtifacts.flatMap((artifact) => artifact.sections));
+      const edges = edgeRows.filter((edge) => entryIds.has(edge.source_id) && entryIds.has(edge.target_id));
+      return json({ ...base, episodes, snapshots, passages, documents, document_sections, edges });
     }
 
     // GET /recall — semantic search, mirrors the MCP `recall` tool

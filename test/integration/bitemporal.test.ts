@@ -102,6 +102,7 @@ describe("Bitemporal facts (Ticket 05)", () => {
       env,
       ctx,
       TEST_USER_ID,
+      { visibility: "public" },
     );
 
     expect(result.status).toBe("contradiction");

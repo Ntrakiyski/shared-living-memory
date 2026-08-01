@@ -95,6 +95,7 @@ describe("captureEntry()", () => {
       source: "api",
       revision: 1,
       epistemic_status: "candidate",
+      visibility: "private",
     });
     expect(entry.current_episode_id).toEqual(expect.any(String));
     expect(entry.created_at).toBeGreaterThanOrEqual(before);
@@ -115,6 +116,110 @@ describe("captureEntry()", () => {
     expect(insertMock).not.toHaveBeenCalled();
     const vectors = upsertMock.mock.calls[0][0] as any[];
     expect(vectors.every((vector: any) => /^ev:[0-9a-f-]{36}:\d+$/.test(vector.id))).toBe(true);
+  });
+
+  it("honors explicit public visibility without requiring a metadata tag", async () => {
+    const { ctx } = makeCtx();
+    const result = await captureEntry(
+      "Team decision",
+      [],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+      { visibility: "public" },
+    );
+
+    expect(result).toMatchObject({ status: "stored", visibility: "public" });
+    expect(db.entries[0].visibility).toBe("public");
+    expect(JSON.parse(db.entries[0].tags)).not.toContain("private");
+  });
+
+  it.each([
+    ["content_too_large", { content: "x".repeat(32 * 1024 + 1), tags: [] }],
+    ["too_many_tags", { content: "note", tags: Array.from({ length: 26 }, (_, index) => `tag-${index}`) }],
+    ["tag_too_long", { content: "note", tags: ["x".repeat(65)] }],
+    ["source_url_too_long", { content: "note", tags: [], sourceUrl: `https://example.test/${"x".repeat(2049)}` }],
+    ["source_url_too_long", { content: "note", tags: [], source: `https://example.test/${"x".repeat(2049)}` }],
+  ])("rejects %s before model or vector work", async (error, value) => {
+    const aiRun = vi.fn();
+    const vectorQuery = vi.fn();
+    env = makeTestEnv(db, {
+      AI: { run: aiRun } as unknown as Ai,
+      VECTORIZE: makeVectorizeMock({ query: vectorQuery }),
+    });
+    const { ctx } = makeCtx();
+
+    await expect(captureEntry(
+      value.content,
+      value.tags,
+      "source" in value ? value.source : "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+      { sourceUrl: "sourceUrl" in value ? value.sourceUrl : undefined },
+    )).rejects.toMatchObject({ code: error });
+    expect(aiRun).not.toHaveBeenCalled();
+    expect(vectorQuery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["pem_private_key", "-----BEGIN PRIVATE KEY-----\nZmFrZQ==\n-----END PRIVATE KEY-----"],
+    ["github_token", `ghp_${"a".repeat(36)}`],
+    ["slack_token", `xoxb-123456789012-123456789012-${"a".repeat(24)}`],
+    ["stripe_live_secret", `sk_live_${"a".repeat(24)}`],
+    ["openai_project_key", `sk-proj-${"a".repeat(32)}`],
+  ])("rejects a structurally valid %s before model or vector work", async (detector, content) => {
+    const aiRun = vi.fn();
+    const vectorQuery = vi.fn();
+    env = makeTestEnv(db, {
+      AI: { run: aiRun } as unknown as Ai,
+      VECTORIZE: makeVectorizeMock({ query: vectorQuery }),
+    });
+    const { ctx } = makeCtx();
+
+    await expect(captureEntry(content, [], "api", env, ctx, TEST_USER_ID)).rejects.toMatchObject({
+      code: "secret_detected",
+      detector,
+    });
+    expect(aiRun).not.toHaveBeenCalled();
+    expect(vectorQuery).not.toHaveBeenCalled();
+  });
+
+  it.each(["xoxa", "xoxr", "xoxs"])("rejects a structurally valid %s Slack token", async (prefix) => {
+    const { ctx } = makeCtx();
+    await expect(captureEntry(
+      `${prefix}-2-${"a".repeat(40)}`,
+      [],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+    )).rejects.toMatchObject({ code: "secret_detected", detector: "slack_token" });
+  });
+
+  it("measures tag limits in characters rather than UTF-8 bytes", async () => {
+    const { ctx } = makeCtx();
+    await expect(captureEntry(
+      "Unicode tag",
+      ["🌿".repeat(64)],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+    )).resolves.toMatchObject({ status: "stored" });
+  });
+
+  it("does not reject generic bearer text", async () => {
+    const { ctx } = makeCtx();
+    await expect(captureEntry(
+      "Use Authorization: Bearer example in the docs",
+      [],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+    )).resolves.toMatchObject({ status: "stored" });
   });
 
   it("resolves an ownerless internal capture to the _system user", async () => {
@@ -223,7 +328,7 @@ describe("captureEntry()", () => {
     });
     const { ctx } = makeCtx();
 
-    const result = await captureEntry("I moved to LA", [], "api", env, ctx, TEST_USER_ID);
+    const result = await captureEntry("I moved to LA", [], "api", env, ctx, TEST_USER_ID, { visibility: "public" });
 
     expect(result).toMatchObject({
       status: "contradiction",
@@ -280,7 +385,7 @@ describe("captureEntry()", () => {
     });
     const { ctx } = makeCtx();
 
-    const result = await captureEntry("I moved to LA", [], "api", env, ctx, TEST_USER_ID);
+    const result = await captureEntry("I moved to LA", [], "api", env, ctx, TEST_USER_ID, { visibility: "public" });
 
     expect(result).toMatchObject({
       status: "contradiction_protected",
@@ -320,7 +425,7 @@ describe("captureEntry()", () => {
 
     const result = await captureEntry("I switched to Cursor", [], "api", env, ctx, TEST_USER_ID);
 
-    expect(result).toEqual({ status: "replaced", id: "existing" });
+    expect(result).toEqual({ status: "replaced", id: "existing", visibility: "public" });
     expect(db.entries).toHaveLength(1);
     const entry = db.entries[0] as any;
     expect(entry).toMatchObject({ content: "I switched to Cursor", revision: 1 });
@@ -353,7 +458,7 @@ describe("captureEntry()", () => {
 
     const result = await captureEntry(raw, [], "api", env, ctx, TEST_USER_ID);
 
-    expect(result).toEqual({ status: "merged", id: "existing" });
+    expect(result).toEqual({ status: "merged", id: "existing", visibility: "public" });
     const entry = db.entries[0] as any;
     expect(entry).toMatchObject({ content: "Combined merged memory", revision: 1 });
     const episode = db.episodes.find((candidate: any) => candidate.id === entry.current_episode_id);

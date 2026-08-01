@@ -1149,6 +1149,7 @@ async function executeEntryCreate(
     tags,
     source: typeof payload.source === "string" ? payload.source : "operator-proposal",
     sourceUrl: typeof payload.sourceUrl === "string" ? payload.sourceUrl : null,
+    visibility,
     contentType: typeof payload.contentType === "string" ? payload.contentType : undefined,
     title: typeof payload.title === "string" ? payload.title : undefined,
     epistemicStatus: requestedEpistemic,

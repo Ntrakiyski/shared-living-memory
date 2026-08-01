@@ -310,12 +310,17 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     const res = await worker.fetch(
-      req("POST", "/capture", { body: { content: "I like dark themes generally" } }),
+      req("POST", "/capture", { body: { content: "I like dark themes generally", visibility: "public" } }),
       env,
       ctx,
     );
 
-    expect(await res.json()).toMatchObject({ ok: true, warning: "similar" });
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      action: "stored_separately",
+      visibility: "public",
+      warnings: ["Similar entry exists: near-id"],
+    });
     expect(db.entries).toHaveLength(2);
     const stored = db.entries.find((entry: any) => entry.id !== "near-id") as any;
     expect(JSON.parse(stored.tags)).toContain("duplicate-candidate");
@@ -342,13 +347,18 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     const res = await worker.fetch(
-      req("POST", "/capture", { body: { content: "I moved to LA" } }),
+      req("POST", "/capture", { body: { content: "I moved to LA", visibility: "public" } }),
       env,
       ctx,
     );
 
     const data = await res.json() as any;
-    expect(data).toMatchObject({ ok: true, resolved_conflict: "old-id", reason: "different city" });
+    expect(data).toMatchObject({
+      ok: true,
+      action: "stored_separately",
+      visibility: "public",
+      warnings: ["Conflicts with entry old-id: different city"],
+    });
     expect(db.entries).toHaveLength(2);
 
     const incumbent = db.entries.find((entry: any) => entry.id === "old-id") as any;
@@ -385,13 +395,18 @@ describe("POST /capture — governed smart merge", () => {
 
     const res = await worker.fetch(
       req("POST", "/capture", {
-        body: { content: "# New paper\n\nIndependent findings", source: "research" },
+        body: { content: "# New paper\n\nIndependent findings", source: "research", visibility: "public" },
       }),
       env,
       ctx,
     );
 
-    expect(await res.json()).toMatchObject({ ok: true, warning: "similar" });
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      action: "stored_separately",
+      visibility: "public",
+      warnings: ["Similar entry exists: research-id"],
+    });
     expect(db.entries).toHaveLength(2);
     expect(db.entries.find((entry: any) => entry.id === "research-id")?.content).toBe("Earlier research summary");
     const research = db.entries.find((entry: any) => entry.id !== "research-id") as any;
@@ -414,7 +429,7 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     const res = await worker.fetch(
-      req("POST", "/capture", { body: { content: "Replacement attempt" } }),
+      req("POST", "/capture", { body: { content: "Replacement attempt", visibility: "public" } }),
       env,
       ctx,
     );
@@ -422,10 +437,12 @@ describe("POST /capture — governed smart merge", () => {
     const data = await res.json() as any;
     expect(data).toMatchObject({
       ok: true,
-      warning: "similar",
       action: "stored_separately",
-      merge_skipped: "target_protected",
-      message: "Stored as a separate memory; the similar entry was not modified",
+      visibility: "public",
+      warnings: [
+        "Similar entry exists: canonical-id",
+        "Merge skipped: target_protected",
+      ],
     });
     expect(data.id).not.toBe("canonical-id");
     expect(db.entries.find((entry: any) => entry.id === "canonical-id")?.content).toBe("Canonical source of truth");
@@ -513,7 +530,12 @@ describe("POST /capture — governed smart merge", () => {
       ctx,
     );
 
-    expect(await res.json()).toMatchObject({ ok: false, duplicate: true });
+    expect(await res.json()).toMatchObject({
+      ok: false,
+      error: "duplicate",
+      action: "blocked_duplicate",
+      match_id: "dup",
+    });
     expect(aiRunMock).toHaveBeenCalledOnce();
   });
 });
