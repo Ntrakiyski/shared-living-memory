@@ -105,6 +105,7 @@ export type CaptureRequestError =
   | CaptureRejectionCode
   | "Unauthorized"
   | "Invalid JSON"
+  | "invalid_request"
   | "content is required"
   | "tags must be an array of strings"
   | "visibility must be private or public"

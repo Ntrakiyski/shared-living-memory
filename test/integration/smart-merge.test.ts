@@ -160,6 +160,36 @@ describe("POST /capture — governed smart merge", () => {
     });
   });
 
+  it.each([
+    ["replace", '{"action":"replace","target_id":"existing-id"}', "Incoming replacement"],
+    ["merge", '{"action":"merge","target_id":"existing-id","merged_content":"Merged current state"}', "Incoming merge detail"],
+  ])("%s keeps the valid incoming source title on the current document envelope", async (_kind, aiResponse, content) => {
+    seedEntry(db, "existing-id", "Previous current state", "[]", { importance_score: 2 });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+        }),
+      }),
+      AI: makeMergeAI(aiResponse),
+    });
+
+    const res = await worker.fetch(req("POST", "/capture", {
+      body: {
+        content,
+        visibility: "public",
+        source_title: "Incoming safe source title",
+      },
+    }), env, ctx);
+    const data = await res.json() as any;
+    const entry = db.entries.find((candidate: any) => candidate.id === "existing-id") as any;
+    const currentDocument = db.documents.find((document: any) => document.episode_id === entry.current_episode_id);
+
+    expect(res.status).toBe(200);
+    expect(data.action).toBe(_kind === "merge" ? "merged" : "replaced");
+    expect(currentDocument).toMatchObject({ title: "Incoming safe source title" });
+  });
+
   it("stores explicit public input separately from a same-owner private target without changing either scope", async () => {
     seedEntry(db, "private-target", "Private existing preference", "[]", {
       visibility: "private",

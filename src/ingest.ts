@@ -288,7 +288,7 @@ const SECRET_DETECTORS = [
   ["github_token", /\b(?:github_pat_[A-Za-z0-9_]{82}|gh[pousr]_[A-Za-z0-9]{36})\b/],
   ["slack_token", /\bxox[bpaors]-[A-Za-z0-9-]{30,}\b/],
   ["stripe_live_secret", /\bsk_live_[A-Za-z0-9]{24,}\b/],
-  ["openai_project_key", /\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}\b/],
+  ["openai_project_key", /\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])/],
 ] as const;
 
 export const CAPTURE_PAYLOAD_MAX_BYTES = 32 * 1024;
@@ -459,6 +459,7 @@ export async function captureEntry(
             materializedContent: newContent,
             tags: existingTags,
             source: existingSource,
+            title: options.sourceTitle,
           }, env);
 
           // Re-classify the merged/replaced content — updates importance_score + kind (and canonical if warranted) on the target.

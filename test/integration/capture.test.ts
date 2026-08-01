@@ -56,6 +56,14 @@ describe("POST /capture", () => {
     expect(await res.json()).toEqual({ ok: false, error: "content is required" });
   });
 
+  it("returns a typed 400 when the JSON body is null", async () => {
+    const { ctx } = makeCtx();
+    const res = await worker.fetch(req("POST", "/capture", { body: null }), env, ctx);
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ ok: false, error: "invalid_request" });
+  });
+
   it("returns 400 when content is whitespace-only", async () => {
     const { ctx } = makeCtx();
     const res = await worker.fetch(req("POST", "/capture", { body: { content: "   " } }), env, ctx);

@@ -570,4 +570,65 @@ describe("commitEntryVersion", () => {
     expect(passages.every((passage) => passage.section_id !== null)).toBe(true);
     expect(passages.every((passage) => passage.page === 8 && passage.page_end === 9)).toBe(true);
   });
+
+  it("refreshes a derived title on full replacement but preserves explicit provenance on append", async () => {
+    const initialContent = "# Alice confidential planning title\n\nPrivate draft";
+    const initial = await capture(harness, {
+      rawContent: initialContent,
+      materializedContent: initialContent,
+      contentType: "research",
+    });
+    expect(row<any>(
+      harness.db,
+      "SELECT title FROM documents WHERE episode_id = ?",
+      initial.episodeId,
+    ).title).toBe("Alice confidential planning title");
+
+    const replacementContent = "# Harmless team note\n\nSafe current text";
+    const updated = await commitEntryVersion({
+      kind: "update",
+      actorUserId,
+      entryId: initial.entryId,
+      expectedRevision: 1,
+      rawContent: replacementContent,
+      materializedContent: replacementContent,
+      now: 2_000,
+    }, harness.env);
+    expect(row<any>(
+      harness.db,
+      "SELECT title FROM documents WHERE episode_id = ?",
+      updated.episodeId,
+    ).title).toBe("Harmless team note");
+
+    const explicitlyTitled = await commitEntryVersion({
+      kind: "replace",
+      actorUserId,
+      entryId: initial.entryId,
+      expectedRevision: 2,
+      rawContent: "Replacement without a heading",
+      materializedContent: "Replacement without a heading",
+      title: "Approved source title",
+      now: 3_000,
+    }, harness.env);
+    expect(row<any>(
+      harness.db,
+      "SELECT title FROM documents WHERE episode_id = ?",
+      explicitlyTitled.episodeId,
+    ).title).toBe("Approved source title");
+
+    const appended = await commitEntryVersion({
+      kind: "append",
+      actorUserId,
+      entryId: initial.entryId,
+      expectedRevision: 3,
+      rawContent: "# Incidental append heading\nExtra detail",
+      materializedContent: "Replacement without a heading\n\n# Incidental append heading\nExtra detail",
+      now: 4_000,
+    }, harness.env);
+    expect(row<any>(
+      harness.db,
+      "SELECT title FROM documents WHERE episode_id = ?",
+      appended.episodeId,
+    ).title).toBe("Approved source title");
+  });
 });

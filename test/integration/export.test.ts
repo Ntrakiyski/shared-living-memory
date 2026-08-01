@@ -95,9 +95,9 @@ describe("GET /export", () => {
     expect(data.entries[0]).not.toHaveProperty("vector_ids");
   });
 
-  it("loads owner history in bounded batches instead of querying per entry or artifact", async () => {
+  it("loads 101 owner histories across a real second batch without querying per artifact", async () => {
     const alice = await seedActor(db, "alice");
-    for (let index = 0; index < 5; index++) {
+    for (let index = 0; index < 101; index++) {
       const entryId = `mine-${index}`;
       const episodeId = `episode-${index}`;
       const documentId = `document-${index}`;
@@ -124,8 +124,14 @@ describe("GET /export", () => {
       /FROM (episodes|entry_snapshots|passages|documents|document_sections)\b/.test(sql));
 
     expect(res.status).toBe(200);
-    expect(data.entries).toHaveLength(5);
-    expect(artifactQueries.length).toBeLessThanOrEqual(6);
+    expect(data.entries).toHaveLength(101);
+    expect(data.episodes).toContainEqual(expect.objectContaining({ id: "episode-100", content: "history 100" }));
+    expect(data.snapshots).toContainEqual(expect.objectContaining({ id: "snapshot-100", content: "snapshot 100" }));
+    expect(data.passages).toContainEqual(expect.objectContaining({ id: "passage-100", content: "passage 100" }));
+    expect(data.documents).toContainEqual(expect.objectContaining({ id: "document-100", title: "Document 100" }));
+    expect(data.document_sections).toContainEqual(expect.objectContaining({ id: "section-100", title: "Section 100" }));
+    expect(artifactQueries.length).toBeLessThanOrEqual(10);
+    expect(artifactQueries.every((sql) => (sql.match(/\?/g) ?? []).length <= 100)).toBe(true);
     expect(artifactQueries.every((sql) => !/WHERE (entry_id|episode_id|document_id) = \?/.test(sql))).toBe(true);
   });
 
@@ -161,5 +167,73 @@ describe("GET /export", () => {
     expect(data).not.toHaveProperty("edges");
     expect(JSON.stringify(data)).not.toContain("historical secret");
     expect(JSON.stringify(data)).not.toContain("Current private");
+  });
+
+  it("sanitizes unsafe legacy and integration source metadata only at the public export boundary", async () => {
+    const bob = await seedActor(db, "bob");
+    const githubSecret = `ghp_${"a".repeat(36)}`;
+    const openAiSecret = `sk-proj-${"b".repeat(32)}`;
+    const oversizedTitle = `${"t".repeat(512)}OVERSIZED_TITLE_TAIL`;
+    const oversizedUrl = `https://example.test/${"u".repeat(2048)}OVERSIZED_URL_TAIL`;
+    const credentialUrl = "https://alice:private-password@example.test/source";
+    const fixtures = [
+      { id: "safe", source: "api", title: "Safe exact title", url: "https://example.test/safe" },
+      { id: "legacy-title-secret", source: "legacy-import", title: githubSecret, url: "https://example.test/legacy" },
+      { id: "integration-url-secret", source: "github", title: "Integration title", url: `https://example.test/${openAiSecret}` },
+      { id: "legacy-title-oversized", source: "legacy-import", title: oversizedTitle, url: "https://example.test/title" },
+      { id: "integration-url-oversized", source: "github", title: "Oversized URL", url: oversizedUrl },
+      { id: "integration-url-userinfo", source: "github", title: "Credential URL", url: credentialUrl },
+      { id: "legacy-url-invalid", source: "legacy-import", title: "Invalid URL", url: "not a valid URL" },
+    ];
+    for (const fixture of fixtures) {
+      const episodeId = `${fixture.id}-episode`;
+      seedEntry(db, {
+        id: fixture.id,
+        source: fixture.source,
+        content: `Public ${fixture.id}`,
+        visibility: "public",
+        current_episode_id: episodeId,
+      });
+      db.episodes.push({
+        id: episodeId,
+        entry_id: fixture.id,
+        content: `Public ${fixture.id}`,
+        materialized_content: `Public ${fixture.id}`,
+        source_url: fixture.url,
+        created_at: 2,
+      });
+      db.documents.push({
+        id: `${fixture.id}-document`,
+        episode_id: episodeId,
+        owner_user_id: "alice",
+        title: fixture.title,
+        source_url: fixture.url,
+        created_at: 2,
+      });
+    }
+
+    const res = await worker.fetch(req("GET", "/export?mode=team_public", { userCredentials: bob }), env, ctx);
+    const data = await res.json() as any;
+    const byId = new Map(data.entries.map((entry: any) => [entry.id, entry]));
+    const serialized = JSON.stringify(data);
+
+    expect(res.status).toBe(200);
+    expect(byId.get("safe")).toMatchObject({
+      source_title: "Safe exact title",
+      source_url: "https://example.test/safe",
+    });
+    expect(byId.get("legacy-title-secret")).toMatchObject({ source_title: null });
+    expect(byId.get("integration-url-secret")).toMatchObject({ source_url: null });
+    expect(byId.get("legacy-title-oversized")).toMatchObject({ source_title: null });
+    expect(byId.get("integration-url-oversized")).toMatchObject({ source_url: null });
+    expect(byId.get("integration-url-userinfo")).toMatchObject({ source_url: null });
+    expect(byId.get("legacy-url-invalid")).toMatchObject({ source_url: null });
+    expect(serialized).not.toContain(githubSecret);
+    expect(serialized).not.toContain(openAiSecret);
+    expect(serialized).not.toContain("OVERSIZED_TITLE_TAIL");
+    expect(serialized).not.toContain("OVERSIZED_URL_TAIL");
+    expect(serialized).not.toContain("alice:private-password");
+    expect(db.documents.find((document: any) => document.id === "integration-url-userinfo-document")?.source_url)
+      .toBe(credentialUrl);
   });
 });

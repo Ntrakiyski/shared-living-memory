@@ -35,11 +35,13 @@ import { z } from "zod";
 import {
   CaptureRejectedError,
   SOURCE_TITLE_MAX_CODE_POINTS,
-  SOURCE_URL_MAX_CODE_POINTS,
   appendToEntry,
   captureEntry,
-  detectHighConfidenceSecret,
 } from "./ingest";
+import {
+  sanitizeBoundedMetadataForOutput,
+  sanitizeSourceMetadataForOutput,
+} from "./source-metadata";
 import { commitEntryVersion, EntryVersionError } from "./entry-version-service";
 import { recallEntries, renderRecallText } from "./recall";
 import type { RecallMatch } from "./recall";
@@ -65,13 +67,6 @@ import { decideOperatorAction, requireAllowedDecision } from "./operator-policy"
 import { verifyServiceActor } from "./service-actor";
 import { withMandatoryAudit } from "./mandatory-audit";
 import { MCP_ONBOARDING_MARKDOWN, MCP_ONBOARDING_RESOURCE_URI } from "./mcp-onboarding";
-
-function safeCitationMetadata(value: string | null, maxCodePoints: number): string | null {
-  if (!value || detectHighConfidenceSecret(value)) return null;
-  const codePoints = Array.from(value);
-  if (codePoints.length <= maxCodePoints) return value;
-  return `${codePoints.slice(0, Math.max(0, maxCodePoints - 1)).join("")}…`;
-}
 
 // ─── MCP Server ───────────────────────────────────────────────────────────────
 
@@ -935,9 +930,11 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       ).bind(projection.owner_user_id, entry_id, projection.current_episode_id).all() as { results: { id: string; content: string; section: string | null; page: number | null; page_end: number | null; start_offset: number | null; end_offset: number | null; created_at: number; document_title: string | null; source_url: string | null }[] };
       if (!results.length) return { content: [{ type: "text", text: `No passages found for entry ${entry_id}.` }] };
       const text = results.map((r, i) => {
-        const safeTitle = safeCitationMetadata(r.document_title, SOURCE_TITLE_MAX_CODE_POINTS);
-        const safeSection = safeCitationMetadata(r.section, SOURCE_TITLE_MAX_CODE_POINTS);
-        const safeSourceUrl = safeCitationMetadata(r.source_url, SOURCE_URL_MAX_CODE_POINTS);
+        const { sourceTitle: safeTitle, sourceUrl: safeSourceUrl } = sanitizeSourceMetadataForOutput(
+          r.document_title,
+          r.source_url,
+        );
+        const safeSection = sanitizeBoundedMetadataForOutput(r.section, SOURCE_TITLE_MAX_CODE_POINTS);
         const document = safeTitle ? ` [${safeTitle}]` : "";
         const section = safeSection ? ` [${safeSection}]` : "";
         const page = r.page != null ? ` p.${r.page}${r.page_end != null && r.page_end !== r.page ? `-${r.page_end}` : ""}` : "";

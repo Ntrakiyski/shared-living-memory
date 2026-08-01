@@ -54,7 +54,7 @@ describe("private child artifacts", () => {
     expect(hiddenBody).not.toContain("historical secret");
   });
 
-  it("never exposes Alice's prior private text after she edits and publishes the entry", async () => {
+  it("never exposes Alice's prior private text or derived title after she edits and publishes the entry", async () => {
     const bobSecret = "bob-private-artifacts";
     db.users.push({
       id: "bob", username: "Bob", normalized_username: "bob",
@@ -64,17 +64,21 @@ describe("private child artifacts", () => {
     const bobCredentials = { username: "Bob", key: `slm_bob.${bobSecret}` };
 
     const captured = await worker.fetch(req("POST", "/capture", {
-      body: { content: "Alice confidential first draft" },
+      body: { content: "# Alice confidential first draft\n\nPrivate working details" },
       userCredentials: credentials,
     }), env, ctx);
     const capturedBody = await captured.json() as any;
     expect(capturedBody.visibility).toBe("private");
+    const privateEpisodeId = db.entries.find((candidate: any) => candidate.id === capturedBody.id)?.current_episode_id;
+    expect(db.documents.find((document: any) => document.episode_id === privateEpisodeId)?.title)
+      .toBe("Alice confidential first draft Private working details");
 
     const updated = await worker.fetch(req("POST", "/update", {
-      body: { id: capturedBody.id, content: "Harmless team note" },
+      body: { id: capturedBody.id, content: "# Harmless team note\n\nSafe for everyone" },
       userCredentials: credentials,
     }), env, ctx);
     expect(updated.status).toBe(200);
+
     const entry = db.entries.find((candidate: any) => candidate.id === capturedBody.id);
     entry.visibility = "public";
     entry.tags = JSON.stringify(JSON.parse(entry.tags).filter((tag: string) => tag !== "private"));
@@ -87,5 +91,6 @@ describe("private child artifacts", () => {
     expect(exported.status).toBe(200);
     expect(exportText).toContain("Harmless team note");
     expect(exportText).not.toContain("Alice confidential first draft");
+    expect(exportText).not.toContain("Private working details");
   });
 });

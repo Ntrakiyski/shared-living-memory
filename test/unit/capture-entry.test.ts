@@ -176,6 +176,10 @@ describe("captureEntry()", () => {
     ["slack_token", `xoxb-123456789012-123456789012-${"a".repeat(24)}`],
     ["stripe_live_secret", `sk_live_${"a".repeat(24)}`],
     ["openai_project_key", `sk-proj-${"a".repeat(32)}`],
+    ["openai_project_key", `sk-proj-${"a".repeat(19)}-`],
+    ["openai_project_key", `sk-svcacct-${"a".repeat(19)}-`],
+    ["openai_project_key", `(sk-proj-${"a".repeat(19)}-)`],
+    ["openai_project_key", `prefix: sk-svcacct-${"a".repeat(19)}-.`],
   ])("rejects a structurally valid %s before model or vector work", async (detector, content) => {
     const aiRun = vi.fn();
     const vectorQuery = vi.fn();
@@ -252,6 +256,23 @@ describe("captureEntry()", () => {
     const { ctx } = makeCtx();
     await expect(captureEntry(
       "Use Authorization: Bearer example in the docs",
+      [],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+    )).resolves.toMatchObject({ status: "stored" });
+  });
+
+  it.each([
+    `mask-proj-${"a".repeat(19)}-`,
+    `mask-svcacct-${"a".repeat(19)}-`,
+    `sk-proj-${"a".repeat(18)}-`,
+    `sk-svcacct-${"a".repeat(18)}-`,
+  ])("does not treat adjacent or sub-minimum OpenAI-like text as a token: %s", async (content) => {
+    const { ctx } = makeCtx();
+    await expect(captureEntry(
+      content,
       [],
       "api",
       env,

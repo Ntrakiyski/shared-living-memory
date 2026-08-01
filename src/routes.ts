@@ -30,6 +30,7 @@ import {
   restoreEdgeVersion,
 } from "./graph";
 import { CaptureRejectedError, captureEntry, storeEntry, appendToEntry, reindexAllVectors } from "./ingest";
+import { sanitizeSourceMetadataForOutput } from "./source-metadata";
 import { commitEntryVersion, EntryVersionError } from "./entry-version-service";
 import { setEntryVisibility, VisibilityTransitionError } from "./visibility";
 import {
@@ -679,8 +680,12 @@ export const defaultHandler = {
       const { error: authErr, user_id } = await requireAuthAsync(request, env);
       if (authErr) return captureRequestError("Unauthorized", 401);
 
-      let body: Partial<CaptureRequest>;
-      try { body = await request.json(); } catch { return captureRequestError("Invalid JSON", 400); }
+      let parsedBody: unknown;
+      try { parsedBody = await request.json(); } catch { return captureRequestError("Invalid JSON", 400); }
+      if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+        return captureRequestError("invalid_request", 400);
+      }
+      const body = parsedBody as Partial<CaptureRequest>;
       if (typeof body.content !== "string" || !body.content.trim()) {
         return captureRequestError("content is required", 400);
       }
@@ -1270,13 +1275,18 @@ export const defaultHandler = {
       const entries = entryRows.map((row) => {
         const episode = episodeById.get(row.current_episode_id);
         const document = documentByEpisode.get(row.current_episode_id);
+        const rawSourceUrl = document?.source_url ?? episode?.source_url ?? null;
+        const rawSourceTitle = document?.title ?? null;
+        const sourceMetadata = mode === "team_public"
+          ? sanitizeSourceMetadataForOutput(rawSourceTitle, rawSourceUrl)
+          : { sourceTitle: rawSourceTitle, sourceUrl: rawSourceUrl };
         return {
           id: row.id,
           content: row.content,
           tags: JSON.parse(row.tags ?? "[]"),
           source: row.source,
-          source_url: document?.source_url ?? episode?.source_url ?? null,
-          source_title: document?.title ?? null,
+          source_url: sourceMetadata.sourceUrl,
+          source_title: sourceMetadata.sourceTitle,
           created_at: row.created_at,
           updated_at: row.updated_at,
           owner_user_id: row.owner_user_id,

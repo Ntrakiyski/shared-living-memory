@@ -210,6 +210,13 @@ const PASSAGE_OVERLAP_CHARS = 400;
 const VERSIONED_MUTATION_KINDS = new Set<EntryMutationKind>(
   ENTRY_MUTATION_KINDS.filter((kind) => kind !== "legacy"),
 );
+const CONTENT_REPLACING_MUTATION_KINDS = new Set<VersionedMutationKind>([
+  "capture",
+  "update",
+  "merge",
+  "replace",
+  "restore",
+]);
 
 function uuid(): string {
   return crypto.randomUUID();
@@ -595,8 +602,11 @@ export async function commitEntryVersion(
   const pageEnd = input.pageEnd === undefined
     ? (current?.current_page_end ?? page)
     : input.pageEnd;
+  const inheritedTitle = current && !CONTENT_REPLACING_MUTATION_KINDS.has(input.kind)
+    ? current.current_document_title
+    : null;
   const title = input.title?.trim()
-    || current?.current_document_title
+    || inheritedTitle
     || sections[0]?.title
     || (sourceUrl ? sourceUrl : "Untitled Document");
 
