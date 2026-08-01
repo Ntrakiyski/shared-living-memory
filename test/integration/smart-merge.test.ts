@@ -103,7 +103,7 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     const res = await worker.fetch(
-      req("POST", "/capture", { body: { content: "I switched to Cursor IDE" } }),
+      req("POST", "/capture", { body: { content: "I switched to Cursor IDE", visibility: "public" } }),
       env,
       ctx,
     );
@@ -144,7 +144,7 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     const raw = "I like dark mode especially at night";
-    const res = await worker.fetch(req("POST", "/capture", { body: { content: raw } }), env, ctx);
+    const res = await worker.fetch(req("POST", "/capture", { body: { content: raw, visibility: "public" } }), env, ctx);
 
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, action: "merged", id: "existing-id" });
@@ -180,7 +180,7 @@ describe("POST /capture — governed smart merge", () => {
       AI: makeMergeAI(response),
     });
 
-    const res = await worker.fetch(req("POST", "/capture", { body: { content } }), env, ctx);
+    const res = await worker.fetch(req("POST", "/capture", { body: { content, visibility: "public" } }), env, ctx);
 
     expect(res.status).toBe(200);
     expect(upsertMock).toHaveBeenCalledOnce();
@@ -207,7 +207,7 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     await worker.fetch(
-      req("POST", "/capture", { body: { content: "I like dark mode at night" } }),
+      req("POST", "/capture", { body: { content: "I like dark mode at night", visibility: "public" } }),
       env,
       ctx,
     );
@@ -236,7 +236,7 @@ describe("POST /capture — governed smart merge", () => {
       AI: makeMergeAI('{"action":"replace","target_id":"existing-id"}'),
     });
 
-    await worker.fetch(req("POST", "/capture", { body: { content: "Cursor IDE" } }), env, ctx);
+    await worker.fetch(req("POST", "/capture", { body: { content: "Cursor IDE", visibility: "public" } }), env, ctx);
 
     expect(callOrder).toEqual(["upsert", "delete"]);
   });
@@ -258,7 +258,7 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     await expect(
-      captureEntry("I like dark mode at night", [], "api", env, ctx, TEST_USER_ID),
+      captureEntry("I like dark mode at night", [], "api", env, ctx, TEST_USER_ID, { visibility: "public" }),
     ).rejects.toMatchObject({ code: "vector_stage_failed" });
     expect(db.entries[0]).toMatchObject({
       content: "I prefer dark mode",
@@ -286,7 +286,7 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     const res = await worker.fetch(
-      req("POST", "/capture", { body: { content: "I like dark mode at night" } }),
+      req("POST", "/capture", { body: { content: "I like dark mode at night", visibility: "public" } }),
       env,
       ctx,
     );
@@ -491,7 +491,7 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     const res = await worker.fetch(
-      req("POST", "/capture", { body: { content: "New incoming statement" } }),
+      req("POST", "/capture", { body: { content: "New incoming statement", visibility: "public" } }),
       env,
       testCtx,
     );

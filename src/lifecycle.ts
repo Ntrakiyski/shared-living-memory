@@ -314,12 +314,15 @@ export async function compressTag(
   const content = `[Synthesized from ${rows.length} entries tagged "${tag}"]\n\n${text}`;
   // A digest that incorporates any private source must itself remain private.
   // Public-only source sets remain public, matching their source visibility.
+  const digestVisibility = rows.some(row => row.visibility === "private") ? "private" : "public";
   const digestTags = [
     "synthesized",
     tag,
-    ...(rows.some(row => row.visibility === "private") ? ["private"] : []),
+    ...(digestVisibility === "private" ? ["private"] : []),
   ];
-  const result = await captureEntry(content, digestTags, "system", env, ctx, userId);
+  const result = await captureEntry(content, digestTags, "system", env, ctx, userId, {
+    visibility: digestVisibility,
+  });
 
   if (result.status !== "stored") {
     return { synthesizedId: null, entriesUsed: 0, text };

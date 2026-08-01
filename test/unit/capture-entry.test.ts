@@ -138,7 +138,9 @@ describe("captureEntry()", () => {
   it.each([
     ["content_too_large", { content: "x".repeat(32 * 1024 + 1), tags: [] }],
     ["too_many_tags", { content: "note", tags: Array.from({ length: 26 }, (_, index) => `tag-${index}`) }],
+    ["too_many_tags", { content: Array.from({ length: 26 }, (_, index) => `#derived${index}`).join(" "), tags: [] }],
     ["tag_too_long", { content: "note", tags: ["x".repeat(65)] }],
+    ["tag_too_long", { content: `note #${"x".repeat(65)}`, tags: [] }],
     ["source_url_too_long", { content: "note", tags: [], sourceUrl: `https://example.test/${"x".repeat(2049)}` }],
     ["source_url_too_long", { content: "note", tags: [], source: `https://example.test/${"x".repeat(2049)}` }],
   ])("rejects %s before model or vector work", async (error, value) => {
@@ -164,7 +166,7 @@ describe("captureEntry()", () => {
   });
 
   it.each([
-    ["pem_private_key", "-----BEGIN PRIVATE KEY-----\nZmFrZQ==\n-----END PRIVATE KEY-----"],
+    ["pem_private_key", `-----BEGIN PRIVATE KEY-----\n${"A".repeat(256)}\n-----END PRIVATE KEY-----`],
     ["github_token", `ghp_${"a".repeat(36)}`],
     ["slack_token", `xoxb-123456789012-123456789012-${"a".repeat(24)}`],
     ["stripe_live_secret", `sk_live_${"a".repeat(24)}`],
@@ -214,6 +216,18 @@ describe("captureEntry()", () => {
     const { ctx } = makeCtx();
     await expect(captureEntry(
       "Use Authorization: Bearer example in the docs",
+      [],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+    )).resolves.toMatchObject({ status: "stored" });
+  });
+
+  it("allows a private-key header mention without a matching encoded block", async () => {
+    const { ctx } = makeCtx();
+    await expect(captureEntry(
+      "The docs mention -----BEGIN PRIVATE KEY----- as a header.",
       [],
       "api",
       env,
@@ -423,7 +437,7 @@ describe("captureEntry()", () => {
     });
     const { ctx } = makeCtx();
 
-    const result = await captureEntry("I switched to Cursor", [], "api", env, ctx, TEST_USER_ID);
+    const result = await captureEntry("I switched to Cursor", [], "api", env, ctx, TEST_USER_ID, { visibility: "public" });
 
     expect(result).toEqual({ status: "replaced", id: "existing", visibility: "public" });
     expect(db.entries).toHaveLength(1);
@@ -456,7 +470,7 @@ describe("captureEntry()", () => {
     const { ctx } = makeCtx();
     const raw = "I like dark mode at night";
 
-    const result = await captureEntry(raw, [], "api", env, ctx, TEST_USER_ID);
+    const result = await captureEntry(raw, [], "api", env, ctx, TEST_USER_ID, { visibility: "public" });
 
     expect(result).toEqual({ status: "merged", id: "existing", visibility: "public" });
     const entry = db.entries[0] as any;
@@ -470,6 +484,53 @@ describe("captureEntry()", () => {
     const vectors = upsertMock.mock.calls[0][0] as any[];
     expect(vectors.every((vector: any) => vector.id.startsWith(`ev:${entry.current_episode_id}:`))).toBe(true);
     expect(vectors[0].metadata.content).toBe("Combined merged memory");
+  });
+
+  it("stores a private capture separately instead of replacing a same-owner public target", async () => {
+    seedEntry(db, {
+      content: "Public preference",
+      visibility: "public",
+      importance_score: 2,
+    });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [{ id: "existing", score: 0.88, metadata: { parentId: "existing" } }],
+        }),
+      }),
+      AI: makeResponseAI('{"action":"replace","target_id":"existing"}'),
+    });
+    const { ctx } = makeCtx();
+
+    const result = await captureEntry(
+      "Private replacement proposal",
+      [],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+      { visibility: "private" },
+    );
+
+    expect(result).toMatchObject({
+      status: "flagged",
+      visibility: "private",
+      mergeSkipped: "visibility_mismatch",
+      matchId: "existing",
+    });
+    if (result.status !== "flagged") return;
+    expect(result.id).not.toBe("existing");
+    expect(db.entries).toHaveLength(2);
+    expect(db.entries.find((entry: any) => entry.id === "existing")).toMatchObject({
+      content: "Public preference",
+      visibility: "public",
+      revision: 0,
+    });
+    expect(db.entries.find((entry: any) => entry.id === result.id)).toMatchObject({
+      content: "Private replacement proposal",
+      visibility: "private",
+      revision: 1,
+    });
   });
 
   it("falls through to a new capture when a merge target is missing", async () => {

@@ -361,6 +361,23 @@ describe("Remember message rendering", () => {
     await expect(apiCapture("note", [], "web-ui", "private")).rejects.toThrow("application_error");
   });
 
+  it("apiCapture sends private visibility when its caller omits visibility", async () => {
+    const fetch = vi.fn(async (_url: string, _init: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, id: "stored-id", action: "stored", visibility: "private", warnings: [] }),
+    }));
+    const apiCapture = new Function(
+      "fetch",
+      "authHeaders",
+      `"use strict"; const WORKER_URL = "https://example.test"; return (${extractInlineFunction("apiCapture")});`,
+    )(fetch, (headers: Record<string, string>) => headers) as (...args: any[]) => Promise<any>;
+
+    await apiCapture("note", [], "web-ui");
+
+    expect(JSON.parse(fetch.mock.calls[0]![1].body as string)).toMatchObject({ visibility: "private" });
+  });
+
   it.each([401, 422, 500])("keeps input and never says Kept after a %i capture failure", async (status) => {
     const input = { value: "Keep this text", disabled: false };
     const msgs = { appendChild: vi.fn(), scrollTop: 0, scrollHeight: 0 };

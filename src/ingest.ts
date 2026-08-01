@@ -274,7 +274,7 @@ export type CaptureResult =
       matchId: string;
       score: number;
       crossUserNote?: string;
-      mergeSkipped?: "target_not_owned" | "target_protected";
+      mergeSkipped?: "target_not_owned" | "target_protected" | "visibility_mismatch";
       visibility: CaptureVisibility;
       awareness?: AwarenessDelivery;
     }
@@ -304,23 +304,43 @@ interface CaptureOptions {
 }
 
 const SECRET_DETECTORS = [
-  ["pem_private_key", /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/],
   ["github_token", /\b(?:github_pat_[A-Za-z0-9_]{82}|gh[pousr]_[A-Za-z0-9]{36})\b/],
   ["slack_token", /\bxox[bpaors]-[A-Za-z0-9-]{30,}\b/],
   ["stripe_live_secret", /\bsk_live_[A-Za-z0-9]{24,}\b/],
   ["openai_project_key", /\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}\b/],
 ] as const;
 
-function validateCaptureInput(content: string, tags: string[], sourceUrl?: string): void {
-  if (new TextEncoder().encode(content).byteLength > 32 * 1024) {
-    throw new CaptureRejectedError("content_too_large");
+const PEM_PRIVATE_KEY_BLOCK = /-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----\r?\n([\s\S]*?)\r?\n-----END \1-----/g;
+
+function containsPlausiblePemPrivateKey(content: string): boolean {
+  for (const match of content.matchAll(PEM_PRIVATE_KEY_BLOCK)) {
+    const encodedBody = match[2].replace(/\s/g, "");
+    if (encodedBody.length >= 128
+        && encodedBody.length % 4 === 0
+        && /^[A-Za-z0-9+/]+={0,2}$/.test(encodedBody)) {
+      return true;
+    }
   }
+  return false;
+}
+
+function validateCaptureTags(tags: string[]): void {
   if (tags.length > 25) throw new CaptureRejectedError("too_many_tags");
   if (tags.some((tag) => Array.from(tag).length > 64)) {
     throw new CaptureRejectedError("tag_too_long");
   }
+}
+
+function validateCaptureInput(content: string, tags: string[], sourceUrl?: string): void {
+  if (new TextEncoder().encode(content).byteLength > 32 * 1024) {
+    throw new CaptureRejectedError("content_too_large");
+  }
+  validateCaptureTags(tags);
   if (sourceUrl && sourceUrl.length > 2_048) {
     throw new CaptureRejectedError("source_url_too_long");
+  }
+  if (containsPlausiblePemPrivateKey(content)) {
+    throw new CaptureRejectedError("secret_detected", "pem_private_key");
   }
   const match = SECRET_DETECTORS.find(([, pattern]) => pattern.test(content));
   if (match) throw new CaptureRejectedError("secret_detected", match[0]);
@@ -342,9 +362,11 @@ export async function captureEntry(
   const { cleanContent, hashtags } = extractHashtags(raw);
   const c = cleanContent || raw;
   const t = [...new Set([...tags.map(tag => tag.toLowerCase()), ...hashtags])];
+  validateCaptureTags(t);
   const actorUserId = userId ?? await getSystemUserId(env);
   const sourceUrl = requestedSourceUrl ?? null;
   const visibility = options.visibility ?? "private";
+  let effectiveVisibility = visibility;
   const researchLike = sourceUrl !== null
     || /^(research|paper|document)$/i.test(source)
     || /^(#{1,4})\s+/m.test(rawContent);
@@ -359,7 +381,7 @@ export async function captureEntry(
     return { status: "blocked", matchId: dup.matchId, score: dup.score };
   }
 
-  let mergeSkipped: "target_not_owned" | "target_protected" | undefined;
+  let mergeSkipped: "target_not_owned" | "target_protected" | "visibility_mismatch" | undefined;
 
   // ── Smart merge: replace/merge existing entry — no new entry inserted ────────
   if (!researchLike && dup.status === "flagged" && mergeAction && mergeAction.action !== "keep_both") {
@@ -380,11 +402,17 @@ export async function captureEntry(
       } else {
         const existingTags: string[] = JSON.parse(targetRow.tags ?? "[]");
         const existingSource = targetRow.source as string;
+        const targetVisibility: CaptureVisibility = targetRow.visibility === "private" ? "private" : "public";
 
-        // Protect high-importance or canonical memories from being silently
-        // overwritten. The new statement is retained as its own candidate.
-        const targetStatus = getStatus(existingTags);
-        if ((targetRow.importance_score as number) >= 4 || targetStatus === "canonical") {
+        // Similarity is never authority to cross a visibility boundary. When
+        // either side is private, retain the incoming statement separately and
+        // keep it private rather than publishing or mutating either memory.
+        if (targetVisibility !== effectiveVisibility) {
+          mergeSkipped = "visibility_mismatch";
+          effectiveVisibility = "private";
+        } else if ((targetRow.importance_score as number) >= 4 || getStatus(existingTags) === "canonical") {
+          // Protect high-importance or canonical memories from being silently
+          // overwritten. The new statement is retained as its own candidate.
           mergeSkipped = "target_protected";
         } else {
           const committed = await commitEntryVersion({
@@ -430,7 +458,7 @@ export async function captureEntry(
       matchedEntryId: crossUserSimilar.entryId,
       matchedOwnerUserId: crossUserSimilar.ownerUserId,
       similarity: crossUserSimilar.score,
-      newEntryIsPublic: visibility === "public",
+      newEntryIsPublic: effectiveVisibility === "public",
     });
   }
 
@@ -446,7 +474,7 @@ export async function captureEntry(
       source,
       sourceUrl,
       title: options.sourceTitle,
-      visibility,
+      visibility: effectiveVisibility,
       contentType: researchLike ? "research" : "text",
       epistemicStatus: "candidate",
     }, env);
@@ -462,7 +490,6 @@ export async function captureEntry(
     throw error;
   }
   const id = committed.entryId;
-  const effectiveVisibility = visibility;
 
   let awareness: AwarenessDelivery | undefined;
   if (awarenessIntentId) {

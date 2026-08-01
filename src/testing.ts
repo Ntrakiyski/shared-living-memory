@@ -11,7 +11,6 @@ export { default } from "./index";
 export type {
   Env,
   RecallMatch,
-  CaptureResult,
   Episode,
   EntrySnapshot,
   Passage,

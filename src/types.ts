@@ -3,7 +3,7 @@
  *
  * Purpose: Define all cross-module interfaces, enums, and type aliases in one place.
  * Input: None (type-only module).
- * Output: Env, RecallMatch, MemoryStatus, MemoryKind, CaptureResult, etc.
+ * Output: Env, RecallMatch, MemoryStatus, MemoryKind, capture contracts, etc.
  * Logic: Type definitions only — no runtime logic.
  */
 
@@ -94,14 +94,6 @@ export interface CaptureDuplicateResponse {
 }
 
 export type CaptureResponse = CaptureStoredResponse | CaptureDuplicateResponse;
-
-export type CaptureResult =
-  | { status: "blocked"; matchId: string; score: number }
-  | { status: "stored"; id: string; crossUserNote?: string; awareness?: AwarenessDelivery }
-  | { status: "flagged"; id: string; matchId: string; score: number; crossUserNote?: string; awareness?: AwarenessDelivery }
-  | { status: "contradiction"; id: string; resolvedConflict: string; reason?: string; awareness?: AwarenessDelivery }
-  | { status: "contradiction_protected"; id: string; canonicalId: string; reason?: string; awareness?: AwarenessDelivery }
-  | { status: "contradiction_resolved"; id: string; replacedId?: string; mergedInto?: string; keptBoth?: boolean; reason?: string };
 
 // ─── Memory Pillar: Episodes, Snapshots, Passages ────────────────────────────
 

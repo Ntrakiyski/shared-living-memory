@@ -3877,7 +3877,7 @@
         return json.result?.content?.[0]?.text ?? ''
       }
 
-      async function apiCapture(content, tags, source, visibility) {
+      async function apiCapture(content, tags, source, visibility = 'private') {
         const res = await fetch(`${WORKER_URL}/capture`, {
           method: 'POST',
           headers: authHeaders({ 'Content-Type': 'application/json' }),
