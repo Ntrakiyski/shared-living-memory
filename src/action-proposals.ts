@@ -1251,6 +1251,7 @@ async function executeEntryRestore(env: Env, row: ProposalRow, now: number): Pro
     sourceUrl: snapshot.source_url,
     contentType: snapshot.content_type ?? "text",
     title: snapshot.source_title ?? undefined,
+    titleOrigin: snapshot.source_title_origin ?? undefined,
     validFrom: snapshot.valid_from,
     validTo: snapshot.valid_to,
     epistemicStatus: "candidate",

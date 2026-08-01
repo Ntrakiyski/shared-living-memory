@@ -1098,6 +1098,28 @@ const MIGRATIONS: readonly Migration[] = [
       return statements;
     },
   },
+  {
+    version: 11,
+    name: "document_title_origin",
+    statements: async (db) => {
+      const documents = await tableColumns(db, "documents");
+      const statements: string[] = [];
+      addColumnIfMissing(
+        statements,
+        documents,
+        "documents",
+        "title_origin",
+        "TEXT NOT NULL DEFAULT 'generated' CHECK (title_origin IN ('explicit', 'generated'))",
+      );
+      statements.push(
+        `UPDATE documents
+         SET title_origin = 'generated'
+         WHERE title_origin IS NULL
+            OR title_origin NOT IN ('explicit', 'generated')`,
+      );
+      return statements;
+    },
+  },
 ] as const;
 
 async function ensureMigrationTable(db: D1Database): Promise<void> {
@@ -1184,7 +1206,7 @@ async function validateCurrentSchema(db: D1Database): Promise<void> {
       section, page, page_end, start_offset, end_offset, vector_ids, created_at
       FROM passages LIMIT 0`,
     `SELECT id, title, source_url, content_type, created_at, episode_id,
-      owner_user_id, content_hash, version FROM documents LIMIT 0`,
+      owner_user_id, content_hash, version, title_origin FROM documents LIMIT 0`,
     `SELECT id, document_id, parent_section_id, title, level, order_index,
       created_at, page_start, page_end, start_offset, end_offset
       FROM document_sections LIMIT 0`,

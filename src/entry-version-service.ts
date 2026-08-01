@@ -11,6 +11,8 @@
 import { chunkText, embed } from "./helpers";
 import {
   ENTRY_MUTATION_KINDS,
+  DOCUMENT_TITLE_ORIGINS,
+  type DocumentTitleOrigin,
   type EntryMutationKind,
   type EntryVisibility,
   type Env,
@@ -32,6 +34,7 @@ export interface CommitEntryVersionInput {
   visibility?: EntryVisibility;
   contentType?: string;
   title?: string;
+  titleOrigin?: DocumentTitleOrigin;
   restoredFromSnapshotId?: string;
   forceCreate?: boolean;
   validFrom?: number | null;
@@ -166,6 +169,7 @@ interface CurrentEntryRow {
   current_source_url: string | null;
   current_materialized_content: string | null;
   current_document_title: string | null;
+  current_document_title_origin: DocumentTitleOrigin | null;
   current_page: number | null;
   current_page_end: number | null;
 }
@@ -189,6 +193,7 @@ export interface OwnedRestoreSnapshot {
   valid_to: number | null;
   epistemic_status: EpistemicStatus | null;
   source_title: string | null;
+  source_title_origin: DocumentTitleOrigin | null;
   source_url: string | null;
   content_type: string | null;
 }
@@ -473,6 +478,11 @@ async function loadCurrentEntry(env: Env, entryId: string): Promise<CurrentEntry
          ORDER BY d.created_at DESC, d.id ASC LIMIT 1
        ) AS current_document_title,
        (
+         SELECT d.title_origin FROM documents d
+         WHERE d.episode_id = e.current_episode_id
+         ORDER BY d.created_at DESC, d.id ASC LIMIT 1
+       ) AS current_document_title_origin,
+       (
          SELECT p.page FROM passages p
          WHERE p.episode_id = e.current_episode_id AND p.page IS NOT NULL
          ORDER BY p.start_offset ASC, p.id ASC LIMIT 1
@@ -499,10 +509,11 @@ export async function loadOwnedRestoreSnapshot(
   snapshotId?: string,
 ): Promise<OwnedRestoreSnapshot | null> {
   const requestedSnapshotId = snapshotId ?? null;
-  return env.DB.prepare(
+  const snapshot = await env.DB.prepare(
     `SELECT s.id, s.entry_id, s.episode_id, s.content, s.tags, s.source,
             s.created_at, s.valid_from, s.valid_to, s.epistemic_status,
             d.title AS source_title,
+            d.title_origin AS source_title_origin,
             COALESCE(d.source_url, ep.source_url) AS source_url,
             COALESCE(d.content_type, ep.content_type) AS content_type
      FROM entry_snapshots s
@@ -514,11 +525,19 @@ export async function loadOwnedRestoreSnapshot(
       AND ep.owner_user_id = parent.owner_user_id
      LEFT JOIN documents d
        ON d.episode_id = ep.id
-      AND d.owner_user_id = parent.owner_user_id
+      AND (d.owner_user_id = parent.owner_user_id OR d.owner_user_id = '')
      WHERE s.entry_id = ? AND (? IS NULL OR s.id = ?)
      ORDER BY s.created_at DESC, s.id DESC LIMIT 1`,
   ).bind(ownerUserId, entryId, requestedSnapshotId, requestedSnapshotId)
     .first<OwnedRestoreSnapshot>();
+  if (snapshot && !snapshot.source_title?.trim()) {
+    return {
+      ...snapshot,
+      source_title: null,
+      source_title_origin: null,
+    };
+  }
+  return snapshot;
 }
 
 async function loadRestoreSnapshot(
@@ -538,6 +557,13 @@ function validateInput(input: CommitEntryVersionInput): void {
     throw new EntryVersionValidationError(`Unsupported mutation kind: ${String(input.kind)}`);
   }
   if (!input.actorUserId) throw new EntryVersionValidationError("actorUserId is required");
+  if (input.titleOrigin !== undefined
+      && !(DOCUMENT_TITLE_ORIGINS as readonly string[]).includes(input.titleOrigin)) {
+    throw new EntryVersionValidationError("titleOrigin must be explicit or generated");
+  }
+  if (input.titleOrigin !== undefined && !input.title?.trim()) {
+    throw new EntryVersionValidationError("titleOrigin requires a title");
+  }
   if (typeof input.rawContent !== "string") {
     throw new EntryVersionValidationError("rawContent must be a string");
   }
@@ -659,23 +685,20 @@ export async function commitEntryVersion(
   const pageEnd = input.pageEnd === undefined
     ? (current?.current_page_end ?? page)
     : input.pageEnd;
-  const currentDerivedTitle = current
-    ? deriveDocumentTitle(
-        current.current_materialized_content ?? current.content,
-        current.current_source_url,
-      )
-    : null;
-  const currentTitleWasExplicit = Boolean(
-    current?.current_document_title
-      && current.current_document_title !== currentDerivedTitle,
-  );
+  const incomingTitle = input.title?.trim() || null;
   const inheritedTitle = current
-    && (!CONTENT_REPLACING_MUTATION_KINDS.has(input.kind) || currentTitleWasExplicit)
+    && (!CONTENT_REPLACING_MUTATION_KINDS.has(input.kind)
+      || current.current_document_title_origin === "explicit")
     ? current.current_document_title
     : null;
-  const title = input.title?.trim()
+  const title = incomingTitle
     || inheritedTitle
     || deriveDocumentTitle(input.materializedContent, sourceUrl);
+  const titleOrigin: DocumentTitleOrigin = incomingTitle
+    ? (input.titleOrigin ?? "explicit")
+    : inheritedTitle
+      ? (current?.current_document_title_origin ?? "generated")
+      : "generated";
 
   // Historical passage vectors are immutable episode evidence used by knownAt
   // recall. Only the mutable entry projection vectors become stale here.
@@ -772,10 +795,10 @@ export async function commitEntryVersion(
       statements.push(env.DB.prepare(
         `INSERT INTO documents (
            id, title, source_url, content_type, created_at, episode_id,
-           owner_user_id, content_hash, version
+           owner_user_id, content_hash, version, title_origin
          )
          SELECT ?, COALESCE(NULLIF(?, ''), 'Untitled Memory'), ?, ?,
-                COALESCE(recorded_at, created_at), ?, owner_user_id, ?, ?
+                COALESCE(recorded_at, created_at), ?, owner_user_id, ?, ?, 'generated'
          FROM entries
          WHERE id = ? AND owner_user_id = ? AND revision = ?
            AND current_episode_id IS NULL`,
@@ -848,22 +871,23 @@ export async function commitEntryVersion(
       input.actorUserId,
       documentContentHash,
       String(newRevision),
+      titleOrigin,
     ] as const;
     if (current) {
       statements.push(env.DB.prepare(
         `INSERT INTO documents (
            id, title, source_url, content_type, created_at, episode_id,
-           owner_user_id, content_hash, version
+           owner_user_id, content_hash, version, title_origin
          )
-         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? FROM entries
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM entries
          WHERE id = ? AND owner_user_id = ? AND revision = ?`,
       ).bind(...documentBindings, targetEntryId, input.actorUserId, guardedRevision));
     } else {
       statements.push(env.DB.prepare(
         `INSERT INTO documents (
            id, title, source_url, content_type, created_at, episode_id,
-           owner_user_id, content_hash, version
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           owner_user_id, content_hash, version, title_origin
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(...documentBindings));
     }
 

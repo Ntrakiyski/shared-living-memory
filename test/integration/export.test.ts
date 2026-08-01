@@ -66,17 +66,22 @@ describe("GET /export", () => {
     db.passages.push(
       { id: "mine-passage", entry_id: "mine", episode_id: "mine-old", document_id: "mine-doc", content: "mine passage", created_at: 1, vector_ids: "[]" },
       { id: "mine-legacy-passage", entry_id: "mine", episode_id: null, document_id: "mine-legacy-doc", content: "mine legacy passage", created_at: 2, vector_ids: "[]" },
+      { id: "mine-ownerless-passage", entry_id: "mine", episode_id: null, document_id: "mine-ownerless-passage-doc", content: "mine ownerless passage", created_at: 2, vector_ids: "[]" },
       { id: "mine-cross-owner-passage", entry_id: "mine", episode_id: "mine-current", document_id: "other-doc", content: "owned passage with foreign document reference", created_at: 3, vector_ids: "[]" },
       { id: "other-passage", entry_id: "other", episode_id: "other-episode", document_id: "other-doc", content: "other passage", created_at: 1, vector_ids: "[]" },
     );
     db.documents.push(
       { id: "mine-doc", episode_id: "mine-old", owner_user_id: "alice", title: "Mine", created_at: 1 },
+      { id: "mine-ownerless-episode-doc", episode_id: "mine-current", owner_user_id: "", title: "Mine ownerless current", created_at: 2 },
       { id: "mine-legacy-doc", episode_id: null, owner_user_id: "alice", title: "Mine legacy", created_at: 2 },
+      { id: "mine-ownerless-passage-doc", episode_id: null, owner_user_id: "", title: "Mine ownerless passage", created_at: 2 },
       { id: "other-doc", episode_id: "other-episode", owner_user_id: "bob", title: "Other", created_at: 1 },
     );
     db.document_sections.push(
       { id: "mine-section", document_id: "mine-doc", title: "Mine", order_index: 0 },
+      { id: "mine-ownerless-episode-section", document_id: "mine-ownerless-episode-doc", title: "Mine ownerless current", order_index: 0 },
       { id: "mine-legacy-section", document_id: "mine-legacy-doc", title: "Mine legacy", order_index: 0 },
+      { id: "mine-ownerless-passage-section", document_id: "mine-ownerless-passage-doc", title: "Mine ownerless passage", order_index: 0 },
       { id: "other-section", document_id: "other-doc", title: "Other", order_index: 0 },
     );
 
@@ -88,9 +93,19 @@ describe("GET /export", () => {
     expect(data.entries.map((entry: any) => entry.id)).toEqual(["mine"]);
     expect(data.episodes.map((episode: any) => episode.id).sort()).toEqual(["mine-current", "mine-old"]);
     expect(data.snapshots.map((snapshot: any) => snapshot.id)).toEqual(["mine-snapshot"]);
-    expect(data.passages.map((passage: any) => passage.id).sort()).toEqual(["mine-cross-owner-passage", "mine-legacy-passage", "mine-passage"]);
-    expect(data.documents.map((document: any) => document.id).sort()).toEqual(["mine-doc", "mine-legacy-doc"]);
-    expect(data.document_sections.map((section: any) => section.id).sort()).toEqual(["mine-legacy-section", "mine-section"]);
+    expect(data.passages.map((passage: any) => passage.id).sort()).toEqual(["mine-cross-owner-passage", "mine-legacy-passage", "mine-ownerless-passage", "mine-passage"]);
+    expect(data.documents.map((document: any) => document.id).sort()).toEqual([
+      "mine-doc",
+      "mine-legacy-doc",
+      "mine-ownerless-episode-doc",
+      "mine-ownerless-passage-doc",
+    ]);
+    expect(data.document_sections.map((section: any) => section.id).sort()).toEqual([
+      "mine-legacy-section",
+      "mine-ownerless-episode-section",
+      "mine-ownerless-passage-section",
+      "mine-section",
+    ]);
     expect(JSON.stringify(data)).not.toContain("other history");
     expect(data.entries[0]).not.toHaveProperty("vector_ids");
   });

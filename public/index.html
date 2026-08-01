@@ -3924,17 +3924,18 @@
       }
 
       function formatRecallPassageForContext(passage) {
-        const citation = [
-          passage.documentTitle ? `title="${passage.documentTitle}"` : null,
-          passage.sourceUrl ? `url=${passage.sourceUrl}` : null,
-          passage.page != null ? `page=${passage.page}` : null,
-          passage.pageEnd != null ? `pageEnd=${passage.pageEnd}` : null,
-          passage.section ? `section="${passage.section}"` : null,
-          passage.startOffset != null ? `startOffset=${passage.startOffset}` : null,
-          passage.endOffset != null ? `endOffset=${passage.endOffset}` : null,
-        ].filter(Boolean)
-        const prefix = citation.length ? `[${citation.join('; ')}] ` : ''
-        return `- ${prefix}"${passage.content || ''}"`
+        return {
+          citation: {
+            ...(passage.documentTitle ? { title: passage.documentTitle } : {}),
+            ...(passage.sourceUrl ? { url: passage.sourceUrl } : {}),
+            ...(passage.page != null ? { page: passage.page } : {}),
+            ...(passage.pageEnd != null ? { pageEnd: passage.pageEnd } : {}),
+            ...(passage.section ? { section: passage.section } : {}),
+            ...(passage.startOffset != null ? { startOffset: passage.startOffset } : {}),
+            ...(passage.endOffset != null ? { endOffset: passage.endOffset } : {}),
+          },
+          excerpt: passage.content || '',
+        }
       }
 
       async function sendRecall() {
@@ -3989,20 +3990,22 @@
 
             // Serialize results for the /chat LLM context, mirroring the MCP tool's
             // format — dates/tags/source are needed for temporal questions
-            const memories =
-              (data.insight ? `Insight: ${data.insight}\n\n` : '') +
-              data.results
-                .map((m, i) => {
-                  const date = new Date(m.created_at).toLocaleDateString()
-                  const tagList = m.tags && m.tags.length ? ` [${m.tags.join(', ')}]` : ''
-                  const src = m.source ? ` · ${m.source}` : ''
-                  const related = m.hop > 0 ? ` [related, ${m.hop} hop${m.hop > 1 ? 's' : ''}]` : ''
-                  const evidence = Array.isArray(m.passages) && m.passages.length
-                    ? `\nEVIDENCE:\n${m.passages.map(formatRecallPassageForContext).join('\n')}`
-                    : ''
-                  return `${i + 1}. [${date}${src}${tagList}] (${Math.min(100, Math.round(m.score))}% match)${m.updated ? ' [updated]' : ''}${related}\n${m.content}${evidence}`
-                })
-                .join('\n\n')
+            const memories = JSON.stringify({
+              insight: data.insight || null,
+              results: data.results.map((m, i) => ({
+                sourceNumber: i + 1,
+                createdAt: new Date(m.created_at).toISOString(),
+                source: m.source || null,
+                tags: Array.isArray(m.tags) ? m.tags : [],
+                score: Math.min(100, Math.round(m.score)),
+                updated: Boolean(m.updated),
+                hop: m.hop || 0,
+                content: m.content,
+                passages: Array.isArray(m.passages)
+                  ? m.passages.map(formatRecallPassageForContext)
+                  : [],
+              })),
+            })
             const res = await fetch(`${WORKER_URL}/chat`, {
               method: 'POST',
               headers: authHeaders({ 'Content-Type': 'application/json' }),

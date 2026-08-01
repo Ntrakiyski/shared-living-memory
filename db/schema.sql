@@ -226,7 +226,9 @@ CREATE TABLE IF NOT EXISTS documents (
   episode_id   TEXT,
   owner_user_id TEXT NOT NULL DEFAULT '',
   content_hash TEXT,
-  version      TEXT
+  version      TEXT,
+  title_origin TEXT NOT NULL DEFAULT 'generated'
+    CHECK (title_origin IN ('explicit', 'generated'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_episode_unique

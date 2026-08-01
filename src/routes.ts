@@ -37,7 +37,12 @@ import {
   storeEntry,
   validateSourceMetadataInput,
 } from "./ingest";
-import { sanitizeSourceMetadataForOutput } from "./source-metadata";
+import {
+  SOURCE_LABEL_MAX_CODE_POINTS,
+  sanitizeBoundedMetadataForOutput,
+  sanitizeSourceMetadataForOutput,
+  type SourceMetadataOutputContext,
+} from "./source-metadata";
 import {
   commitEntryVersion,
   EntryVersionError,
@@ -108,6 +113,15 @@ function isVisibleEntry(row: EntryAccessRow, userId: string | undefined): boolea
   if (!userId) return false;
   if (row.owner_user_id === userId) return true;
   return row.visibility === "public";
+}
+
+function sourceOutputContext(
+  ownerUserId: unknown,
+  viewerUserId: string | undefined,
+): SourceMetadataOutputContext {
+  return typeof ownerUserId === "string" && ownerUserId === viewerUserId
+    ? "owner_mcp"
+    : "team_public";
 }
 
 function versionWriteError(error: unknown): Response {
@@ -1005,6 +1019,10 @@ export const defaultHandler = {
 
       const enriched = (results as any[]).map(r => ({
         ...r,
+        source: sanitizeSourceMetadataForOutput(
+          { source: r.source },
+          sourceOutputContext(r.owner_user_id, user_id),
+        ).source,
         owner_username: ownerMap[r.owner_user_id] || '',
         is_private: r.visibility === "private",
         is_owned: r.owner_user_id === user_id,
@@ -1050,7 +1068,13 @@ export const defaultHandler = {
       const { results } = await env.DB.prepare(sql).bind(...bindings).all();
       const rows = (results ?? []) as Record<string, any>[];
       const hasMore = rows.length > limit;
-      const entries = rows.slice(0, limit);
+      const entries: Record<string, any>[] = rows.slice(0, limit).map((entry) => ({
+        ...entry,
+        source: sanitizeSourceMetadataForOutput(
+          { source: entry.source },
+          sourceOutputContext(entry.owner_user_id, user_id),
+        ).source,
+      }));
       const last = hasMore ? entries.at(-1) : null;
       return json({
         ok: true,
@@ -1260,7 +1284,7 @@ export const defaultHandler = {
 
         const episodeIds = [...new Set(episodes.map((episode) => episode.id).filter((id): id is string => typeof id === "string"))];
         const episodeDocuments = await loadExportRowsByIds(env, "documents", "episode_id", episodeIds, {
-          extraWhere: " AND owner_user_id = ?",
+          extraWhere: " AND (owner_user_id = ? OR owner_user_id = '')",
           extraBindings: [user_id],
         });
         const loadedDocumentIds = new Set(episodeDocuments.map((document) => document.id));
@@ -1268,12 +1292,13 @@ export const defaultHandler = {
           .map((passage) => passage.document_id)
           .filter((id): id is string => typeof id === "string" && !loadedDocumentIds.has(id)))];
         const passageDocuments = await loadExportRowsByIds(env, "documents", "id", passageDocumentIds, {
-          extraWhere: " AND owner_user_id = ?",
+          extraWhere: " AND (owner_user_id = ? OR owner_user_id = '')",
           extraBindings: [user_id],
         });
         const documentMap = new Map<string, Record<string, any>>();
         for (const document of [...episodeDocuments, ...passageDocuments]) {
-          if (document.owner_user_id === user_id && typeof document.id === "string") {
+          if ((document.owner_user_id === user_id || document.owner_user_id === "")
+              && typeof document.id === "string") {
             documentMap.set(document.id, document);
           }
         }
@@ -1289,8 +1314,11 @@ export const defaultHandler = {
         const ownerByEpisode = new Map(entryRows
           .filter((entry) => typeof entry.current_episode_id === "string")
           .map((entry) => [entry.current_episode_id as string, entry.owner_user_id]));
-        documents = candidateDocuments.filter((document) =>
-          ownerByEpisode.get(document.episode_id) === document.owner_user_id);
+        documents = candidateDocuments.filter((document) => {
+          const episodeOwner = ownerByEpisode.get(document.episode_id);
+          return typeof episodeOwner === "string"
+            && (episodeOwner === document.owner_user_id || document.owner_user_id === "");
+        });
       }
 
       const episodeById = new Map(episodes.map((episode) => [episode.id, episode]));
@@ -1393,23 +1421,42 @@ export const defaultHandler = {
 
       return json({
         ok: true,
-        results: matches.map(m => ({
-          id: m.id,
-          content: m.content,
-          score: parseFloat((m.score * 100).toFixed(1)),
-          tags: m.tags,
-          source: m.source,
-          created_at: m.createdAt,
-          updated: m.isUpdate,
-          hop: m.hop,
-          epistemic_status: m.epistemicStatus,
-          owner_user_id: m.ownerUserId,
-          is_private: m.visibility === "private",
-          is_owned: m.ownerUserId === user_id,
-          ...(m.passages?.length ? { passages: m.passages } : {}),
-          ...(m.relations?.length ? { relations: m.relations } : {}),
-          ...(m.crossUserMention ? { crossUserMention: { owner_username: m.crossUserMention.ownerUsername, similarity: parseFloat((m.crossUserMention.similarity * 100).toFixed(1)) } } : {}),
-        })),
+        results: matches.map(m => {
+          const context = sourceOutputContext(m.ownerUserId, user_id);
+          const safeSource = sanitizeSourceMetadataForOutput({ source: m.source }, context).source;
+          const safePassages = m.passages?.map((passage) => {
+            const safeCitation = sanitizeSourceMetadataForOutput({
+              sourceTitle: passage.documentTitle,
+              sourceUrl: passage.sourceUrl,
+            }, context);
+            return {
+              ...passage,
+              documentTitle: safeCitation.sourceTitle,
+              sourceUrl: safeCitation.sourceUrl,
+              section: sanitizeBoundedMetadataForOutput(
+                passage.section,
+                SOURCE_LABEL_MAX_CODE_POINTS,
+              ),
+            };
+          });
+          return {
+            id: m.id,
+            content: m.content,
+            score: parseFloat((m.score * 100).toFixed(1)),
+            tags: m.tags,
+            source: safeSource,
+            created_at: m.createdAt,
+            updated: m.isUpdate,
+            hop: m.hop,
+            epistemic_status: m.epistemicStatus,
+            owner_user_id: m.ownerUserId,
+            is_private: m.visibility === "private",
+            is_owned: m.ownerUserId === user_id,
+            ...(safePassages?.length ? { passages: safePassages } : {}),
+            ...(m.relations?.length ? { relations: m.relations } : {}),
+            ...(m.crossUserMention ? { crossUserMention: { owner_username: m.crossUserMention.ownerUsername, similarity: parseFloat((m.crossUserMention.similarity * 100).toFixed(1)) } } : {}),
+          };
+        }),
         insight: insight || null,
         semantic_unavailable: semanticUnavailable,
         proposed_edges,
@@ -1531,24 +1578,67 @@ export const defaultHandler = {
          WHERE entry_id = ? AND episode_id = ?
          ORDER BY start_offset, id`
       ).bind(entryId, episodeId).all();
-      const document = await env.DB.prepare(
-        `SELECT id, title, source_url, content_type, content_hash, version
-         FROM documents WHERE episode_id = ? AND owner_user_id = ? LIMIT 1`,
+      const rawDocument = await env.DB.prepare(
+        `SELECT id, title, source_url, content_type, content_hash, version, title_origin
+         FROM documents
+         WHERE episode_id = ? AND (owner_user_id = ? OR owner_user_id = '')
+         LIMIT 1`,
       ).bind(episodeId, entry.owner_user_id).first<Record<string, unknown>>();
-      const { results: sections } = document
+      const { results: rawSections } = rawDocument
         ? await env.DB.prepare(
             `SELECT id, parent_section_id, title, level, order_index,
                     page_start, page_end, start_offset, end_offset
              FROM document_sections WHERE document_id = ? ORDER BY order_index, id`,
-          ).bind(document.id).all()
+          ).bind(rawDocument.id).all()
         : { results: [] };
+
+      const context = sourceOutputContext(entry.owner_user_id, user_id);
+      const safeDocumentMetadata = sanitizeSourceMetadataForOutput({
+        sourceTitle: rawDocument?.title,
+        sourceUrl: rawDocument?.source_url,
+      }, context);
+      const document = rawDocument ? {
+        ...rawDocument,
+        title: safeDocumentMetadata.sourceTitle,
+        source_url: safeDocumentMetadata.sourceUrl,
+        content_type: sanitizeBoundedMetadataForOutput(
+          rawDocument.content_type,
+          SOURCE_LABEL_MAX_CODE_POINTS,
+        ),
+        content_hash: sanitizeBoundedMetadataForOutput(
+          rawDocument.content_hash,
+          SOURCE_LABEL_MAX_CODE_POINTS,
+        ),
+        version: sanitizeBoundedMetadataForOutput(
+          rawDocument.version,
+          SOURCE_LABEL_MAX_CODE_POINTS,
+        ),
+        title_origin: rawDocument.title_origin === "explicit"
+          || rawDocument.title_origin === "generated"
+          ? rawDocument.title_origin
+          : null,
+      } : null;
+      const safePassages = (passages as Record<string, unknown>[]).map((passage) => ({
+        ...passage,
+        section: sanitizeBoundedMetadataForOutput(
+          passage.section,
+          SOURCE_LABEL_MAX_CODE_POINTS,
+        ),
+      }));
+      const sections = (rawSections as Record<string, unknown>[]).map((section) => ({
+        ...section,
+        title: sanitizeBoundedMetadataForOutput(
+          section.title,
+          SOURCE_LABEL_MAX_CODE_POINTS,
+        ),
+      }));
 
       return json({
         ok: true,
         entry_id: entryId,
         episode_id: episodeId,
         document,
-        passages,
+        passages: safePassages,
         sections,
       });
     }
@@ -1631,6 +1721,7 @@ export const defaultHandler = {
           sourceUrl: (snapshot.source_url as string | null) ?? null,
           contentType: (snapshot.content_type as string) ?? "text",
           title: snapshot.source_title ?? undefined,
+          titleOrigin: snapshot.source_title_origin ?? undefined,
           validFrom: (snapshot.valid_from as number | null) ?? null,
           validTo: (snapshot.valid_to as number | null) ?? null,
           epistemicStatus: "candidate",
@@ -1799,7 +1890,10 @@ export const defaultHandler = {
           id: row.id,
           content: row.content,
           tags: JSON.parse(row.tags ?? "[]"),
-          source: row.source,
+          source: sanitizeSourceMetadataForOutput(
+            { source: row.source },
+            sourceOutputContext(row.owner_user_id, user_id),
+          ).source,
           created_at: row.created_at,
           owner_username,
           is_private: row.visibility === "private",

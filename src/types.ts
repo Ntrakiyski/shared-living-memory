@@ -205,6 +205,9 @@ export interface Passage {
   createdAt: number;
 }
 
+export const DOCUMENT_TITLE_ORIGINS = ["explicit", "generated"] as const;
+export type DocumentTitleOrigin = (typeof DOCUMENT_TITLE_ORIGINS)[number];
+
 export interface Document {
   id: string;
   title: string;
@@ -215,6 +218,7 @@ export interface Document {
   ownerUserId: string;
   contentHash: string | null;
   version: string | null;
+  titleOrigin: DocumentTitleOrigin;
 }
 
 export interface DocumentSection {

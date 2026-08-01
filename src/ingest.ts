@@ -713,8 +713,8 @@ export async function createPassagesForEntry(
     await env.DB.prepare(
       `INSERT INTO documents (
          id, title, source_url, content_type, created_at, episode_id,
-         owner_user_id, content_hash, version
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         owner_user_id, content_hash, version, title_origin
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       docId,
       title,
@@ -725,6 +725,7 @@ export async function createPassagesForEntry(
       ownerUserId ?? "",
       await sha256Hex(content),
       "1",
+      "generated",
     ).run();
 
     for (let i = 0; i < headers.length; i++) {

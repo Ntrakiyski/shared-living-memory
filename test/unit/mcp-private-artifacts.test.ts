@@ -176,7 +176,8 @@ describe("MCP private child artifacts", () => {
     });
     db.documents.push({
       id: "historical-document", episode_id: "historical-episode", owner_user_id: "alice",
-      title: "Historical explicit title", source_url: "doi:10.1000/historical", created_at: 1,
+      title: "Historical generated title", title_origin: "generated",
+      source_url: "doi:10.1000/historical", created_at: 1,
     });
     db.entry_snapshots.push({
       id: "historical-snapshot", entry_id: "restore-source", episode_id: "historical-episode",
@@ -195,7 +196,52 @@ describe("MCP private child artifacts", () => {
     const document = db.documents.find((candidate: any) => candidate.episode_id === episode?.id);
 
     expect(episode).toMatchObject({ source_url: "doi:10.1000/historical", content_type: "research" });
-    expect(document).toMatchObject({ title: "Historical explicit title", source_url: "doi:10.1000/historical" });
+    expect(document).toMatchObject({
+      title: "Historical generated title",
+      title_origin: "generated",
+      source_url: "doi:10.1000/historical",
+    });
+  });
+
+  it("derives a generated restore title when a legacy envelope title is empty", async () => {
+    const sourceUrl = "https://example.test/blank-title";
+    db.entries.push({
+      id: "blank-title-source", content: "Current value", tags: "[]", visibility: "private",
+      source: "api", created_at: 1, vector_ids: "[]", owner_user_id: "alice",
+      current_episode_id: "blank-current-episode", revision: 2,
+    });
+    db.episodes.push({
+      id: "blank-historical-episode", entry_id: "blank-title-source", owner_user_id: "alice",
+      content: "Historical body", materialized_content: "Historical body",
+      source_url: sourceUrl, content_type: "research", created_at: 1,
+    });
+    db.documents.push({
+      id: "blank-historical-document", episode_id: "blank-historical-episode",
+      owner_user_id: "alice", title: "", title_origin: "generated",
+      source_url: sourceUrl, created_at: 1,
+    });
+    db.entry_snapshots.push({
+      id: "blank-historical-snapshot", entry_id: "blank-title-source",
+      episode_id: "blank-historical-episode", content: "Historical body",
+      tags: "[]", source: "api", created_at: 2, valid_from: null, valid_to: null,
+    });
+
+    const result = await callTool(
+      buildMcpServer(makeTestEnv(db), ctx, humanActor("alice")),
+      "restore",
+      { entry_id: "blank-title-source", snapshot_id: "blank-historical-snapshot" },
+    );
+    const match = result.content[0].text.match(/New entry ID: ([0-9a-f-]+)/i);
+    expect(match).not.toBeNull();
+    const restored = db.entries.find((entry: any) => entry.id === match?.[1]);
+    const document = db.documents.find((candidate: any) =>
+      candidate.episode_id === restored?.current_episode_id);
+
+    expect(document).toMatchObject({
+      title: sourceUrl,
+      title_origin: "generated",
+      source_url: sourceUrl,
+    });
   });
 
   it("bounds human MCP history with exact omission counts and recovery guidance", async () => {
@@ -243,6 +289,42 @@ describe("MCP private child artifacts", () => {
     ]);
     expect(text).not.toContain(secret);
     expect(text).not.toContain("FORGED_HISTORY_SOURCE");
+  });
+
+  it("compacts an oversized multibyte singleton without dropping the newest stable IDs", async () => {
+    db.entries.push({
+      id: "multibyte-history", content: "Current", tags: "[]", visibility: "private",
+      source: "api", created_at: 1, vector_ids: "[]", owner_user_id: "alice",
+      current_episode_id: "episode-newest", revision: 2, recorded_at: 2,
+    });
+    db.episodes.push({
+      id: "episode-newest", entry_id: "multibyte-history", owner_user_id: "alice",
+      mutation_kind: "update", parent_episode_id: "episode-old", restored_from_snapshot_id: null,
+      content_hash: "🌿".repeat(2_000), source: "🌿".repeat(512), content_type: "research",
+      source_url: `https://example.test/${"u".repeat(1_900)}`, created_at: 2,
+    });
+    db.documents.push({
+      id: "document-newest", episode_id: "episode-newest", owner_user_id: "alice",
+      title: "🌿".repeat(512), source_url: `https://example.test/${"u".repeat(1_900)}`,
+    });
+    db.entry_snapshots.push({
+      id: "snapshot-newest", entry_id: "multibyte-history", episode_id: "episode-old",
+      mutation_kind: "update", recorded_at: 1, revision: 1, created_at: 1,
+    });
+
+    const result = await callTool(buildMcpServer(makeTestEnv(db), ctx, humanActor("alice")), "history", {
+      entry_id: "multibyte-history",
+    });
+    const text = result.content[0].text;
+    const history = JSON.parse(text);
+
+    expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(4 * 1024);
+    expect(history.truncated).toBe(true);
+    expect(history.counts.episodes).toEqual({ total: 1, returned: 1, omitted: 0 });
+    expect(history.counts.snapshots).toEqual({ total: 1, returned: 1, omitted: 0 });
+    expect(history.episodes).toContainEqual(expect.objectContaining({ id: "episode-newest" }));
+    expect(history.snapshots).toContainEqual(expect.objectContaining({ id: "snapshot-newest" }));
+    expect(history.guidance).toMatch(/stable snapshot IDs/i);
   });
 
   it("sanitizes visible legacy source labels in human list_recent output", async () => {

@@ -27,6 +27,7 @@ import {
 import { embed } from "./helpers";
 import { getKind, getStatus } from "./tags";
 import { queryVisibleVectors, vectorMatchParentId } from "./vector-access";
+import { sanitizeSourceMetadataForOutput } from "./source-metadata";
 
 // ─── Relationship graph (issue #16) ─────────────────────────────────────────────
 // Edges live in a dedicated `edges` table — the one additive schema change. Edge
@@ -513,7 +514,7 @@ export interface Connection {
   id: string;
   content: string;
   tags: string[];
-  source: string;
+  source: string | null;
   created_at: number;
   type: EdgeType;
   label: string;
@@ -539,7 +540,10 @@ export async function getConnections(id: string, type: string | undefined, env: 
       id: n.id,
       content: row.content as string,
       tags,
-      source: row.source as string,
+      source: sanitizeSourceMetadataForOutput(
+        { source: row.source },
+        userId && row.owner_user_id === userId ? "owner_mcp" : "team_public",
+      ).source,
       created_at: row.created_at as number,
       type: n.viaType,
       label: edgeLabel(n.viaType),

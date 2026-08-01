@@ -801,7 +801,6 @@ describe("explicit governed action executors", () => {
     const seeded = await seedVersionedEntry(harness, {
       content: "Original value",
       sourceUrl: "doi:10.1000/operator-history",
-      title: "Historical operator source",
       contentType: "research",
     }, 2_000);
     await commitEntryVersion({
@@ -843,9 +842,9 @@ describe("explicit governed action executors", () => {
       epistemic_status: "candidate",
     });
     expect(JSON.parse(entry.tags)).toEqual(expect.arrayContaining(["restored", "status:draft", "private"]));
-    const restoredEnvelope = one<{ title: string; source_url: string; content_type: string }>(
+    const restoredEnvelope = one<{ title: string; title_origin: string; source_url: string; content_type: string }>(
       harness.db,
-      `SELECT d.title, d.source_url, ep.content_type
+      `SELECT d.title, d.title_origin, d.source_url, ep.content_type
        FROM entries e
        JOIN episodes ep ON ep.id = e.current_episode_id
        JOIN documents d ON d.episode_id = ep.id AND d.owner_user_id = e.owner_user_id
@@ -853,7 +852,8 @@ describe("explicit governed action executors", () => {
       restored.result.entryId,
     );
     expect(restoredEnvelope).toEqual({
-      title: "Historical operator source",
+      title: "doi:10.1000/operator-history",
+      title_origin: "generated",
       source_url: "doi:10.1000/operator-history",
       content_type: "research",
     });

@@ -641,15 +641,46 @@ export class D1Mock {
         }
         if (s.startsWith("INSERT INTO documents")) {
           if (s.includes("episode_id") && s.includes("content_hash")) {
-            const values = args.slice(0, 9);
-            const [id, title, source_url, content_type, created_at, episode_id, owner_user_id, content_hash, version] = values;
+            if (s.includes("COALESCE(recorded_at, created_at)")) {
+              const [
+                id, title, source_url, content_type, episode_id, content_hash,
+                version, guardId, guardOwner, revision,
+              ] = args;
+              const entry = guardedEntry(db.entries, guardId, guardOwner, revision, true);
+              if (!entry) return { meta: { changes: 0 } };
+              db.documents.push({
+                id,
+                title,
+                source_url,
+                content_type,
+                created_at: entry.recorded_at ?? entry.created_at,
+                episode_id,
+                owner_user_id: entry.owner_user_id,
+                content_hash,
+                version,
+                title_origin: "generated",
+              });
+              return { meta: { changes: 1 } };
+            }
+
+            const hasBoundTitleOrigin = s.includes("title_origin");
+            const valueCount = hasBoundTitleOrigin ? 10 : 9;
+            const values = args.slice(0, valueCount);
+            const [
+              id, title, source_url, content_type, created_at, episode_id,
+              owner_user_id, content_hash, version,
+            ] = values;
+            const title_origin = hasBoundTitleOrigin ? values[9] : "generated";
             if (s.includes("SELECT")) {
-              const [guardId, guardOwner, revision] = args.slice(9);
+              const [guardId, guardOwner, revision] = args.slice(valueCount);
               if (!guardedEntry(db.entries, guardId, guardOwner, revision)) {
                 return { meta: { changes: 0 } };
               }
             }
-            db.documents.push({ id, title, source_url, content_type, created_at, episode_id, owner_user_id, content_hash, version });
+            db.documents.push({
+              id, title, source_url, content_type, created_at, episode_id,
+              owner_user_id, content_hash, version, title_origin,
+            });
             return { meta: { changes: 1 } };
           }
 
@@ -999,6 +1030,7 @@ export class D1Mock {
             current_source_url: episode?.source_url ?? null,
             current_materialized_content: episode?.materialized_content ?? null,
             current_document_title: document?.title ?? null,
+            current_document_title_origin: document?.title_origin ?? "generated",
             current_page: currentPassages.find((row: any) => row.page != null)?.page ?? null,
             current_page_end: currentPassages.find((row: any) => row.page_end != null)?.page_end ?? null,
           };
@@ -1020,11 +1052,16 @@ export class D1Mock {
             && row.owner_user_id === ownerUserId);
           const document = episode
             ? db.documents.find((row: any) =>
-                row.episode_id === episode.id && row.owner_user_id === ownerUserId)
+                row.episode_id === episode.id
+                && (row.owner_user_id === ownerUserId || row.owner_user_id === ""))
             : undefined;
+          const sourceTitle = typeof document?.title === "string" && document.title.trim()
+            ? document.title
+            : null;
           return {
             ...snapshot,
-            source_title: document?.title ?? null,
+            source_title: sourceTitle,
+            source_title_origin: sourceTitle ? document?.title_origin ?? null : null,
             source_url: document?.source_url ?? episode?.source_url ?? null,
             content_type: document?.content_type ?? episode?.content_type ?? null,
           };
@@ -1061,7 +1098,9 @@ export class D1Mock {
           };
         }
         if (s.includes("FROM documents WHERE episode_id = ?") && s.includes("owner_user_id = ?")) {
-          return db.documents.find((row: any) => row.episode_id === args[0] && row.owner_user_id === args[1]) ?? null;
+          return db.documents.find((row: any) => row.episode_id === args[0]
+            && (row.owner_user_id === args[1]
+              || s.includes("owner_user_id = ''") && row.owner_user_id === "")) ?? null;
         }
         if (s.includes("FROM vector_cleanup_queue") && s.includes("WHERE id")) {
           return db.vector_cleanup_queue.find((row: any) => row.id === args[0]) ?? null;
@@ -1264,7 +1303,8 @@ export class D1Mock {
           const totalCount = owned.length;
           return { results: owned.slice(0, 50).map((row: any) => {
             const document = db.documents.find((candidate: any) =>
-              candidate.episode_id === row.id && candidate.owner_user_id === ownerUserId);
+              candidate.episode_id === row.id
+              && (candidate.owner_user_id === ownerUserId || candidate.owner_user_id === ""));
             return {
               id: row.id,
               mutation_kind: row.mutation_kind ?? null,
@@ -1314,18 +1354,24 @@ export class D1Mock {
         }
         if (s.includes("SELECT * FROM documents WHERE episode_id IN")) {
           const ownerBound = s.includes("owner_user_id = ?");
+          const ownerlessAllowed = s.includes("owner_user_id = ''");
           const ownerUserId = ownerBound ? String(args[args.length - 1]) : undefined;
           const episodeIds = new Set((ownerBound ? args.slice(0, -1) : args).map(String));
           return { results: db.documents
-            .filter((row: any) => episodeIds.has(String(row.episode_id)) && (!ownerBound || row.owner_user_id === ownerUserId))
+            .filter((row: any) => episodeIds.has(String(row.episode_id))
+              && (!ownerBound || row.owner_user_id === ownerUserId
+                || ownerlessAllowed && row.owner_user_id === ""))
             .map((row: any) => ({ ...row })) };
         }
         if (s.includes("SELECT * FROM documents WHERE id IN")) {
           const ownerBound = s.includes("owner_user_id = ?");
+          const ownerlessAllowed = s.includes("owner_user_id = ''");
           const ownerUserId = ownerBound ? String(args[args.length - 1]) : undefined;
           const documentIds = new Set((ownerBound ? args.slice(0, -1) : args).map(String));
           return { results: db.documents
-            .filter((row: any) => documentIds.has(String(row.id)) && (!ownerBound || row.owner_user_id === ownerUserId))
+            .filter((row: any) => documentIds.has(String(row.id))
+              && (!ownerBound || row.owner_user_id === ownerUserId
+                || ownerlessAllowed && row.owner_user_id === ""))
             .map((row: any) => ({ ...row })) };
         }
         if (s.includes("SELECT * FROM document_sections WHERE document_id IN")) {

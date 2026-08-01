@@ -180,7 +180,8 @@ async function loadOwnedMcpHistory(
               ep.created_at, COUNT(*) OVER() AS total_count
        FROM episodes ep
        LEFT JOIN documents d
-         ON d.episode_id = ep.id AND d.owner_user_id = ep.owner_user_id
+         ON d.episode_id = ep.id
+        AND (d.owner_user_id = ep.owner_user_id OR d.owner_user_id = '')
        WHERE ep.entry_id = ? AND ep.owner_user_id = ?
        ORDER BY ep.created_at DESC, ep.id DESC LIMIT 50`,
     ).bind(entryId, ownerUserId).all<Record<string, unknown>>(),
@@ -224,9 +225,13 @@ async function loadOwnedMcpHistory(
 }
 
 function renderBoundedMcpHistory(history: LoadedMcpHistory): string {
-  const episodes = [...history.episodes];
-  const snapshots = [...history.snapshots];
+  let projection = { ...history.projection };
+  let episodes = [...history.episodes];
+  let snapshots = [...history.snapshots];
   const encoder = new TextEncoder();
+  let metadataCompacted = false;
+  let minimalRows = false;
+  let compactSerialization = false;
 
   while (true) {
     const counts = {
@@ -242,17 +247,20 @@ function renderBoundedMcpHistory(history: LoadedMcpHistory): string {
       },
     };
     const payload: McpHistoryPayload = {
-      projection: history.projection,
+      projection,
       episodes,
       snapshots,
-      truncated: counts.episodes.omitted > 0 || counts.snapshots.omitted > 0,
+      truncated: metadataCompacted
+        || counts.episodes.omitted > 0
+        || counts.snapshots.omitted > 0,
       counts,
       guidance: MCP_HISTORY_GUIDANCE,
     };
-    const rendered = JSON.stringify(payload, null, 2);
+    const rendered = compactSerialization
+      ? JSON.stringify(payload)
+      : JSON.stringify(payload, null, 2);
     if (encoder.encode(rendered).byteLength <= MCP_HISTORY_MAX_BYTES) return rendered;
 
-    if (!episodes.length && !snapshots.length) return rendered;
     const canDropEpisode = episodes.length > 1;
     const canDropSnapshot = snapshots.length > 1;
     if (canDropEpisode || canDropSnapshot) {
@@ -264,6 +272,42 @@ function renderBoundedMcpHistory(history: LoadedMcpHistory): string {
         episodes.pop();
         continue;
       }
+    }
+
+    if (!canDropEpisode && !canDropSnapshot) {
+      if (!metadataCompacted) {
+        episodes = episodes.map((row) => ({
+          id: row.id,
+          mutation_kind: row.mutation_kind,
+          parent_episode_id: row.parent_episode_id,
+          restored_from_snapshot_id: row.restored_from_snapshot_id,
+          created_at: row.created_at,
+        }));
+        metadataCompacted = true;
+        continue;
+      }
+      if (!minimalRows) {
+        episodes = episodes.map((row) => ({ id: row.id }));
+        snapshots = snapshots.map((row) => ({ id: row.id }));
+        projection = {
+          current_episode_id: projection.current_episode_id,
+          revision: projection.revision,
+          recorded_at: projection.recorded_at,
+        };
+        minimalRows = true;
+        continue;
+      }
+      if (!compactSerialization) {
+        compactSerialization = true;
+        continue;
+      }
+
+      // Stable IDs and recovery guidance are the non-negotiable history
+      // contract. UUID-sized identifiers keep this terminal form far below
+      // the byte ceiling even when every optional field was pathological.
+      const terminal = JSON.stringify(payload);
+      if (encoder.encode(terminal).byteLength <= MCP_HISTORY_MAX_BYTES) return terminal;
+      throw new Error("MCP history stable identifiers exceed the 4 KiB response limit");
     }
 
     const oldestEpisode = episodes[episodes.length - 1];
@@ -1087,7 +1131,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
          LEFT JOIN documents d
            ON d.id = p.document_id
           AND d.episode_id = p.episode_id
-          AND d.owner_user_id = ?
+          AND (d.owner_user_id = ? OR d.owner_user_id = '')
          WHERE p.entry_id = ? AND p.episode_id = ?
          ORDER BY p.start_offset, p.id LIMIT 10`
       ).bind(projection.owner_user_id, entry_id, projection.current_episode_id).all() as { results: { id: string; content: string; section: string | null; page: number | null; page_end: number | null; start_offset: number | null; end_offset: number | null; created_at: number; document_title: string | null; source_url: string | null }[] };
@@ -1171,6 +1215,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
           sourceUrl: (snapshot.source_url as string | null) ?? null,
           contentType: (snapshot.content_type as string) ?? "text",
           title: snapshot.source_title ?? undefined,
+          titleOrigin: snapshot.source_title_origin ?? undefined,
           validFrom: (snapshot.valid_from as number | null) ?? null,
           validTo: (snapshot.valid_to as number | null) ?? null,
           epistemicStatus: "candidate",
