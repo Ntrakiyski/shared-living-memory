@@ -54,6 +54,12 @@ import { expandGraph } from "./graph";
 import { inferQueryTags, extractHashtags } from "./classification";
 import { synthesizeInsight } from "./lifecycle";
 import { queryVisibleVectors, vectorMatchParentId } from "./vector-access";
+import {
+  SOURCE_LABEL_MAX_CODE_POINTS,
+  sanitizeBoundedMetadataForOutput,
+  sanitizeSourceMetadataForOutput,
+  type SourceMetadataOutputContext,
+} from "./source-metadata";
 
 // ─── Time-decay reranking ─────────────────────────────────────────────────────
 
@@ -218,11 +224,22 @@ export interface RecallSearchResult {
 // ID so an LLM can act on a result (link, connections, append, update, forget) without
 // a second list_recent round-trip — recall used to drop the ID, which left tools unable
 // to reference the memories they just found.
-export function renderRecallText(matches: RecallMatch[], insight: string): string {
+export function renderRecallText(
+  matches: RecallMatch[],
+  insight: string,
+  viewerUserId?: string,
+): string {
   const text = matches.map((m, i) => {
+    const citationContext: SourceMetadataOutputContext = viewerUserId && m.ownerUserId === viewerUserId
+      ? "owner_mcp"
+      : "team_public";
+    const { source: safeSource } = sanitizeSourceMetadataForOutput(
+      { source: m.source },
+      citationContext,
+    );
     const date = new Date(m.createdAt).toLocaleDateString();
     const tagList = m.tags.length ? ` [${m.tags.join(", ")}]` : "";
-    const src = m.source ? ` · ${m.source}` : "";
+    const src = safeSource ? ` · ${safeSource}` : "";
     const score = (m.score * 100).toFixed(0);
     const updateLabel = m.isUpdate ? " [updated]" : "";
     const hopLabel = m.hop > 0 ? ` [related · ${m.hop} hop${m.hop > 1 ? "s" : ""}]` : "";
@@ -230,17 +247,28 @@ export function renderRecallText(matches: RecallMatch[], insight: string): strin
     const epistemicLabel = m.epistemicStatus && m.epistemicStatus !== "canonical" ? ` [${m.epistemicStatus}]` : "";
     const passageLabel = m.passages?.length
       ? `\nEVIDENCE:\n${m.passages.map(p => {
-          const citation = [
-            p.documentTitle ? `title="${p.documentTitle}"` : null,
-            p.sourceUrl ? `url=${p.sourceUrl}` : null,
-            p.page != null ? `page=${p.page}` : null,
-            p.pageEnd != null ? `pageEnd=${p.pageEnd}` : null,
-            p.section ? `section="${p.section}"` : null,
-            p.startOffset != null ? `startOffset=${p.startOffset}` : null,
-            p.endOffset != null ? `endOffset=${p.endOffset}` : null,
-          ].filter((value): value is string => value !== null);
+          const safeMetadata = sanitizeSourceMetadataForOutput({
+            sourceTitle: p.documentTitle,
+            sourceUrl: p.sourceUrl,
+          }, citationContext);
+          const safeSection = sanitizeBoundedMetadataForOutput(
+            p.section,
+            SOURCE_LABEL_MAX_CODE_POINTS,
+          );
+          const citation = {
+            ...(safeMetadata.sourceTitle ? { title: safeMetadata.sourceTitle } : {}),
+            ...(safeMetadata.sourceUrl ? { url: safeMetadata.sourceUrl } : {}),
+            ...(p.page != null ? { page: p.page } : {}),
+            ...(p.pageEnd != null ? { pageEnd: p.pageEnd } : {}),
+            ...(safeSection ? { section: safeSection } : {}),
+            ...(p.startOffset != null ? { startOffset: p.startOffset } : {}),
+            ...(p.endOffset != null ? { endOffset: p.endOffset } : {}),
+          };
           const excerpt = p.content.length > 160 ? `${p.content.slice(0, 157)}...` : p.content;
-          return `- ${citation.length ? `[${citation.join("; ")}] ` : ""}"${excerpt}"`;
+          const serializedCitation = Object.keys(citation).length
+            ? `${JSON.stringify(citation)} `
+            : "";
+          return `- ${serializedCitation}${JSON.stringify(excerpt)}`;
         }).join("\n")}`
       : "";
     const relationLabel = m.relations?.length ? `\nLINKS: ${m.relations.slice(0, 3).map(r => `${r.type}(${(r.confidence * 100).toFixed(0)}%)→${r.targetId.slice(0, 8)}`).join(", ")}` : "";

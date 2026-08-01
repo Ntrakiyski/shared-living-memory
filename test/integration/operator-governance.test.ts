@@ -197,7 +197,16 @@ function many<T>(db: SqliteD1, sql: string, ...bindings: SQLInputValue[]): T[] {
 
 async function seedVersionedEntry(
   harness: Harness,
-  input: { entryId?: string; content: string; owner?: string; private?: boolean; epistemicStatus?: "candidate" | "reviewed" | "canonical" },
+  input: {
+    entryId?: string;
+    content: string;
+    owner?: string;
+    private?: boolean;
+    epistemicStatus?: "candidate" | "reviewed" | "canonical";
+    sourceUrl?: string;
+    title?: string;
+    contentType?: string;
+  },
   now: number,
 ) {
   return commitEntryVersion({
@@ -208,6 +217,9 @@ async function seedVersionedEntry(
     materializedContent: input.content,
     tags: ["status:draft", ...(input.private === false ? [] : ["private"])],
     source: "test",
+    sourceUrl: input.sourceUrl,
+    title: input.title,
+    contentType: input.contentType,
     visibility: input.private === false ? "public" : "private",
     epistemicStatus: input.epistemicStatus ?? "candidate",
     now,
@@ -786,7 +798,12 @@ describe("explicit governed action executors", () => {
   });
 
   it("restores an owned snapshot into a new private draft candidate", async () => {
-    const seeded = await seedVersionedEntry(harness, { content: "Original value" }, 2_000);
+    const seeded = await seedVersionedEntry(harness, {
+      content: "Original value",
+      sourceUrl: "doi:10.1000/operator-history",
+      title: "Historical operator source",
+      contentType: "research",
+    }, 2_000);
     await commitEntryVersion({
       kind: "update",
       actorUserId: "user-owner",
@@ -826,6 +843,20 @@ describe("explicit governed action executors", () => {
       epistemic_status: "candidate",
     });
     expect(JSON.parse(entry.tags)).toEqual(expect.arrayContaining(["restored", "status:draft", "private"]));
+    const restoredEnvelope = one<{ title: string; source_url: string; content_type: string }>(
+      harness.db,
+      `SELECT d.title, d.source_url, ep.content_type
+       FROM entries e
+       JOIN episodes ep ON ep.id = e.current_episode_id
+       JOIN documents d ON d.episode_id = ep.id AND d.owner_user_id = e.owner_user_id
+       WHERE e.id = ?`,
+      restored.result.entryId,
+    );
+    expect(restoredEnvelope).toEqual({
+      title: "Historical operator source",
+      source_url: "doi:10.1000/operator-history",
+      content_type: "research",
+    });
   });
 
   it("forces an operator restore of a public snapshot into a private draft candidate", async () => {

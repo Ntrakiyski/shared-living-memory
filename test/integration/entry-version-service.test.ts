@@ -631,4 +631,34 @@ describe("commitEntryVersion", () => {
       appended.episodeId,
     ).title).toBe("Approved source title");
   });
+
+  it("preserves an explicit title across titleless update, merge, and replace mutations", async () => {
+    for (const [index, kind] of (["update", "merge", "replace"] as const).entries()) {
+      const initialContent = `# Generated heading ${kind}\n\nOriginal body`;
+      const initial = await capture(harness, {
+        entryId: `explicit-${kind}`,
+        rawContent: initialContent,
+        materializedContent: initialContent,
+        contentType: "research",
+        title: `Explicit provenance title ${kind}`,
+        now: 10_000 + index * 100,
+      });
+      const replacementContent = `# Replacement heading ${kind}\n\nNew body`;
+      const replacement = await commitEntryVersion({
+        kind,
+        actorUserId,
+        entryId: initial.entryId,
+        expectedRevision: 1,
+        rawContent: replacementContent,
+        materializedContent: replacementContent,
+        now: 10_050 + index * 100,
+      }, harness.env);
+
+      expect(row<any>(
+        harness.db,
+        "SELECT title FROM documents WHERE episode_id = ?",
+        replacement.episodeId,
+      ).title).toBe(`Explicit provenance title ${kind}`);
+    }
+  });
 });

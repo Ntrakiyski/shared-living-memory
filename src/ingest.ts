@@ -355,6 +355,23 @@ function validateCaptureTags(tags: string[]): void {
   }
 }
 
+export function validateSourceMetadataInput(
+  sourceUrl?: string,
+  sourceTitle?: string,
+): void {
+  if (sourceUrl && Array.from(sourceUrl).length > SOURCE_URL_MAX_CODE_POINTS) {
+    throw new CaptureRejectedError("source_url_too_long");
+  }
+  if (sourceTitle && Array.from(sourceTitle).length > SOURCE_TITLE_MAX_CODE_POINTS) {
+    throw new CaptureRejectedError("source_title_too_long");
+  }
+  for (const value of [sourceUrl, sourceTitle]) {
+    if (!value) continue;
+    const detector = detectHighConfidenceSecret(value);
+    if (detector) throw new CaptureRejectedError("secret_detected", detector);
+  }
+}
+
 function validateCaptureInput(
   content: string,
   tags: string[],
@@ -370,12 +387,7 @@ function validateCaptureInput(
     throw new CaptureRejectedError("content_too_large");
   }
   validateCaptureTags(tags);
-  if (effectiveSourceUrl && Array.from(effectiveSourceUrl).length > SOURCE_URL_MAX_CODE_POINTS) {
-    throw new CaptureRejectedError("source_url_too_long");
-  }
-  if (sourceTitle && Array.from(sourceTitle).length > SOURCE_TITLE_MAX_CODE_POINTS) {
-    throw new CaptureRejectedError("source_title_too_long");
-  }
+  validateSourceMetadataInput(effectiveSourceUrl, sourceTitle);
   for (const value of payloadStrings) {
     const detector = detectHighConfidenceSecret(value);
     if (detector) throw new CaptureRejectedError("secret_detected", detector);

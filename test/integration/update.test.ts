@@ -139,6 +139,51 @@ describe("POST /update", () => {
     expect(episode.materialized_content).toBe("Updated content");
   });
 
+  it("accepts a validated explicit replacement source envelope", async () => {
+    const captured = await worker.fetch(req("POST", "/capture", {
+      body: {
+        content: "Original sourced content",
+        source_title: "Original explicit title",
+        source_url: "https://example.test/original",
+        visibility: "public",
+      },
+    }), env, ctx);
+    const capturedBody = await captured.json() as any;
+
+    const updated = await worker.fetch(req("POST", "/update", {
+      body: {
+        id: capturedBody.id,
+        content: "Deliberately replaced sourced content",
+        source_title: "Replacement explicit title",
+        source_url: "doi:10.1000/replacement",
+      },
+    }), env, ctx);
+    const entry = db.entries.find((candidate: any) => candidate.id === capturedBody.id) as any;
+    const episode = db.episodes.find((candidate: any) => candidate.id === entry.current_episode_id);
+    const document = db.documents.find((candidate: any) => candidate.episode_id === entry.current_episode_id);
+
+    expect(updated.status).toBe(200);
+    expect(episode.source_url).toBe("doi:10.1000/replacement");
+    expect(document).toMatchObject({
+      title: "Replacement explicit title",
+      source_url: "doi:10.1000/replacement",
+    });
+  });
+
+  it("rejects an unsafe explicit replacement title before versioning", async () => {
+    seedEntry(db);
+    const secret = `ghp_${"a".repeat(36)}`;
+
+    const res = await worker.fetch(req("POST", "/update", {
+      body: { id: "entry-abc", content: "Updated", source_title: secret },
+    }), env, ctx);
+
+    expect(res.status).toBe(422);
+    expect(JSON.stringify(await res.json())).not.toContain(secret);
+    expect(db.entries[0]).toMatchObject({ content: "Original content", revision: 0 });
+    expect(db.episodes).toHaveLength(0);
+  });
+
   it("deduplicates an existing hashtag", async () => {
     seedEntry(db, { tags: '["work"]' });
 

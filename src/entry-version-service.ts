@@ -164,6 +164,7 @@ interface CurrentEntryRow {
   visibility: EntryVisibility;
   current_content_type: string | null;
   current_source_url: string | null;
+  current_materialized_content: string | null;
   current_document_title: string | null;
   current_page: number | null;
   current_page_end: number | null;
@@ -174,6 +175,22 @@ interface RestoreSnapshotRow {
   entry_id: string;
   episode_id: string | null;
   owner_user_id: string;
+}
+
+export interface OwnedRestoreSnapshot {
+  id: string;
+  entry_id: string;
+  episode_id: string | null;
+  content: string;
+  tags: string;
+  source: string;
+  created_at: number;
+  valid_from: number | null;
+  valid_to: number | null;
+  epistemic_status: EpistemicStatus | null;
+  source_title: string | null;
+  source_url: string | null;
+  content_type: string | null;
 }
 
 interface Header {
@@ -258,6 +275,12 @@ function findHeaders(content: string): Header[] {
     });
   }
   return headers;
+}
+
+function deriveDocumentTitle(content: string, sourceUrl: string | null): string {
+  return findHeaders(content)[0]?.title
+    || sourceUrl
+    || "Untitled Document";
 }
 
 function planSections(headers: Header[], contentLength: number): PlannedSection[] {
@@ -443,6 +466,7 @@ async function loadCurrentEntry(env: Env, entryId: string): Promise<CurrentEntry
        e.visibility,
        ep.content_type AS current_content_type,
        ep.source_url AS current_source_url,
+       ep.materialized_content AS current_materialized_content,
        (
          SELECT d.title FROM documents d
          WHERE d.episode_id = e.current_episode_id
@@ -462,6 +486,39 @@ async function loadCurrentEntry(env: Env, entryId: string): Promise<CurrentEntry
      LEFT JOIN episodes ep ON ep.id = e.current_episode_id
      WHERE e.id = ?`,
   ).bind(entryId).first<CurrentEntryRow>();
+}
+
+/**
+ * Load one historical state and its immutable source envelope without allowing
+ * a caller to infer whether another owner's entry or snapshot exists.
+ */
+export async function loadOwnedRestoreSnapshot(
+  env: Env,
+  ownerUserId: string,
+  entryId: string,
+  snapshotId?: string,
+): Promise<OwnedRestoreSnapshot | null> {
+  const requestedSnapshotId = snapshotId ?? null;
+  return env.DB.prepare(
+    `SELECT s.id, s.entry_id, s.episode_id, s.content, s.tags, s.source,
+            s.created_at, s.valid_from, s.valid_to, s.epistemic_status,
+            d.title AS source_title,
+            COALESCE(d.source_url, ep.source_url) AS source_url,
+            COALESCE(d.content_type, ep.content_type) AS content_type
+     FROM entry_snapshots s
+     JOIN entries parent
+       ON parent.id = s.entry_id AND parent.owner_user_id = ?
+     LEFT JOIN episodes ep
+       ON ep.id = s.episode_id
+      AND ep.entry_id = s.entry_id
+      AND ep.owner_user_id = parent.owner_user_id
+     LEFT JOIN documents d
+       ON d.episode_id = ep.id
+      AND d.owner_user_id = parent.owner_user_id
+     WHERE s.entry_id = ? AND (? IS NULL OR s.id = ?)
+     ORDER BY s.created_at DESC, s.id DESC LIMIT 1`,
+  ).bind(ownerUserId, entryId, requestedSnapshotId, requestedSnapshotId)
+    .first<OwnedRestoreSnapshot>();
 }
 
 async function loadRestoreSnapshot(
@@ -602,13 +659,23 @@ export async function commitEntryVersion(
   const pageEnd = input.pageEnd === undefined
     ? (current?.current_page_end ?? page)
     : input.pageEnd;
-  const inheritedTitle = current && !CONTENT_REPLACING_MUTATION_KINDS.has(input.kind)
+  const currentDerivedTitle = current
+    ? deriveDocumentTitle(
+        current.current_materialized_content ?? current.content,
+        current.current_source_url,
+      )
+    : null;
+  const currentTitleWasExplicit = Boolean(
+    current?.current_document_title
+      && current.current_document_title !== currentDerivedTitle,
+  );
+  const inheritedTitle = current
+    && (!CONTENT_REPLACING_MUTATION_KINDS.has(input.kind) || currentTitleWasExplicit)
     ? current.current_document_title
     : null;
   const title = input.title?.trim()
     || inheritedTitle
-    || sections[0]?.title
-    || (sourceUrl ? sourceUrl : "Untitled Document");
+    || deriveDocumentTitle(input.materializedContent, sourceUrl);
 
   // Historical passage vectors are immutable episode evidence used by knownAt
   // recall. Only the mutable entry projection vectors become stale here.

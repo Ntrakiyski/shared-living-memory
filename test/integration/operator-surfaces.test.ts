@@ -227,7 +227,7 @@ describe("operator MCP surfaces", () => {
     });
     expect(stored.isError).not.toBe(true);
     const entry = db.sqlite.prepare(
-      `SELECT owner_user_id, visibility, epistemic_status, tags, revision
+      `SELECT id, owner_user_id, visibility, epistemic_status, tags, revision
        FROM entries WHERE content = ?`,
     ).get("Hermes observed a durable team decision.") as Record<string, unknown>;
     expect(entry).toMatchObject({
@@ -237,6 +237,17 @@ describe("operator MCP surfaces", () => {
       revision: 1,
     });
     expect(JSON.parse(String(entry.tags))).toEqual(expect.arrayContaining(["decision", "status:draft", "private"]));
+
+    const historyResult = await callTool(server, "history", { entry_id: entry.id });
+    const historyText = historyResult.content[0].text as string;
+    const history = JSON.parse(historyText);
+    expect(historyResult.isError).not.toBe(true);
+    expect(new TextEncoder().encode(historyText).byteLength).toBeLessThanOrEqual(4 * 1024);
+    expect(history.counts).toMatchObject({
+      episodes: { total: 1, returned: 1, omitted: 0 },
+      snapshots: { total: 0, returned: 0, omitted: 0 },
+    });
+    expect(history.guidance).toMatch(/my_data/i);
   });
 
   it("registers generic create, list, review, and approved-execute tools for humans", () => {

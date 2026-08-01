@@ -29,9 +29,20 @@ import {
   getEdgeHistory,
   restoreEdgeVersion,
 } from "./graph";
-import { CaptureRejectedError, captureEntry, storeEntry, appendToEntry, reindexAllVectors } from "./ingest";
+import {
+  CaptureRejectedError,
+  appendToEntry,
+  captureEntry,
+  reindexAllVectors,
+  storeEntry,
+  validateSourceMetadataInput,
+} from "./ingest";
 import { sanitizeSourceMetadataForOutput } from "./source-metadata";
-import { commitEntryVersion, EntryVersionError } from "./entry-version-service";
+import {
+  commitEntryVersion,
+  EntryVersionError,
+  loadOwnedRestoreSnapshot,
+} from "./entry-version-service";
 import { setEntryVisibility, VisibilityTransitionError } from "./visibility";
 import {
   requestUserDeactivation,
@@ -812,10 +823,25 @@ export const defaultHandler = {
       const { error: authErr, user_id } = await requireAuthAsync(request, env);
       if (authErr) return authErr;
 
-      let body: { id?: string; content?: string };
+      let body: { id?: string; content?: string; source_url?: unknown; source_title?: unknown };
       try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
       if (!body.id?.trim()) return json({ ok: false, error: "id is required" }, 400);
       if (!body.content?.trim()) return json({ ok: false, error: "content is required" }, 400);
+      if (body.source_url !== undefined && typeof body.source_url !== "string") {
+        return json({ ok: false, error: "source_url must be a string" }, 400);
+      }
+      if (body.source_title !== undefined && typeof body.source_title !== "string") {
+        return json({ ok: false, error: "source_title must be a string" }, 400);
+      }
+      try {
+        validateSourceMetadataInput(body.source_url, body.source_title);
+      } catch (error) {
+        if (!(error instanceof CaptureRejectedError)) throw error;
+        if (error.code === "secret_detected") {
+          console.warn("update rejected", { detector: error.detector, actor_id: user_id ?? "_system" });
+        }
+        return json({ ok: false, error: error.code }, 422);
+      }
 
       const id = body.id.trim();
       const newContent = body.content.trim();
@@ -856,6 +882,8 @@ export const defaultHandler = {
           materializedContent: finalContent,
           tags: mergedTags,
           source,
+          sourceUrl: body.source_url,
+          title: body.source_title,
           validFrom: row.valid_from as number | null,
           validTo: row.valid_to as number | null,
           epistemicStatus: row.epistemic_status,
@@ -1278,13 +1306,17 @@ export const defaultHandler = {
         const rawSourceUrl = document?.source_url ?? episode?.source_url ?? null;
         const rawSourceTitle = document?.title ?? null;
         const sourceMetadata = mode === "team_public"
-          ? sanitizeSourceMetadataForOutput(rawSourceTitle, rawSourceUrl)
-          : { sourceTitle: rawSourceTitle, sourceUrl: rawSourceUrl };
+          ? sanitizeSourceMetadataForOutput({
+              source: row.source,
+              sourceTitle: rawSourceTitle,
+              sourceUrl: rawSourceUrl,
+            }, "team_public")
+          : { source: row.source, sourceTitle: rawSourceTitle, sourceUrl: rawSourceUrl };
         return {
           id: row.id,
           content: row.content,
           tags: JSON.parse(row.tags ?? "[]"),
-          source: row.source,
+          source: sourceMetadata.source,
           source_url: sourceMetadata.sourceUrl,
           source_title: sourceMetadata.sourceTitle,
           created_at: row.created_at,
@@ -1564,33 +1596,12 @@ export const defaultHandler = {
       const entryId = body.entry_id.trim();
       const snapshotId = body.snapshot_id?.trim();
 
-      // Snapshot history can contain content that is no longer public. Treat a
-      // non-owned parent exactly like a missing one before reading snapshots.
-      if (!await getOwnedEntry(entryId, user_id, env)) {
-        return json({ ok: false, error: `No snapshot found for entry ${entryId}` }, 404);
-      }
-
-      // Fetch snapshot
-      let snapshot;
-      if (snapshotId) {
-        snapshot = await env.DB.prepare(
-          `SELECT s.id, s.entry_id, s.content, s.tags, s.source, s.created_at,
-                  s.valid_from, s.valid_to, s.epistemic_status,
-                  e.source_url, e.content_type
-           FROM entry_snapshots s
-           LEFT JOIN episodes e ON e.id = s.episode_id
-           WHERE s.id = ? AND s.entry_id = ?`
-        ).bind(snapshotId, entryId).first();
-      } else {
-        snapshot = await env.DB.prepare(
-          `SELECT s.id, s.entry_id, s.content, s.tags, s.source, s.created_at,
-                  s.valid_from, s.valid_to, s.epistemic_status,
-                  e.source_url, e.content_type
-           FROM entry_snapshots s
-           LEFT JOIN episodes e ON e.id = s.episode_id
-           WHERE s.entry_id = ? ORDER BY s.created_at DESC, s.id DESC LIMIT 1`
-        ).bind(entryId).first();
-      }
+      const snapshot = await loadOwnedRestoreSnapshot(
+        env,
+        user_id!,
+        entryId,
+        snapshotId,
+      );
 
       if (!snapshot) return json({ ok: false, error: `No snapshot found for entry ${entryId}` }, 404);
 
@@ -1619,6 +1630,7 @@ export const defaultHandler = {
           source: (snapshot.source as string) ?? "restore",
           sourceUrl: (snapshot.source_url as string | null) ?? null,
           contentType: (snapshot.content_type as string) ?? "text",
+          title: snapshot.source_title ?? undefined,
           validFrom: (snapshot.valid_from as number | null) ?? null,
           validTo: (snapshot.valid_to as number | null) ?? null,
           epistemicStatus: "candidate",

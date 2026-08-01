@@ -42,7 +42,11 @@ import {
   sanitizeBoundedMetadataForOutput,
   sanitizeSourceMetadataForOutput,
 } from "./source-metadata";
-import { commitEntryVersion, EntryVersionError } from "./entry-version-service";
+import {
+  commitEntryVersion,
+  EntryVersionError,
+  loadOwnedRestoreSnapshot,
+} from "./entry-version-service";
 import { recallEntries, renderRecallText } from "./recall";
 import type { RecallMatch } from "./recall";
 import { reinforceOwnedEntry } from "./reinforcement";
@@ -124,6 +128,168 @@ async function isActiveMcpAdmin(actor: ActorContext, env: Env): Promise<boolean>
 
 function hasMcpPrivateVisibility(row: McpEntryAccessRow): boolean | null {
   return row.visibility === "private" ? true : row.visibility === "public" ? false : null;
+}
+
+// About one thousand ordinary-language tokens, with a hard UTF-8 byte bound.
+const MCP_HISTORY_MAX_BYTES = 4 * 1024;
+const MCP_HISTORY_GUIDANCE = "Use stable snapshot IDs with restore. For complete authenticated history, export /export?mode=my_data.";
+
+interface McpHistoryRowCount {
+  total: number;
+  returned: number;
+  omitted: number;
+}
+
+interface McpHistoryPayload {
+  projection: Record<string, unknown>;
+  episodes: Record<string, unknown>[];
+  snapshots: Record<string, unknown>[];
+  truncated: boolean;
+  counts: {
+    episodes: McpHistoryRowCount;
+    snapshots: McpHistoryRowCount;
+  };
+  guidance: string;
+}
+
+interface LoadedMcpHistory {
+  projection: Record<string, unknown>;
+  episodes: Record<string, unknown>[];
+  snapshots: Record<string, unknown>[];
+  episodeTotal: number;
+  snapshotTotal: number;
+}
+
+async function loadOwnedMcpHistory(
+  env: Env,
+  ownerUserId: string,
+  entryId: string,
+): Promise<LoadedMcpHistory | null> {
+  const projection = await env.DB.prepare(
+    `SELECT current_episode_id, revision, recorded_at
+     FROM entries WHERE id = ? AND owner_user_id = ?`,
+  ).bind(entryId, ownerUserId).first<Record<string, unknown>>();
+  if (!projection) return null;
+
+  const [episodeResult, snapshotResult] = await Promise.all([
+    env.DB.prepare(
+      `SELECT ep.id, ep.mutation_kind, ep.parent_episode_id,
+              ep.restored_from_snapshot_id, ep.content_hash, ep.source,
+              ep.content_type, d.title AS source_title,
+              COALESCE(d.source_url, ep.source_url) AS source_url,
+              ep.created_at, COUNT(*) OVER() AS total_count
+       FROM episodes ep
+       LEFT JOIN documents d
+         ON d.episode_id = ep.id AND d.owner_user_id = ep.owner_user_id
+       WHERE ep.entry_id = ? AND ep.owner_user_id = ?
+       ORDER BY ep.created_at DESC, ep.id DESC LIMIT 50`,
+    ).bind(entryId, ownerUserId).all<Record<string, unknown>>(),
+    env.DB.prepare(
+      `SELECT s.id, s.episode_id, s.mutation_kind, s.recorded_at,
+              s.revision, s.created_at, COUNT(*) OVER() AS total_count
+       FROM entry_snapshots s
+       JOIN entries parent
+         ON parent.id = s.entry_id AND parent.owner_user_id = ?
+       WHERE s.entry_id = ?
+       ORDER BY s.created_at DESC, s.id DESC LIMIT 50`,
+    ).bind(ownerUserId, entryId).all<Record<string, unknown>>(),
+  ]);
+
+  const episodeTotal = Number(episodeResult.results[0]?.total_count ?? 0);
+  const snapshotTotal = Number(snapshotResult.results[0]?.total_count ?? 0);
+  const episodes = episodeResult.results.map((row) => {
+    const {
+      source: safeSource,
+      sourceTitle: safeSourceTitle,
+      sourceUrl: safeSourceUrl,
+    } = sanitizeSourceMetadataForOutput({
+      source: row.source,
+      sourceTitle: row.source_title,
+      sourceUrl: row.source_url,
+    }, "owner_mcp");
+    const { total_count: _totalCount, ...metadata } = row;
+    return {
+      ...metadata,
+      source: safeSource,
+      source_title: safeSourceTitle,
+      source_url: safeSourceUrl,
+      content_type: sanitizeBoundedMetadataForOutput(
+        row.content_type,
+        SOURCE_TITLE_MAX_CODE_POINTS,
+      ),
+    };
+  });
+  const snapshots = snapshotResult.results.map(({ total_count: _totalCount, ...row }) => row);
+  return { projection, episodes, snapshots, episodeTotal, snapshotTotal };
+}
+
+function renderBoundedMcpHistory(history: LoadedMcpHistory): string {
+  const episodes = [...history.episodes];
+  const snapshots = [...history.snapshots];
+  const encoder = new TextEncoder();
+
+  while (true) {
+    const counts = {
+      episodes: {
+        total: history.episodeTotal,
+        returned: episodes.length,
+        omitted: Math.max(0, history.episodeTotal - episodes.length),
+      },
+      snapshots: {
+        total: history.snapshotTotal,
+        returned: snapshots.length,
+        omitted: Math.max(0, history.snapshotTotal - snapshots.length),
+      },
+    };
+    const payload: McpHistoryPayload = {
+      projection: history.projection,
+      episodes,
+      snapshots,
+      truncated: counts.episodes.omitted > 0 || counts.snapshots.omitted > 0,
+      counts,
+      guidance: MCP_HISTORY_GUIDANCE,
+    };
+    const rendered = JSON.stringify(payload, null, 2);
+    if (encoder.encode(rendered).byteLength <= MCP_HISTORY_MAX_BYTES) return rendered;
+
+    if (!episodes.length && !snapshots.length) return rendered;
+    const canDropEpisode = episodes.length > 1;
+    const canDropSnapshot = snapshots.length > 1;
+    if (canDropEpisode || canDropSnapshot) {
+      if (!canDropEpisode) {
+        snapshots.pop();
+        continue;
+      }
+      if (!canDropSnapshot) {
+        episodes.pop();
+        continue;
+      }
+    }
+
+    const oldestEpisode = episodes[episodes.length - 1];
+    const oldestSnapshot = snapshots[snapshots.length - 1];
+    if (!oldestEpisode) {
+      snapshots.pop();
+      continue;
+    }
+    if (!oldestSnapshot) {
+      episodes.pop();
+      continue;
+    }
+
+    const episodeCreatedAt = Number(oldestEpisode.created_at ?? Number.POSITIVE_INFINITY);
+    const snapshotCreatedAt = Number(oldestSnapshot.created_at ?? Number.POSITIVE_INFINITY);
+    if (episodeCreatedAt < snapshotCreatedAt) {
+      episodes.pop();
+    } else if (snapshotCreatedAt < episodeCreatedAt) {
+      snapshots.pop();
+    } else {
+      const episodeBytes = encoder.encode(JSON.stringify(oldestEpisode)).byteLength;
+      const snapshotBytes = encoder.encode(JSON.stringify(oldestSnapshot)).byteLength;
+      if (episodeBytes >= snapshotBytes) episodes.pop();
+      else snapshots.pop();
+    }
+  }
 }
 
 export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorContext): McpServer {
@@ -247,7 +413,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
           ? `Semantic search unavailable; keyword results only. ${VECTORIZE_FIX_HINT}\n\n`
           : "";
         const text = result.matches.length
-          ? renderRecallText(result.matches, result.insight)
+          ? renderRecallText(result.matches, result.insight, userId)
           : "Nothing found matching that query.";
         return { content: [{ type: "text", text: notice + text }] };
       }),
@@ -318,27 +484,20 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
         const history = await governedRead(
           "memory.read",
           { entryId: entry_id, projection: "history" },
-          async () => {
-            if (!await getOwnedMcpEntry(entry_id, userId, env)) return null;
-            const [projection, episodes, snapshots] = await Promise.all([
-              env.DB.prepare(`SELECT current_episode_id, revision, recorded_at FROM entries WHERE id = ?`).bind(entry_id).first(),
-              env.DB.prepare(
-                `SELECT id, mutation_kind, parent_episode_id, restored_from_snapshot_id,
-                        content_hash, source, source_url, created_at
-                 FROM episodes WHERE entry_id = ? AND owner_user_id = ?
-                 ORDER BY created_at DESC, id DESC LIMIT 50`,
-              ).bind(entry_id, userId).all(),
-              env.DB.prepare(
-                `SELECT id, episode_id, mutation_kind, recorded_at, revision, created_at
-                 FROM entry_snapshots WHERE entry_id = ? ORDER BY created_at DESC, id DESC LIMIT 50`,
-              ).bind(entry_id).all(),
-            ]);
-            return { projection, episodes: episodes.results, snapshots: snapshots.results };
-          },
-          (value) => ({ found: value !== null, episodeCount: value?.episodes.length ?? 0, snapshotCount: value?.snapshots.length ?? 0 }),
+          () => loadOwnedMcpHistory(env, userId, entry_id),
+          (value) => ({
+            found: value !== null,
+            episodeCount: value?.episodeTotal ?? 0,
+            snapshotCount: value?.snapshotTotal ?? 0,
+          }),
           [entry_id],
         );
-        return { content: [{ type: "text", text: history ? JSON.stringify(history, null, 2) : `No history found for entry ${entry_id}.` }] };
+        return {
+          content: [{
+            type: "text",
+            text: history ? renderBoundedMcpHistory(history) : `No history found for entry ${entry_id}.`,
+          }],
+        };
       }),
     );
 
@@ -716,7 +875,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
         return { content: [{ type: "text", text: notice + "Nothing found matching that query." }] };
       }
 
-      let text = notice + renderRecallText(matches, insight);
+      let text = notice + renderRecallText(matches, insight, userId);
       if (proposed_edges.length) {
         text += `\n\n⚠️ **Contradictions detected** (${proposed_edges.length}):\n` +
           proposed_edges.map(pe => `  • ${pe.source_id} vs ${pe.target_id} — ${pe.reason}`).join("\n") +
@@ -774,10 +933,14 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       }
 
       const text = (results as Record<string, any>[]).map((row, i) => {
+        const { source: safeSource } = sanitizeSourceMetadataForOutput({
+          source: row.source,
+        }, row.owner_user_id === userId ? "owner_mcp" : "team_public");
         const date = new Date(row.created_at as number).toLocaleDateString();
         const tags: string[] = JSON.parse(row.tags ?? "[]");
         const tagStr = tags.length ? ` · ${tags.join(", ")}` : "";
-        return `${i + 1}. [${date} · ${row.source}${tagStr}]\nID: ${row.id as string}\n${row.content}`;
+        const sourceStr = safeSource ? ` · ${safeSource}` : "";
+        return `${i + 1}. [${date}${sourceStr}${tagStr}]\nID: ${row.id as string}\n${row.content}`;
       }).join("\n\n");
 
       return { content: [{ type: "text", text }] };
@@ -930,17 +1093,22 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       ).bind(projection.owner_user_id, entry_id, projection.current_episode_id).all() as { results: { id: string; content: string; section: string | null; page: number | null; page_end: number | null; start_offset: number | null; end_offset: number | null; created_at: number; document_title: string | null; source_url: string | null }[] };
       if (!results.length) return { content: [{ type: "text", text: `No passages found for entry ${entry_id}.` }] };
       const text = results.map((r, i) => {
-        const { sourceTitle: safeTitle, sourceUrl: safeSourceUrl } = sanitizeSourceMetadataForOutput(
-          r.document_title,
-          r.source_url,
-        );
+        const { sourceTitle: safeTitle, sourceUrl: safeSourceUrl } = sanitizeSourceMetadataForOutput({
+          sourceTitle: r.document_title,
+          sourceUrl: r.source_url,
+        }, projection.owner_user_id === userId ? "owner_mcp" : "team_public");
         const safeSection = sanitizeBoundedMetadataForOutput(r.section, SOURCE_TITLE_MAX_CODE_POINTS);
-        const document = safeTitle ? ` [${safeTitle}]` : "";
-        const section = safeSection ? ` [${safeSection}]` : "";
-        const page = r.page != null ? ` p.${r.page}${r.page_end != null && r.page_end !== r.page ? `-${r.page_end}` : ""}` : "";
-        const offset = r.start_offset != null ? ` @${r.start_offset}-${r.end_offset}` : "";
-        const source = safeSourceUrl ? `\nSource: ${safeSourceUrl}` : "";
-        return `${i + 1}.${document}${section}${page}${offset}\n${r.content.slice(0, 300)}${r.content.length > 300 ? "..." : ""}${source}`;
+        const citation = {
+          ...(safeTitle ? { title: safeTitle } : {}),
+          ...(safeSection ? { section: safeSection } : {}),
+          ...(r.page != null ? { page: r.page } : {}),
+          ...(r.page_end != null ? { pageEnd: r.page_end } : {}),
+          ...(r.start_offset != null ? { startOffset: r.start_offset } : {}),
+          ...(r.end_offset != null ? { endOffset: r.end_offset } : {}),
+          ...(safeSourceUrl ? { url: safeSourceUrl } : {}),
+        };
+        const excerpt = r.content.length > 300 ? `${r.content.slice(0, 297)}...` : r.content;
+        return `${i + 1}. ${JSON.stringify(citation)}\n${JSON.stringify(excerpt)}`;
       }).join("\n\n");
       return { content: [{ type: "text", text: `Passages for ${entry_id}:\n\n${text}` }] };
     })
@@ -956,25 +1124,12 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       },
     },
     audited("history", async ({ entry_id }) => {
-      if (!await getOwnedMcpEntry(entry_id, userId, env)) {
+      const history = await loadOwnedMcpHistory(env, userId, entry_id);
+      if (!history) {
         return { content: [{ type: "text", text: `No history found for entry ${entry_id}.` }] };
       }
-      const projection = await env.DB.prepare(
-        `SELECT current_episode_id, revision, recorded_at FROM entries WHERE id = ?`,
-      ).bind(entry_id).first();
-      const { results: episodes } = await env.DB.prepare(
-        `SELECT id, mutation_kind, parent_episode_id, restored_from_snapshot_id,
-                content_hash, source, source_url, created_at
-         FROM episodes WHERE entry_id = ? AND owner_user_id = ?
-         ORDER BY created_at DESC, id DESC LIMIT 50`,
-      ).bind(entry_id, userId).all();
-      const { results: snapshots } = await env.DB.prepare(
-        `SELECT id, episode_id, mutation_kind, recorded_at, revision, created_at
-         FROM entry_snapshots WHERE entry_id = ?
-         ORDER BY created_at DESC, id DESC LIMIT 50`,
-      ).bind(entry_id).all();
       return {
-        content: [{ type: "text", text: JSON.stringify({ projection, episodes, snapshots }, null, 2) }],
+        content: [{ type: "text", text: renderBoundedMcpHistory(history) }],
       };
     }),
   );
@@ -990,29 +1145,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       },
     },
     audited("restore", async ({ entry_id, snapshot_id }) => {
-      // Restoring reveals historical content, which may be more sensitive than
-      // the current public entry. Only the owning actor may read/use snapshots.
-      if (!await getOwnedMcpEntry(entry_id, userId, env)) {
-        return { content: [{ type: "text", text: `No snapshot found for entry ${entry_id}.` }] };
-      }
-      let snapshot;
-      if (snapshot_id) {
-        snapshot = await env.DB.prepare(
-          `SELECT s.id, s.entry_id, s.content, s.tags, s.source, s.created_at,
-                  s.valid_from, s.valid_to, e.source_url, e.content_type
-           FROM entry_snapshots s
-           LEFT JOIN episodes e ON e.id = s.episode_id
-           WHERE s.id = ? AND s.entry_id = ?`
-        ).bind(snapshot_id, entry_id).first();
-      } else {
-        snapshot = await env.DB.prepare(
-          `SELECT s.id, s.entry_id, s.content, s.tags, s.source, s.created_at,
-                  s.valid_from, s.valid_to, e.source_url, e.content_type
-           FROM entry_snapshots s
-           LEFT JOIN episodes e ON e.id = s.episode_id
-           WHERE s.entry_id = ? ORDER BY s.created_at DESC, s.id DESC LIMIT 1`
-        ).bind(entry_id).first();
-      }
+      const snapshot = await loadOwnedRestoreSnapshot(env, userId, entry_id, snapshot_id);
 
       if (!snapshot) {
         return { content: [{ type: "text", text: `No snapshot found for entry ${entry_id}.` }] };
@@ -1037,6 +1170,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
           source: (snapshot.source as string) ?? "restore",
           sourceUrl: (snapshot.source_url as string | null) ?? null,
           contentType: (snapshot.content_type as string) ?? "text",
+          title: snapshot.source_title ?? undefined,
           validFrom: (snapshot.valid_from as number | null) ?? null,
           validTo: (snapshot.valid_to as number | null) ?? null,
           epistemicStatus: "candidate",

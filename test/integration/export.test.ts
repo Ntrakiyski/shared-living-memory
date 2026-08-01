@@ -175,11 +175,17 @@ describe("GET /export", () => {
     const openAiSecret = `sk-proj-${"b".repeat(32)}`;
     const oversizedTitle = `${"t".repeat(512)}OVERSIZED_TITLE_TAIL`;
     const oversizedUrl = `https://example.test/${"u".repeat(2048)}OVERSIZED_URL_TAIL`;
+    const oversizedSource = `${"s".repeat(512)}OVERSIZED_SOURCE_TAIL`;
     const credentialUrl = "https://alice:private-password@example.test/source";
     const fixtures = [
       { id: "safe", source: "api", title: "Safe exact title", url: "https://example.test/safe" },
+      { id: "legacy-source-secret", source: githubSecret, title: "Source secret", url: "https://example.test/source-secret" },
+      { id: "legacy-source-control", source: "legacy\nFORGED_SOURCE_FIELD", title: "Source control", url: "https://example.test/source-control" },
+      { id: "legacy-source-oversized", source: oversizedSource, title: "Source oversized", url: "https://example.test/source-oversized" },
       { id: "legacy-title-secret", source: "legacy-import", title: githubSecret, url: "https://example.test/legacy" },
+      { id: "legacy-title-control", source: "legacy-import", title: "Safe title\tFORGED_TITLE_FIELD", url: "https://example.test/title-control" },
       { id: "integration-url-secret", source: "github", title: "Integration title", url: `https://example.test/${openAiSecret}` },
+      { id: "integration-url-control", source: "github", title: "URL control", url: "https://example.test/safe\rFORGED_URL_FIELD" },
       { id: "legacy-title-oversized", source: "legacy-import", title: oversizedTitle, url: "https://example.test/title" },
       { id: "integration-url-oversized", source: "github", title: "Oversized URL", url: oversizedUrl },
       { id: "integration-url-userinfo", source: "github", title: "Credential URL", url: credentialUrl },
@@ -219,11 +225,17 @@ describe("GET /export", () => {
 
     expect(res.status).toBe(200);
     expect(byId.get("safe")).toMatchObject({
+      source: "api",
       source_title: "Safe exact title",
       source_url: "https://example.test/safe",
     });
+    expect(byId.get("legacy-source-secret")).toMatchObject({ source: null });
+    expect(byId.get("legacy-source-control")).toMatchObject({ source: null });
+    expect(byId.get("legacy-source-oversized")).toMatchObject({ source: null });
     expect(byId.get("legacy-title-secret")).toMatchObject({ source_title: null });
+    expect(byId.get("legacy-title-control")).toMatchObject({ source_title: null });
     expect(byId.get("integration-url-secret")).toMatchObject({ source_url: null });
+    expect(byId.get("integration-url-control")).toMatchObject({ source_url: null });
     expect(byId.get("legacy-title-oversized")).toMatchObject({ source_title: null });
     expect(byId.get("integration-url-oversized")).toMatchObject({ source_url: null });
     expect(byId.get("integration-url-userinfo")).toMatchObject({ source_url: null });
@@ -232,7 +244,9 @@ describe("GET /export", () => {
     expect(serialized).not.toContain(openAiSecret);
     expect(serialized).not.toContain("OVERSIZED_TITLE_TAIL");
     expect(serialized).not.toContain("OVERSIZED_URL_TAIL");
+    expect(serialized).not.toContain("OVERSIZED_SOURCE_TAIL");
     expect(serialized).not.toContain("alice:private-password");
+    expect(serialized).not.toContain("FORGED_");
     expect(db.documents.find((document: any) => document.id === "integration-url-userinfo-document")?.source_url)
       .toBe(credentialUrl);
   });
