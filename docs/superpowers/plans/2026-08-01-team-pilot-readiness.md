@@ -387,12 +387,12 @@ npm run typecheck
 
 - [ ] Add a failing reindex test with a current entry vector and multiple current-episode passage vectors. Assert ownership/visibility metadata and `passageId` survive rebuild.
 - [ ] Refactor the current reindex helper to reuse the version vector staging path in `src/entry-version-service.ts`; do not maintain a second entry-only vector format.
-- [ ] Rebuild only current entry projections and current-episode passages. Delete stale vector IDs after successful upsert.
+- [ ] Rebuild only current entry projections and current-episode passages. Delete stale vector IDs after successful upsert. If guarded D1 projection persistence loses a race, durably clean only newly staged IDs (`new - old`) and preserve overlapping last-known-good IDs.
 - [ ] Fail closed for legacy entries whose `current_episode_id` is null. Return metadata-only IDs/counts in the administrative failure report, block readiness, and require an operator to review/version those rows before retrying; never fabricate lineage or retain the legacy entry-only vector format.
 - [ ] Make reindex return `{entries_processed, passages_processed, failed, stale_deleted}` and fail the administrative request when any item fails.
 - [ ] Define the deployment preflight assertion that `wrangler vectorize list-metadata-index` contains the string index `owner_user_id` and boolean index `is_private`; Task 9 wires this assertion into `scripts/release-preflight.sh`.
-- [ ] Keep D1 reauthorization after Vectorize filtering; never add an unfiltered semantic fallback.
-- [ ] Add a remote staging canary with two users and four memories: Alice private, Bob private, Alice public, and a semantic paraphrase target. Against real staging AI/Vectorize, verify own-private/public recall, other-private exclusion, and duplicate detection.
+- [ ] Keep D1 reauthorization after Vectorize filtering; never add an unfiltered semantic fallback. Current recall requires exact current-episode identity. For explicit `known_at`/`as_of` recall, admit only episode IDs that D1 proves belong to the authorized entry's historical projections, then require the temporal resolver's selected episode; never accept missing or arbitrary stale lineage.
+- [ ] Add a remote staging canary with two users and four memories: Alice private, Bob private, Alice public, and a semantic paraphrase target. Against real staging AI/Vectorize, verify own-private/public recall, other-private exclusion, and duplicate detection. Every semantic/privacy query must be meaning-related but token-disjoint from its target so keyword fallback cannot satisfy the check, and every fetch/poll has a fixed timeout.
 - [ ] Treat that remote canary as deferred until Tasks 5 and 9 provide an active staging admin and isolated resources. Task 2 builds and locally verifies the script but does not bootstrap, provision, deploy, or mutate external state.
 - [ ] After staging verification, create both metadata indexes before any re-upsert. Cloudflare requires metadata indexes to exist before affected vectors are inserted.
 - [ ] Re-upsert all current entry and passage vectors, wait for processing, then rerun the canaries.
