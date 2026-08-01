@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/testing";
 import { AUTH_PEPPER, hmacKey } from "../../src/auth";
 import { makeTestDb, makeTestEnv } from "../helpers/make-env";
@@ -65,7 +65,7 @@ describe("GET /export", () => {
     );
     db.passages.push(
       { id: "mine-passage", entry_id: "mine", episode_id: "mine-old", document_id: "mine-doc", content: "mine passage", created_at: 1, vector_ids: "[]" },
-      { id: "mine-legacy-passage", entry_id: "mine", episode_id: "mine-current", document_id: "mine-legacy-doc", content: "mine legacy passage", created_at: 2, vector_ids: "[]" },
+      { id: "mine-legacy-passage", entry_id: "mine", episode_id: null, document_id: "mine-legacy-doc", content: "mine legacy passage", created_at: 2, vector_ids: "[]" },
       { id: "mine-cross-owner-passage", entry_id: "mine", episode_id: "mine-current", document_id: "other-doc", content: "owned passage with foreign document reference", created_at: 3, vector_ids: "[]" },
       { id: "other-passage", entry_id: "other", episode_id: "other-episode", document_id: "other-doc", content: "other passage", created_at: 1, vector_ids: "[]" },
     );
@@ -93,6 +93,40 @@ describe("GET /export", () => {
     expect(data.document_sections.map((section: any) => section.id).sort()).toEqual(["mine-legacy-section", "mine-section"]);
     expect(JSON.stringify(data)).not.toContain("other history");
     expect(data.entries[0]).not.toHaveProperty("vector_ids");
+  });
+
+  it("loads owner history in bounded batches instead of querying per entry or artifact", async () => {
+    const alice = await seedActor(db, "alice");
+    for (let index = 0; index < 5; index++) {
+      const entryId = `mine-${index}`;
+      const episodeId = `episode-${index}`;
+      const documentId = `document-${index}`;
+      seedEntry(db, { id: entryId, current_episode_id: episodeId });
+      db.episodes.push({ id: episodeId, entry_id: entryId, content: `history ${index}`, materialized_content: `history ${index}`, created_at: index + 1 });
+      db.entry_snapshots.push({ id: `snapshot-${index}`, entry_id: entryId, content: `snapshot ${index}`, created_at: index + 1 });
+      db.passages.push({ id: `passage-${index}`, entry_id: entryId, episode_id: episodeId, document_id: documentId, content: `passage ${index}`, created_at: index + 1, vector_ids: "[]" });
+      db.documents.push({ id: documentId, episode_id: episodeId, owner_user_id: "alice", title: `Document ${index}`, created_at: index + 1 });
+      db.document_sections.push({ id: `section-${index}`, document_id: documentId, title: `Section ${index}`, order_index: 0 });
+    }
+    // Prime one-time database initialization so the count measures only the
+    // export read plan, not schema compatibility probes.
+    await worker.fetch(req("GET", "/export?mode=my_data", { userCredentials: alice }), env, ctx);
+    const preparedSql: string[] = [];
+    const originalPrepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      preparedSql.push(sql.replace(/\s+/g, " ").trim());
+      return originalPrepare(sql);
+    }) as D1Mock["prepare"]);
+
+    const res = await worker.fetch(req("GET", "/export?mode=my_data", { userCredentials: alice }), env, ctx);
+    const data = await res.json() as any;
+    const artifactQueries = preparedSql.filter((sql) =>
+      /FROM (episodes|entry_snapshots|passages|documents|document_sections)\b/.test(sql));
+
+    expect(res.status).toBe(200);
+    expect(data.entries).toHaveLength(5);
+    expect(artifactQueries.length).toBeLessThanOrEqual(6);
+    expect(artifactQueries.every((sql) => !/WHERE (entry_id|episode_id|document_id) = \?/.test(sql))).toBe(true);
   });
 
   it("team_public exports current public projections and scalar source metadata without history", async () => {

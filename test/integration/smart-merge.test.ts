@@ -160,6 +160,48 @@ describe("POST /capture — governed smart merge", () => {
     });
   });
 
+  it("stores explicit public input separately from a same-owner private target without changing either scope", async () => {
+    seedEntry(db, "private-target", "Private existing preference", "[]", {
+      visibility: "private",
+      tags: '["private"]',
+      importance_score: 2,
+    });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [{ id: "private-target", score: 0.88, metadata: { parentId: "private-target" } }],
+        }),
+      }),
+      AI: makeMergeAI('{"action":"replace","target_id":"private-target"}'),
+    });
+
+    const res = await worker.fetch(
+      req("POST", "/capture", { body: { content: "Explicit public statement", visibility: "public" } }),
+      env,
+      ctx,
+    );
+    const data = await res.json() as any;
+
+    expect(res.status).toBe(200);
+    expect(data).toMatchObject({
+      ok: true,
+      action: "stored_separately",
+      visibility: "public",
+      warnings: expect.arrayContaining(["Merge skipped: visibility_mismatch"]),
+    });
+    expect(data.id).not.toBe("private-target");
+    expect(db.entries.find((entry: any) => entry.id === "private-target")).toMatchObject({
+      content: "Private existing preference",
+      visibility: "private",
+      revision: 0,
+    });
+    expect(db.entries.find((entry: any) => entry.id === data.id)).toMatchObject({
+      content: "Explicit public statement",
+      visibility: "public",
+      revision: 1,
+    });
+  });
+
   it.each([
     ["replace", '{"action":"replace","target_id":"existing-id"}', "I switched to Cursor"],
     ["merge", '{"action":"merge","target_id":"existing-id","merged_content":"Combined"}', "New detail"],

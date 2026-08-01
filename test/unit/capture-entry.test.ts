@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { captureEntry } from "../../src/testing";
 import { makeTestDb, makeTestEnv, makeVectorizeMock } from "../helpers/make-env";
-import type { Env } from "../../src/testing";
+import type { CaptureResult, Env } from "../../src/testing";
 import { D1Mock } from "../helpers/d1-mock";
 import { TEST_USER_ID } from "../helpers/test-principal";
 
@@ -82,7 +82,7 @@ describe("captureEntry()", () => {
     const before = Date.now();
     const { ctx } = makeCtx();
 
-    const result = await captureEntry("My first memory", [], "api", env, ctx);
+    const result: CaptureResult = await captureEntry("My first memory", [], "api", env, ctx);
 
     expect(result.status).toBe("stored");
     if (result.status !== "stored") return;
@@ -137,12 +137,14 @@ describe("captureEntry()", () => {
 
   it.each([
     ["content_too_large", { content: "x".repeat(32 * 1024 + 1), tags: [] }],
+    ["content_too_large", { content: "🌿".repeat(8_190), tags: [], source: "123456789" }],
     ["too_many_tags", { content: "note", tags: Array.from({ length: 26 }, (_, index) => `tag-${index}`) }],
     ["too_many_tags", { content: Array.from({ length: 26 }, (_, index) => `#derived${index}`).join(" "), tags: [] }],
     ["tag_too_long", { content: "note", tags: ["x".repeat(65)] }],
     ["tag_too_long", { content: `note #${"x".repeat(65)}`, tags: [] }],
     ["source_url_too_long", { content: "note", tags: [], sourceUrl: `https://example.test/${"x".repeat(2049)}` }],
     ["source_url_too_long", { content: "note", tags: [], source: `https://example.test/${"x".repeat(2049)}` }],
+    ["source_title_too_long", { content: "note", tags: [], sourceTitle: "🌿".repeat(513) }],
   ])("rejects %s before model or vector work", async (error, value) => {
     const aiRun = vi.fn();
     const vectorQuery = vi.fn();
@@ -159,14 +161,17 @@ describe("captureEntry()", () => {
       env,
       ctx,
       TEST_USER_ID,
-      { sourceUrl: "sourceUrl" in value ? value.sourceUrl : undefined },
+      {
+        sourceUrl: "sourceUrl" in value ? value.sourceUrl : undefined,
+        sourceTitle: "sourceTitle" in value ? value.sourceTitle : undefined,
+      },
     )).rejects.toMatchObject({ code: error });
     expect(aiRun).not.toHaveBeenCalled();
     expect(vectorQuery).not.toHaveBeenCalled();
   });
 
   it.each([
-    ["pem_private_key", `-----BEGIN PRIVATE KEY-----\n${"A".repeat(256)}\n-----END PRIVATE KEY-----`],
+    ["pem_private_key", "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----"],
     ["github_token", `ghp_${"a".repeat(36)}`],
     ["slack_token", `xoxb-123456789012-123456789012-${"a".repeat(24)}`],
     ["stripe_live_secret", `sk_live_${"a".repeat(24)}`],
@@ -186,6 +191,37 @@ describe("captureEntry()", () => {
     });
     expect(aiRun).not.toHaveBeenCalled();
     expect(vectorQuery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["tag", { tags: [`sk_live_${"a".repeat(24)}`] }],
+    ["source", { source: `ghp_${"a".repeat(36)}` }],
+    ["source URL", { sourceUrl: `https://example.test/sk-proj-${"a".repeat(32)}` }],
+    ["source title", { sourceTitle: `xoxb-123456789012-123456789012-${"a".repeat(24)}` }],
+  ])("rejects a secret in capture %s metadata before model or vector work", async (_field, metadata) => {
+    const aiRun = vi.fn();
+    const vectorQuery = vi.fn();
+    env = makeTestEnv(db, {
+      AI: { run: aiRun } as unknown as Ai,
+      VECTORIZE: makeVectorizeMock({ query: vectorQuery }),
+    });
+    const { ctx } = makeCtx();
+
+    await expect(captureEntry(
+      "Safe note",
+      "tags" in metadata ? metadata.tags : [],
+      "source" in metadata ? metadata.source : "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+      {
+        sourceUrl: "sourceUrl" in metadata ? metadata.sourceUrl : undefined,
+        sourceTitle: "sourceTitle" in metadata ? metadata.sourceTitle : undefined,
+      },
+    )).rejects.toMatchObject({ code: "secret_detected" });
+    expect(aiRun).not.toHaveBeenCalled();
+    expect(vectorQuery).not.toHaveBeenCalled();
+    expect(db.entries).toHaveLength(0);
   });
 
   it.each(["xoxa", "xoxr", "xoxs"])("rejects a structurally valid %s Slack token", async (prefix) => {

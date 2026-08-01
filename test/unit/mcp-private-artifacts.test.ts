@@ -49,6 +49,37 @@ describe("MCP private child artifacts", () => {
     expect(JSON.stringify(hidden)).not.toContain("passage secret");
   });
 
+  it("bounds legacy citation metadata and suppresses detected secrets without truncating valid citations", async () => {
+    const secret = `sk_live_${"s".repeat(24)}`;
+    const longTitle = `${"T".repeat(512)}TITLE_TAIL`;
+    const longUrl = `https://example.test/${"u".repeat(2_048)}URL_TAIL`;
+    db.entries.push({
+      id: "citations", content: "public parent", tags: "[]", visibility: "public",
+      source: "api", created_at: 1, vector_ids: "[]", owner_user_id: "alice",
+      current_episode_id: "current-episode",
+    });
+    db.documents.push(
+      { id: "safe-doc", episode_id: "current-episode", owner_user_id: "alice", title: "Complete safe title", source_url: "https://example.test/complete-source" },
+      { id: "secret-doc", episode_id: "current-episode", owner_user_id: "alice", title: `Secret ${secret}`, source_url: `https://example.test/${secret}` },
+      { id: "long-doc", episode_id: "current-episode", owner_user_id: "alice", title: longTitle, source_url: longUrl },
+    );
+    db.passages.push(
+      { id: "safe-passage", entry_id: "citations", episode_id: "current-episode", document_id: "safe-doc", content: "Safe evidence", start_offset: 0, end_offset: 13, created_at: 1 },
+      { id: "secret-passage", entry_id: "citations", episode_id: "current-episode", document_id: "secret-doc", content: "Evidence with unsafe metadata", start_offset: 14, end_offset: 43, created_at: 2 },
+      { id: "long-passage", entry_id: "citations", episode_id: "current-episode", document_id: "long-doc", content: "Evidence with legacy metadata", start_offset: 44, end_offset: 73, created_at: 3 },
+    );
+    const server = buildMcpServer(makeTestEnv(db), ctx, humanActor("alice"));
+
+    const result = await callTool(server, "passages", { entry_id: "citations" });
+    const text = result.content[0].text;
+
+    expect(text).toContain("Complete safe title");
+    expect(text).toContain("https://example.test/complete-source");
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain("TITLE_TAIL");
+    expect(text).not.toContain("URL_TAIL");
+  });
+
   it("does not expose snapshots from a public entry owned by another actor", async () => {
     db.entries.push({
       id: "history", content: "public current value", tags: "[]",

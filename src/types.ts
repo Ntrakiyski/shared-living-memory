@@ -67,6 +67,14 @@ export interface RecallMatch {
 
 export type CaptureVisibility = "private" | "public";
 
+export type CaptureRejectionCode =
+  | "content_too_large"
+  | "too_many_tags"
+  | "tag_too_long"
+  | "source_url_too_long"
+  | "source_title_too_long"
+  | "secret_detected";
+
 export interface CaptureRequest {
   content: string;
   tags?: string[];
@@ -93,7 +101,41 @@ export interface CaptureDuplicateResponse {
   warnings: string[];
 }
 
-export type CaptureResponse = CaptureStoredResponse | CaptureDuplicateResponse;
+export type CaptureRequestError =
+  | CaptureRejectionCode
+  | "Unauthorized"
+  | "Invalid JSON"
+  | "content is required"
+  | "tags must be an array of strings"
+  | "visibility must be private or public"
+  | "source_url must be a string"
+  | "source_title must be a string";
+
+export interface CaptureRejectedResponse {
+  ok: false;
+  error: CaptureRequestError;
+  action?: never;
+}
+
+export type CaptureResponse = CaptureStoredResponse | CaptureDuplicateResponse | CaptureRejectedResponse;
+
+export type CaptureResult =
+  | { status: "blocked"; matchId: string; score: number }
+  | { status: "stored"; id: string; visibility: CaptureVisibility; crossUserNote?: string; awareness?: AwarenessDelivery }
+  | {
+      status: "flagged";
+      id: string;
+      matchId: string;
+      score: number;
+      crossUserNote?: string;
+      mergeSkipped?: "target_not_owned" | "target_protected" | "visibility_mismatch";
+      visibility: CaptureVisibility;
+      awareness?: AwarenessDelivery;
+    }
+  | { status: "contradiction"; id: string; visibility: CaptureVisibility; resolvedConflict: string; reason?: string; awareness?: AwarenessDelivery }
+  | { status: "contradiction_protected"; id: string; visibility: CaptureVisibility; canonicalId: string; reason?: string; awareness?: AwarenessDelivery }
+  | { status: "merged"; id: string; visibility: CaptureVisibility }
+  | { status: "replaced"; id: string; visibility: CaptureVisibility };
 
 // ─── Memory Pillar: Episodes, Snapshots, Passages ────────────────────────────
 

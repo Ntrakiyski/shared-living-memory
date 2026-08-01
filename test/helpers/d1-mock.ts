@@ -1152,6 +1152,40 @@ export class D1Mock {
         return null;
       },
       async all() {
+        if (s.includes("SELECT * FROM episodes WHERE entry_id IN")) {
+          const entryIds = new Set(args.map(String));
+          return { results: db.episodes.filter((row: any) => entryIds.has(String(row.entry_id))).map((row: any) => ({ ...row })) };
+        }
+        if (s.includes("SELECT * FROM episodes WHERE id IN")) {
+          const episodeIds = new Set(args.map(String));
+          return { results: db.episodes.filter((row: any) => episodeIds.has(String(row.id))).map((row: any) => ({ ...row })) };
+        }
+        if (s.includes("SELECT * FROM entry_snapshots WHERE entry_id IN") && !s.includes("recorded_at IS NOT NULL")) {
+          const entryIds = new Set(args.map(String));
+          return { results: db.entry_snapshots.filter((row: any) => entryIds.has(String(row.entry_id))).map((row: any) => ({ ...row })) };
+        }
+        if (s.includes("SELECT * FROM documents WHERE episode_id IN")) {
+          const ownerBound = s.includes("owner_user_id = ?");
+          const ownerUserId = ownerBound ? String(args[args.length - 1]) : undefined;
+          const episodeIds = new Set((ownerBound ? args.slice(0, -1) : args).map(String));
+          return { results: db.documents
+            .filter((row: any) => episodeIds.has(String(row.episode_id)) && (!ownerBound || row.owner_user_id === ownerUserId))
+            .map((row: any) => ({ ...row })) };
+        }
+        if (s.includes("SELECT * FROM documents WHERE id IN")) {
+          const ownerBound = s.includes("owner_user_id = ?");
+          const ownerUserId = ownerBound ? String(args[args.length - 1]) : undefined;
+          const documentIds = new Set((ownerBound ? args.slice(0, -1) : args).map(String));
+          return { results: db.documents
+            .filter((row: any) => documentIds.has(String(row.id)) && (!ownerBound || row.owner_user_id === ownerUserId))
+            .map((row: any) => ({ ...row })) };
+        }
+        if (s.includes("SELECT * FROM document_sections WHERE document_id IN")) {
+          const documentIds = new Set(args.map(String));
+          return { results: db.document_sections
+            .filter((row: any) => documentIds.has(String(row.document_id)))
+            .map((row: any) => ({ ...row })) };
+        }
         if (s.includes("FROM edge_versions WHERE edge_id = ?") && s.includes("ORDER BY revision DESC")) {
           const edgeId = args[0];
           const results = db.edge_versions
@@ -2050,7 +2084,7 @@ export class D1Mock {
           const results = db.passages
             .filter((p: any) => entryIds.includes(p.entry_id))
             .sort((a: any, b: any) => (a.start_offset ?? 0) - (b.start_offset ?? 0))
-            .map((p: any) => ({ id: p.id, entry_id: p.entry_id, content: p.content, section: p.section ?? null, start_offset: p.start_offset ?? null, end_offset: p.end_offset ?? null, vector_ids: p.vector_ids ?? "[]" }));
+            .map((p: any) => ({ ...p, section: p.section ?? null, start_offset: p.start_offset ?? null, end_offset: p.end_offset ?? null, vector_ids: p.vector_ids ?? "[]" }));
           return { results };
         }
         if (s.includes("FROM document_sections ds") && s.includes("JOIN documents d")) {

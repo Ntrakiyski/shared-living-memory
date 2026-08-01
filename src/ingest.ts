@@ -13,7 +13,13 @@
  *   5. reindexAllVectors — bulk migration helper to add ownership metadata
  */
 
-import type { AwarenessDelivery, CaptureVisibility, Env } from "./types";
+import type {
+  AwarenessDelivery,
+  CaptureRejectionCode,
+  CaptureResult,
+  CaptureVisibility,
+  Env,
+} from "./types";
 import { chunkText, embed } from "./helpers";
 import { classifyEntry, extractHashtags } from "./classification";
 import { checkDuplicateAndContradiction } from "./duplicates";
@@ -265,31 +271,6 @@ function scheduleClassifyAndTag(
   );
 }
 
-export type CaptureResult =
-  | { status: "blocked"; matchId: string; score: number }
-  | { status: "stored"; id: string; visibility: CaptureVisibility; crossUserNote?: string; awareness?: AwarenessDelivery }
-  | {
-      status: "flagged";
-      id: string;
-      matchId: string;
-      score: number;
-      crossUserNote?: string;
-      mergeSkipped?: "target_not_owned" | "target_protected" | "visibility_mismatch";
-      visibility: CaptureVisibility;
-      awareness?: AwarenessDelivery;
-    }
-  | { status: "contradiction"; id: string; visibility: CaptureVisibility; resolvedConflict: string; reason?: string; awareness?: AwarenessDelivery }
-  | { status: "contradiction_protected"; id: string; visibility: CaptureVisibility; canonicalId: string; reason?: string; awareness?: AwarenessDelivery }
-  | { status: "merged"; id: string; visibility: CaptureVisibility }
-  | { status: "replaced"; id: string; visibility: CaptureVisibility };
-
-export type CaptureRejectionCode =
-  | "content_too_large"
-  | "too_many_tags"
-  | "tag_too_long"
-  | "source_url_too_long"
-  | "secret_detected";
-
 export class CaptureRejectedError extends Error {
   constructor(readonly code: CaptureRejectionCode, readonly detector?: string) {
     super(code);
@@ -310,18 +291,61 @@ const SECRET_DETECTORS = [
   ["openai_project_key", /\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}\b/],
 ] as const;
 
+export const CAPTURE_PAYLOAD_MAX_BYTES = 32 * 1024;
+export const SOURCE_URL_MAX_CODE_POINTS = 2_048;
+export const SOURCE_TITLE_MAX_CODE_POINTS = 512;
+
 const PEM_PRIVATE_KEY_BLOCK = /-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----\r?\n([\s\S]*?)\r?\n-----END \1-----/g;
+
+function decodePemBody(body: string): Uint8Array | null {
+  const encoded = body.replace(/\s/g, "");
+  if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 === 1) return null;
+  const padded = encoded.padEnd(encoded.length + ((4 - encoded.length % 4) % 4), "=");
+  try {
+    const decoded = atob(padded);
+    return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+function derSequenceContentOffset(bytes: Uint8Array): number | null {
+  if (bytes.length < 4 || bytes[0] !== 0x30) return null;
+  const firstLength = bytes[1];
+  if (firstLength < 0x80) return firstLength + 2 === bytes.length ? 2 : null;
+  const lengthBytes = firstLength & 0x7f;
+  if (lengthBytes < 1 || lengthBytes > 4 || bytes.length < 2 + lengthBytes) return null;
+  let contentLength = 0;
+  for (let index = 0; index < lengthBytes; index++) {
+    contentLength = (contentLength * 256) + bytes[2 + index];
+  }
+  const contentOffset = 2 + lengthBytes;
+  return contentOffset + contentLength === bytes.length ? contentOffset : null;
+}
+
+function isPlausiblePrivateKeyContainer(label: string, bytes: Uint8Array): boolean {
+  if (label === "OPENSSH PRIVATE KEY") {
+    const signature = "openssh-key-v1\0";
+    return bytes.length >= signature.length
+      && signature.split("").every((character, index) => bytes[index] === character.charCodeAt(0));
+  }
+  const contentOffset = derSequenceContentOffset(bytes);
+  if (contentOffset === null) return false;
+  if (label === "ENCRYPTED PRIVATE KEY") return bytes[contentOffset] === 0x30;
+  return bytes[contentOffset] === 0x02;
+}
 
 function containsPlausiblePemPrivateKey(content: string): boolean {
   for (const match of content.matchAll(PEM_PRIVATE_KEY_BLOCK)) {
-    const encodedBody = match[2].replace(/\s/g, "");
-    if (encodedBody.length >= 128
-        && encodedBody.length % 4 === 0
-        && /^[A-Za-z0-9+/]+={0,2}$/.test(encodedBody)) {
-      return true;
-    }
+    const decoded = decodePemBody(match[2]);
+    if (decoded && isPlausiblePrivateKeyContainer(match[1], decoded)) return true;
   }
   return false;
+}
+
+export function detectHighConfidenceSecret(value: string): string | undefined {
+  if (containsPlausiblePemPrivateKey(value)) return "pem_private_key";
+  return SECRET_DETECTORS.find(([, pattern]) => pattern.test(value))?.[0];
 }
 
 function validateCaptureTags(tags: string[]): void {
@@ -331,19 +355,31 @@ function validateCaptureTags(tags: string[]): void {
   }
 }
 
-function validateCaptureInput(content: string, tags: string[], sourceUrl?: string): void {
-  if (new TextEncoder().encode(content).byteLength > 32 * 1024) {
+function validateCaptureInput(
+  content: string,
+  tags: string[],
+  source: string,
+  sourceUrl?: string,
+  sourceTitle?: string,
+): void {
+  const effectiveSourceUrl = sourceUrl ?? (/^https?:\/\//i.test(source) ? source : undefined);
+  const payloadStrings = [content, ...tags, source, ...(sourceUrl ? [sourceUrl] : []), ...(sourceTitle ? [sourceTitle] : [])];
+  const encoder = new TextEncoder();
+  const payloadBytes = payloadStrings.reduce((total, value) => total + encoder.encode(value).byteLength, 0);
+  if (payloadBytes > CAPTURE_PAYLOAD_MAX_BYTES) {
     throw new CaptureRejectedError("content_too_large");
   }
   validateCaptureTags(tags);
-  if (sourceUrl && sourceUrl.length > 2_048) {
+  if (effectiveSourceUrl && Array.from(effectiveSourceUrl).length > SOURCE_URL_MAX_CODE_POINTS) {
     throw new CaptureRejectedError("source_url_too_long");
   }
-  if (containsPlausiblePemPrivateKey(content)) {
-    throw new CaptureRejectedError("secret_detected", "pem_private_key");
+  if (sourceTitle && Array.from(sourceTitle).length > SOURCE_TITLE_MAX_CODE_POINTS) {
+    throw new CaptureRejectedError("source_title_too_long");
   }
-  const match = SECRET_DETECTORS.find(([, pattern]) => pattern.test(content));
-  if (match) throw new CaptureRejectedError("secret_detected", match[0]);
+  for (const value of payloadStrings) {
+    const detector = detectHighConfidenceSecret(value);
+    if (detector) throw new CaptureRejectedError("secret_detected", detector);
+  }
 }
 
 export async function captureEntry(
@@ -357,7 +393,7 @@ export async function captureEntry(
 ): Promise<CaptureResult> {
   const inferredSourceUrl = /^https?:\/\//i.test(source) ? source : undefined;
   const requestedSourceUrl = options.sourceUrl ?? inferredSourceUrl;
-  validateCaptureInput(rawContent, tags, requestedSourceUrl);
+  validateCaptureInput(rawContent, tags, source, options.sourceUrl, options.sourceTitle);
   const raw = rawContent.trim();
   const { cleanContent, hashtags } = extractHashtags(raw);
   const c = cleanContent || raw;
@@ -366,7 +402,7 @@ export async function captureEntry(
   const actorUserId = userId ?? await getSystemUserId(env);
   const sourceUrl = requestedSourceUrl ?? null;
   const visibility = options.visibility ?? "private";
-  let effectiveVisibility = visibility;
+  const effectiveVisibility = visibility;
   const researchLike = sourceUrl !== null
     || /^(research|paper|document)$/i.test(source)
     || /^(#{1,4})\s+/m.test(rawContent);
@@ -404,12 +440,11 @@ export async function captureEntry(
         const existingSource = targetRow.source as string;
         const targetVisibility: CaptureVisibility = targetRow.visibility === "private" ? "private" : "public";
 
-        // Similarity is never authority to cross a visibility boundary. When
-        // either side is private, retain the incoming statement separately and
-        // keep it private rather than publishing or mutating either memory.
+        // Similarity is never authority to cross a visibility boundary. Retain
+        // the incoming statement separately at its explicitly requested scope;
+        // the existing private/public target is never mutated or republished.
         if (targetVisibility !== effectiveVisibility) {
           mergeSkipped = "visibility_mismatch";
-          effectiveVisibility = "private";
         } else if ((targetRow.importance_score as number) >= 4 || getStatus(existingTags) === "canonical") {
           // Protect high-importance or canonical memories from being silently
           // overwritten. The new statement is retained as its own candidate.

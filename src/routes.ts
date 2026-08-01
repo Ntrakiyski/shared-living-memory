@@ -14,9 +14,9 @@
  *   domain functions from the respective modules, and returns a JSON response.
  */
 
-import { type CaptureRequest, type CaptureResponse, type Env } from "./types";
+import { type CaptureRequest, type CaptureRequestError, type CaptureResponse, type Env } from "./types";
 import { loginHtml, hmacKey, generateApiKey, AUTH_PEPPER, requireAuthAsync, resolveUserByApiKey, isAuthorized, json } from "./auth";
-import { CORS_HEADERS, graceMs, LLM_MODEL, COMPRESSION_MIN_AGE_MS, compressionEligibilitySql, VECTORIZE_FIX_HINT } from "./config";
+import { CORS_HEADERS, D1_MAX_BOUND_PARAMS, graceMs, LLM_MODEL, COMPRESSION_MIN_AGE_MS, compressionEligibilitySql, VECTORIZE_FIX_HINT } from "./config";
 import { initializeDatabase, checkVectorizeHealth } from "./db";
 import { buildVisibilityClause, buildEntryFilterQuery, getStatus, withStatus, withKind } from "./tags";
 import {
@@ -115,6 +115,34 @@ function versionWriteError(error: unknown): Response {
     return json({ ok: false, error: error.message }, 400);
   }
   return json({ ok: false, error: "Memory update could not be committed" }, 500);
+}
+
+function captureRequestError(error: CaptureRequestError, status: 400 | 401 | 422): Response {
+  const response: CaptureResponse = { ok: false, error };
+  return json(response, status);
+}
+
+type ExportBatchTable = "episodes" | "entry_snapshots" | "passages" | "documents" | "document_sections";
+
+async function loadExportRowsByIds(
+  env: Env,
+  table: ExportBatchTable,
+  column: string,
+  ids: string[],
+  options: { extraWhere?: string; extraBindings?: unknown[] } = {},
+): Promise<Record<string, any>[]> {
+  if (!ids.length) return [];
+  const extraBindings = options.extraBindings ?? [];
+  const batchSize = Math.max(1, D1_MAX_BOUND_PARAMS - extraBindings.length);
+  const rows: Record<string, any>[] = [];
+  for (let offset = 0; offset < ids.length; offset += batchSize) {
+    const batch = ids.slice(offset, offset + batchSize);
+    const placeholders = batch.map(() => "?").join(", ");
+    const sql = `SELECT * FROM ${table} WHERE ${column} IN (${placeholders})${options.extraWhere ?? ""}`;
+    const result = await env.DB.prepare(sql).bind(...batch, ...extraBindings).all<Record<string, any>>();
+    rows.push(...result.results);
+  }
+  return rows;
 }
 
 async function getEntryAccessRow(id: string, env: Env): Promise<EntryAccessRow | null> {
@@ -649,24 +677,24 @@ export const defaultHandler = {
     // POST /capture
     if (url.pathname === "/capture" && request.method === "POST") {
       const { error: authErr, user_id } = await requireAuthAsync(request, env);
-      if (authErr) return authErr;
+      if (authErr) return captureRequestError("Unauthorized", 401);
 
       let body: Partial<CaptureRequest>;
-      try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
+      try { body = await request.json(); } catch { return captureRequestError("Invalid JSON", 400); }
       if (typeof body.content !== "string" || !body.content.trim()) {
-        return json({ ok: false, error: "content is required" }, 400);
+        return captureRequestError("content is required", 400);
       }
       if (body.tags !== undefined && (!Array.isArray(body.tags) || body.tags.some((tag) => typeof tag !== "string"))) {
-        return json({ ok: false, error: "tags must be an array of strings" }, 400);
+        return captureRequestError("tags must be an array of strings", 400);
       }
       if (body.visibility !== undefined && body.visibility !== "private" && body.visibility !== "public") {
-        return json({ ok: false, error: "visibility must be private or public" }, 400);
+        return captureRequestError("visibility must be private or public", 400);
       }
       if (body.source_url !== undefined && typeof body.source_url !== "string") {
-        return json({ ok: false, error: "source_url must be a string" }, 400);
+        return captureRequestError("source_url must be a string", 400);
       }
       if (body.source_title !== undefined && typeof body.source_title !== "string") {
-        return json({ ok: false, error: "source_title must be a string" }, 400);
+        return captureRequestError("source_title must be a string", 400);
       }
 
       let result;
@@ -689,7 +717,7 @@ export const defaultHandler = {
           if (error.code === "secret_detected") {
             console.warn("capture rejected", { detector: error.detector, actor_id: user_id ?? "_system" });
           }
-          return json({ ok: false, error: error.code }, 422);
+          return captureRequestError(error.code, 422);
         }
         throw error;
       }
@@ -1180,13 +1208,68 @@ export const defaultHandler = {
       const entryRows = queriedEntryRows.filter((entry) => mode === "my_data"
         ? entry.owner_user_id === user_id
         : entry.visibility === "public");
-      const entries = await Promise.all(entryRows.map(async (row) => {
-        const episode = row.current_episode_id
-          ? await env.DB.prepare(`SELECT source_url, content_type FROM episodes WHERE id = ?`).bind(row.current_episode_id).first<Record<string, any>>()
-          : null;
-        const document = row.current_episode_id
-          ? await env.DB.prepare(`SELECT title, source_url FROM documents WHERE episode_id = ? AND owner_user_id = ?`).bind(row.current_episode_id, row.owner_user_id).first<Record<string, any>>()
-          : null;
+      const entryIds = entryRows.map((entry) => String(entry.id));
+      let episodes: Record<string, any>[];
+      let snapshots: Record<string, any>[] = [];
+      let passages: Record<string, any>[] = [];
+      let documents: Record<string, any>[];
+      let document_sections: Record<string, any>[] = [];
+
+      if (mode === "my_data") {
+        const [episodeRows, snapshotRows, passageRows] = await Promise.all([
+          loadExportRowsByIds(env, "episodes", "entry_id", entryIds),
+          loadExportRowsByIds(env, "entry_snapshots", "entry_id", entryIds),
+          loadExportRowsByIds(env, "passages", "entry_id", entryIds),
+        ]);
+        episodes = episodeRows;
+        snapshots = snapshotRows;
+        passages = passageRows.map(({ vector_ids: _vectorIds, ...passage }) => passage);
+
+        const episodeIds = [...new Set(episodes.map((episode) => episode.id).filter((id): id is string => typeof id === "string"))];
+        const episodeDocuments = await loadExportRowsByIds(env, "documents", "episode_id", episodeIds, {
+          extraWhere: " AND owner_user_id = ?",
+          extraBindings: [user_id],
+        });
+        const loadedDocumentIds = new Set(episodeDocuments.map((document) => document.id));
+        const passageDocumentIds = [...new Set(passages
+          .map((passage) => passage.document_id)
+          .filter((id): id is string => typeof id === "string" && !loadedDocumentIds.has(id)))];
+        const passageDocuments = await loadExportRowsByIds(env, "documents", "id", passageDocumentIds, {
+          extraWhere: " AND owner_user_id = ?",
+          extraBindings: [user_id],
+        });
+        const documentMap = new Map<string, Record<string, any>>();
+        for (const document of [...episodeDocuments, ...passageDocuments]) {
+          if (document.owner_user_id === user_id && typeof document.id === "string") {
+            documentMap.set(document.id, document);
+          }
+        }
+        documents = [...documentMap.values()];
+        const documentIds = documents.map((document) => String(document.id));
+        document_sections = await loadExportRowsByIds(env, "document_sections", "document_id", documentIds);
+      } else {
+        const currentEpisodeIds = [...new Set(entryRows
+          .map((entry) => entry.current_episode_id)
+          .filter((id): id is string => typeof id === "string"))];
+        episodes = await loadExportRowsByIds(env, "episodes", "id", currentEpisodeIds);
+        const candidateDocuments = await loadExportRowsByIds(env, "documents", "episode_id", currentEpisodeIds);
+        const ownerByEpisode = new Map(entryRows
+          .filter((entry) => typeof entry.current_episode_id === "string")
+          .map((entry) => [entry.current_episode_id as string, entry.owner_user_id]));
+        documents = candidateDocuments.filter((document) =>
+          ownerByEpisode.get(document.episode_id) === document.owner_user_id);
+      }
+
+      const episodeById = new Map(episodes.map((episode) => [episode.id, episode]));
+      const documentByEpisode = new Map<string, Record<string, any>>();
+      for (const document of documents) {
+        if (typeof document.episode_id === "string" && !documentByEpisode.has(document.episode_id)) {
+          documentByEpisode.set(document.episode_id, document);
+        }
+      }
+      const entries = entryRows.map((row) => {
+        const episode = episodeById.get(row.current_episode_id);
+        const document = documentByEpisode.get(row.current_episode_id);
         return {
           id: row.id,
           content: row.content,
@@ -1212,7 +1295,7 @@ export const defaultHandler = {
           retention_score: row.retention_score ?? 1,
           last_recalled_at: row.last_recalled_at ?? null,
         };
-      }));
+      });
       const base = {
         ok: true,
         exported_at: Date.now(),
@@ -1222,47 +1305,12 @@ export const defaultHandler = {
         entries,
       };
       if (mode === "team_public") return json(base);
-
-      const history = await Promise.all(entryRows.map(async (entry) => {
-        const [{ results: episodes }, { results: snapshots }] = await Promise.all([
-          env.DB.prepare(`SELECT * FROM episodes WHERE entry_id = ? ORDER BY created_at DESC, id DESC`).bind(entry.id).all<Record<string, any>>(),
-          env.DB.prepare(`SELECT * FROM entry_snapshots WHERE entry_id = ? ORDER BY created_at DESC, id DESC`).bind(entry.id).all<Record<string, any>>(),
-        ]);
-        const episodeArtifacts = await Promise.all(episodes.map(async (episode) => {
-          const [{ results: passageRows }, document] = await Promise.all([
-            env.DB.prepare(`SELECT * FROM passages WHERE entry_id = ? AND episode_id = ? ORDER BY start_offset, id`).bind(entry.id, episode.id).all<Record<string, any>>(),
-            env.DB.prepare(`SELECT * FROM documents WHERE episode_id = ? AND owner_user_id = ?`).bind(episode.id, user_id).first<Record<string, any>>(),
-          ]);
-          const passageDocumentIds = [...new Set(passageRows
-            .map((passage) => passage.document_id)
-            .filter((id): id is string => typeof id === "string" && id !== document?.id))];
-          const linkedDocuments = (await Promise.all(passageDocumentIds.map((id) =>
-            env.DB.prepare(`SELECT * FROM documents WHERE id = ? AND owner_user_id = ?`).bind(id, user_id).first<Record<string, any>>(),
-          ))).filter((item): item is Record<string, any> => item !== null && item.owner_user_id === user_id);
-          const currentDocuments: Record<string, any>[] = document && document.owner_user_id === user_id ? [document] : [];
-          const documents = [...currentDocuments, ...linkedDocuments];
-          const sections = (await Promise.all(documents.map(async (item) =>
-            (await env.DB.prepare(`SELECT * FROM document_sections WHERE document_id = ? ORDER BY order_index, id`).bind(item.id).all<Record<string, any>>()).results,
-          ))).flat();
-          return {
-            passages: passageRows.map(({ vector_ids: _vectorIds, ...passage }) => passage),
-            documents,
-            sections,
-          };
-        }));
-        return { episodes, snapshots, episodeArtifacts };
-      }));
-      const entryIds = new Set(entryRows.map((entry) => entry.id));
+      const ownedEntryIds = new Set(entryIds);
       const edgeRows = (await env.DB.prepare(
         `SELECT source_id, target_id, type, weight, provenance, created_at,
                 confidence, metadata, updated_at FROM edges`,
       ).all<Record<string, any>>()).results;
-      const episodes = history.flatMap((item) => item.episodes);
-      const snapshots = history.flatMap((item) => item.snapshots);
-      const passages = history.flatMap((item) => item.episodeArtifacts.flatMap((artifact) => artifact.passages));
-      const documents = history.flatMap((item) => item.episodeArtifacts.flatMap((artifact) => artifact.documents));
-      const document_sections = history.flatMap((item) => item.episodeArtifacts.flatMap((artifact) => artifact.sections));
-      const edges = edgeRows.filter((edge) => entryIds.has(edge.source_id) && entryIds.has(edge.target_id));
+      const edges = edgeRows.filter((edge) => ownedEntryIds.has(edge.source_id) && ownedEntryIds.has(edge.target_id));
       return json({ ...base, episodes, snapshots, passages, documents, document_sections, edges });
     }
 
