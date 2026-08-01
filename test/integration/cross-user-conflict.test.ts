@@ -40,6 +40,7 @@ describe("Cross-user conflict detection", () => {
         created_at: 1000,
         vector_ids: "[]",
         owner_user_id: "other-user",
+        current_episode_id: "episode-other-public",
       });
       db.users.push({
         id: "other-user",
@@ -52,7 +53,7 @@ describe("Cross-user conflict detection", () => {
       // Vectorize returns a match from the other user
       const vectorize = makeVectorizeMock({
         query: makeVectorizeQueryFn([
-          { id: "other-public", score: 0.90, metadata: { parentId: "other-public", owner_user_id: "other-user", is_private: false } },
+          { id: "other-public", score: 0.90, metadata: { parentId: "other-public", episodeId: "episode-other-public", owner_user_id: "other-user", is_private: false } },
         ]),
       });
       env = makeTestEnv(db, { VECTORIZE: vectorize });
@@ -189,6 +190,7 @@ describe("Cross-user conflict detection", () => {
         owner_user_id: TEST_USER_ID,
         recall_count: 0,
         importance_score: 0,
+        current_episode_id: "episode-my-entry",
       });
       // Seed: another user's public entry
       db.entries.push({
@@ -201,6 +203,7 @@ describe("Cross-user conflict detection", () => {
         owner_user_id: "other-user",
         recall_count: 0,
         importance_score: 0,
+        current_episode_id: "episode-other-public",
       });
       db.users.push({
         id: "other-user",
@@ -213,8 +216,8 @@ describe("Cross-user conflict detection", () => {
       // Vectorize returns both entries as matches
       const vectorize = makeVectorizeMock({
         query: makeVectorizeQueryFn([
-          { id: "my-entry", score: 0.95, metadata: { parentId: "my-entry", owner_user_id: TEST_USER_ID, is_private: false } },
-          { id: "other-public", score: 0.90, metadata: { parentId: "other-public", owner_user_id: "other-user", is_private: false } },
+          { id: "my-entry", score: 0.95, metadata: { parentId: "my-entry", episodeId: "episode-my-entry", owner_user_id: TEST_USER_ID, is_private: false } },
+          { id: "other-public", score: 0.90, metadata: { parentId: "other-public", episodeId: "episode-other-public", owner_user_id: "other-user", is_private: false } },
         ]),
       });
       env = makeTestEnv(db, { VECTORIZE: vectorize });

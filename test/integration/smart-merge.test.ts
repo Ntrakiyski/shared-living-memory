@@ -70,7 +70,7 @@ function seedEntry(
     importance_score: 3,
     owner_user_id: TEST_USER_ID,
     revision: 0,
-    current_episode_id: null,
+    current_episode_id: `episode-${id}`,
     recorded_at: createdAt,
     valid_from: createdAt,
     valid_to: null,
@@ -80,6 +80,10 @@ function seedEntry(
   };
   db.entries.push(entry);
   return entry;
+}
+
+function currentMatch(id: string, score: number) {
+  return { id, score, metadata: { parentId: id, episodeId: `episode-${id}` } };
 }
 
 describe("POST /capture — governed smart merge", () => {
@@ -96,7 +100,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
       }),
       AI: makeMergeAI('{"action":"replace","target_id":"existing-id"}'),
@@ -120,7 +124,7 @@ describe("POST /capture — governed smart merge", () => {
       revision: 0,
       mutation_kind: "replace",
     });
-    expect(db.episodes).toHaveLength(2);
+    expect(db.episodes).toHaveLength(1);
     const episode = db.episodes.find((candidate: any) => candidate.id === entry.current_episode_id);
     expect(episode).toMatchObject({
       content: "I switched to Cursor IDE",
@@ -135,7 +139,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
       }),
       AI: makeMergeAI(
@@ -168,7 +172,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
       }),
       AI: makeMergeAI(aiResponse),
@@ -199,7 +203,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "private-target", score: 0.88, metadata: { parentId: "private-target" } }],
+          matches: [currentMatch("private-target", 0.88)],
         }),
       }),
       AI: makeMergeAI('{"action":"replace","target_id":"private-target"}'),
@@ -243,7 +247,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
         upsert: upsertMock,
         insert: insertMock,
@@ -269,7 +273,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
         upsert: upsertMock,
       }),
@@ -294,7 +298,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
         upsert: vi.fn().mockImplementation(async () => {
           callOrder.push("upsert");
@@ -319,7 +323,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
         upsert: vi.fn().mockRejectedValue(new Error("Vectorize down")),
         deleteByIds: deleteByIdsMock,
@@ -336,7 +340,7 @@ describe("POST /capture — governed smart merge", () => {
       content: "I prefer dark mode",
       vector_ids: '["last-known-good"]',
       revision: 0,
-      current_episode_id: null,
+      current_episode_id: "episode-existing-id",
     });
     expect(db.entry_snapshots).toHaveLength(0);
     expect(db.episodes).toHaveLength(0);
@@ -348,7 +352,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
         deleteByIds: vi.fn().mockRejectedValue(new Error("delete failed")),
       }),
@@ -375,7 +379,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "near-id", score: 0.88, metadata: { parentId: "near-id" } }],
+          matches: [currentMatch("near-id", 0.88)],
         }),
       }),
       AI: makeMergeAI('{"action":"keep_both"}'),
@@ -409,7 +413,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "old-id", score: 0.88, metadata: { parentId: "old-id" } }],
+          matches: [currentMatch("old-id", 0.88)],
         }),
         deleteByIds: deleteByIdsMock,
       }),
@@ -459,7 +463,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "research-id", score: 0.88, metadata: { parentId: "research-id" } }],
+          matches: [currentMatch("research-id", 0.88)],
         }),
       }),
       AI: makeMergeAI('{"action":"replace","target_id":"research-id"}'),
@@ -494,7 +498,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "canonical-id", score: 0.88, metadata: { parentId: "canonical-id" } }],
+          matches: [currentMatch("canonical-id", 0.88)],
         }),
       }),
       AI: makeMergeAI('{"action":"replace","target_id":"canonical-id"}'),
@@ -553,7 +557,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
       }),
       AI: makePromptAwareAI(
@@ -590,7 +594,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "dup", score: 0.97, metadata: { parentId: "dup" } }],
+          matches: [currentMatch("dup", 0.97)],
         }),
       }),
       AI: { run: aiRunMock } as unknown as Ai,

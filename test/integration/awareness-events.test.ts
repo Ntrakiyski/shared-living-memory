@@ -145,9 +145,9 @@ function seedEntry(
   db.sqlite.prepare(
     `INSERT INTO entries (
        id, content, tags, source, created_at, owner_user_id,
-       created_by_user_id, visibility, updated_at
-     ) VALUES (?, ?, '[]', 'api', 200, ?, ?, ?, 200)`,
-  ).run(id, `${id} content`, ownerUserId, ownerUserId, visibility);
+       created_by_user_id, visibility, updated_at, current_episode_id
+     ) VALUES (?, ?, '[]', 'api', 200, ?, ?, ?, 200, ?)`,
+  ).run(id, `${id} content`, ownerUserId, ownerUserId, visibility, `episode-${id}`);
 }
 
 async function createPair(
@@ -319,6 +319,7 @@ describe("cross-user overlap awareness", () => {
                 score: 0.92,
                 metadata: {
                   parentId: "matched-public",
+                  episodeId: "episode-matched-public",
                   owner_user_id: "user-bob",
                   is_private: false,
                 },

@@ -34,7 +34,6 @@ import {
   appendToEntry,
   captureEntry,
   reindexAllVectors,
-  storeEntry,
   validateSourceMetadataInput,
 } from "./ingest";
 import {
@@ -2118,46 +2117,33 @@ export const defaultHandler = {
       const reindex = url.searchParams.get("reindex") === "true";
       if (reindex) {
         const result = await reindexAllVectors(env, scope === "self" ? user_id : undefined);
-        return json({ ok: true, reindex: true, processed: result.processed, failed: result.failed });
+        return json(
+          { ok: result.failed === 0, reindex: true, ...result },
+          result.failed === 0 ? 200 : 503,
+        );
       }
 
       const graceCutoff = Date.now() - graceMs(env);
 
-      const { results: toProcess } = await env.DB.prepare(
-        `SELECT id, content, tags, source, created_at, owner_user_id, visibility FROM entries
-         WHERE vector_ids = '[]' AND created_at < ?
-           ${ownerClause}
-         ORDER BY created_at DESC LIMIT 25`
-      ).bind(graceCutoff, ...ownerBindings).all();
-
-      let processed = 0;
-      let failed = 0;
-
-      for (const row of toProcess as Record<string, any>[]) {
-        try {
-          await storeEntry(
-            env,
-            row.id as string,
-            row.content as string,
-            JSON.parse(row.tags as string),
-            row.source as string,
-            row.created_at as number,
-            row.owner_user_id as string || undefined,
-            row.visibility === "private"
-          );
-          processed++;
-        } catch (e) {
-          console.error("Re-embed failed for entry", row.id, e);
-          failed++;
-        }
-      }
+      const rebuilt = await reindexAllVectors(
+        env,
+        scope === "self" ? user_id : undefined,
+        { pendingBefore: graceCutoff, limit: 25 },
+      );
 
       const remaining = await env.DB.prepare(
         `SELECT COUNT(*) as count FROM entries
          WHERE vector_ids = '[]' AND created_at < ? ${ownerClause}`
       ).bind(graceCutoff, ...ownerBindings).first() as Record<string, any> | null;
 
-      return json({ processed, failed, remaining: (remaining?.count as number) ?? 0 });
+      return json({
+        processed: rebuilt.entries_processed,
+        passages_processed: rebuilt.passages_processed,
+        failed: rebuilt.failed,
+        stale_deleted: rebuilt.stale_deleted,
+        failures: rebuilt.failures,
+        remaining: (remaining?.count as number) ?? 0,
+      });
     }
 
     // ─── Integrations (settings UI) ─────────────────────────────────────────

@@ -39,8 +39,9 @@ function seedEntry(
   overrides: Record<string, unknown> = {},
 ) {
   const createdAt = Date.now() - 1_000;
+  const id = String(overrides.id ?? "existing");
   const entry = {
-    id: "existing",
+    id,
     content: "Existing memory",
     tags: "[]",
     source: "api",
@@ -52,7 +53,7 @@ function seedEntry(
     contradiction_losses: 0,
     owner_user_id: TEST_USER_ID,
     revision: 0,
-    current_episode_id: null,
+    current_episode_id: `episode-${id}`,
     recorded_at: createdAt,
     valid_from: createdAt,
     valid_to: null,
@@ -62,6 +63,10 @@ function seedEntry(
   };
   db.entries.push(entry);
   return entry;
+}
+
+function currentMatch(id: string, score: number) {
+  return { id, score, metadata: { parentId: id, episodeId: `episode-${id}` } };
 }
 
 describe("captureEntry()", () => {
@@ -338,7 +343,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing", score: 0.97, metadata: { parentId: "existing" } }],
+          matches: [currentMatch("existing", 0.97)],
         }),
       }),
     });
@@ -359,7 +364,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing", score: 0.88, metadata: { parentId: "existing" } }],
+          matches: [currentMatch("existing", 0.88)],
         }),
       }),
       AI: makeResponseAI('{"action":"keep_both"}'),
@@ -389,7 +394,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "old-entry", score: 0.72, metadata: { parentId: "old-entry" } }],
+          matches: [currentMatch("old-entry", 0.72)],
         }),
         deleteByIds: deleteByIdsMock,
       }),
@@ -446,7 +451,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "canonical-entry", score: 0.72, metadata: { parentId: "canonical-entry" } }],
+          matches: [currentMatch("canonical-entry", 0.72)],
         }),
         deleteByIds: deleteByIdsMock,
       }),
@@ -487,7 +492,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing", score: 0.88, metadata: { parentId: "existing" } }],
+          matches: [currentMatch("existing", 0.88)],
         }),
       }),
       AI: makeResponseAI('{"action":"replace","target_id":"existing"}'),
@@ -516,7 +521,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing", score: 0.88, metadata: { parentId: "existing" } }],
+          matches: [currentMatch("existing", 0.88)],
         }),
         upsert: upsertMock,
       }),
@@ -552,7 +557,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing", score: 0.88, metadata: { parentId: "existing" } }],
+          matches: [currentMatch("existing", 0.88)],
         }),
       }),
       AI: makeResponseAI('{"action":"replace","target_id":"existing"}'),
@@ -594,7 +599,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "ghost-id", score: 0.88, metadata: { parentId: "ghost-id" } }],
+          matches: [currentMatch("ghost-id", 0.88)],
         }),
       }),
       AI: makeResponseAI('{"action":"replace","target_id":"ghost-id"}'),
@@ -619,7 +624,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "foreign", score: 0.88, metadata: { parentId: "foreign" } }],
+          matches: [currentMatch("foreign", 0.88)],
         }),
       }),
       AI: makeResponseAI('{"action":"replace","target_id":"foreign"}'),
@@ -674,7 +679,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "research", score: 0.88, metadata: { parentId: "research" } }],
+          matches: [currentMatch("research", 0.88)],
         }),
       }),
       AI: makeResponseAI('{"action":"replace","target_id":"research"}'),

@@ -57,7 +57,7 @@ function isVisible(row: VectorEntryScope, userId: string | undefined): boolean {
 function matchesCurrentEpisode(match: ScopedVectorMatch, row: VectorEntryScope): boolean {
   const value = match.metadata?.episodeId ?? match.metadata?.episode_id;
   const vectorEpisodeId = typeof value === "string" && value.length > 0 ? value : null;
-  return !row.currentEpisodeId || !vectorEpisodeId || vectorEpisodeId === row.currentEpisodeId;
+  return row.currentEpisodeId !== null && vectorEpisodeId === row.currentEpisodeId;
 }
 
 /**

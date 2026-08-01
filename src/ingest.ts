@@ -7,10 +7,9 @@
  *
  * Logic:
  *   1. captureEntry — the main write path: deduplicate, merge/replace, or insert
- *   2. storeEntry — chunk + embed + insert vectors + persist vector_ids
- *   3. appendToEntry — incremental append (single vector or full re-embed)
- *   4. scheduleClassifyAndTag — async importance/kind classification after write
- *   5. reindexAllVectors — bulk migration helper to add ownership metadata
+ *   2. appendToEntry — incremental append through canonical versioning
+ *   3. scheduleClassifyAndTag — async importance/kind classification after write
+ *   4. reindexAllVectors — canonical current-version vector rebuild
  */
 
 import type {
@@ -20,13 +19,16 @@ import type {
   CaptureVisibility,
   Env,
 } from "./types";
-import { chunkText, embed } from "./helpers";
+import { embed } from "./helpers";
 import { classifyEntry, extractHashtags } from "./classification";
 import { checkDuplicateAndContradiction } from "./duplicates";
 import { getStatus, withKind, withStatus } from "./tags";
 import { createEdge, inferEdgesOnWrite, neighborsFromVectorQuery } from "./graph";
-import { commitEntryVersion } from "./entry-version-service";
-import { sha256Hex } from "./governance-utils";
+import {
+  commitEntryVersion,
+  stageVersionVectors,
+  type PlannedPassage,
+} from "./entry-version-service";
 import { getSystemUserId } from "./db";
 import {
   discardOverlapAwarenessIntent,
@@ -34,128 +36,277 @@ import {
   stageOverlapAwarenessIntent,
 } from "./awareness-events";
 
-// ─── Store entry (full embed + chunk) ────────────────────────────────────────
-// Returns the list of vector IDs inserted so forget() can clean up exactly.
+export type ReindexFailureCode =
+  | "current_episode_missing"
+  | "current_episode_metadata_missing"
+  | "invalid_projection_metadata"
+  | "vector_upsert_failed"
+  | "projection_persist_failed"
+  | "stale_delete_failed";
 
-// Build and upsert an entry's complete vector set without changing D1. Update
-// paths use this staging primitive so a failed embed/write cannot destroy the
-// last known-good content/vector references. Upsert is required because stable
-// entry/chunk ids must replace prior vectors during edits and re-indexing.
-export async function stageEntryVectors(
+export interface ReindexFailure {
+  entry_id: string;
+  code: ReindexFailureCode;
+  entry_vector_count: number;
+  passage_count: number;
+  passage_vector_count: number;
+}
+
+export interface ReindexResult {
+  entries_processed: number;
+  passages_processed: number;
+  failed: number;
+  stale_deleted: number;
+  failures: ReindexFailure[];
+}
+
+interface ReindexOptions {
+  pendingBefore?: number;
+  limit?: number;
+}
+
+interface ReindexEntryRow {
+  id: string;
+  content: string;
+  tags: string;
+  source: string;
+  created_at: number;
+  vector_ids: string;
+  owner_user_id: string;
+  visibility: string;
+  current_episode_id: string | null;
+  current_mutation_id: string | null;
+  revision: number;
+}
+
+interface ReindexPassageRow {
+  id: string;
+  content: string;
+  section: string | null;
+  section_id: string | null;
+  start_offset: number | null;
+  end_offset: number | null;
+  vector_ids: string;
+}
+
+function parseTrackedIds(raw: unknown): string[] | null {
+  if (typeof raw !== "string") return null;
+  try {
+    const value = JSON.parse(raw);
+    return Array.isArray(value) && value.every(id => typeof id === "string" && id.length > 0)
+      ? [...new Set(value)]
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function countTrackedIds(rows: ReindexPassageRow[]): number {
+  return rows.reduce((count, row) => count + (parseTrackedIds(row.vector_ids)?.length ?? 0), 0);
+}
+
+function reindexFailure(
+  entry: ReindexEntryRow,
+  passages: ReindexPassageRow[],
+  code: ReindexFailureCode,
+): ReindexFailure {
+  return {
+    entry_id: entry.id,
+    code,
+    entry_vector_count: parseTrackedIds(entry.vector_ids)?.length ?? 0,
+    passage_count: passages.length,
+    passage_vector_count: countTrackedIds(passages),
+  };
+}
+
+function safeErrorMessage(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).slice(0, 500);
+}
+
+// Rebuild current projections through the same version-scoped staging primitive
+// as normal writes. Historical passages are immutable and deliberately untouched.
+export async function reindexAllVectors(
   env: Env,
-  id: string,
-  content: string,
-  tags: string[],
-  source: string,
-  now: number,
   ownerUserId?: string,
-  isPrivate?: boolean
-): Promise<string[]> {
-  const chunks = chunkText(content);
-
-  const vectors = await Promise.all(
-    chunks.map(async (chunk, i) => {
-      const metadata: Record<string, any> = {
-        content: chunk,
-        parentId: id,
-        chunkIndex: i,
-        totalChunks: chunks.length,
-        tags,
-        source,
-        created_at: now,
-        owner_user_id: ownerUserId ?? "",
-        is_private: isPrivate ?? false,
-      };
-
-      tags.forEach(t => {
-        metadata[`tag_${t}`] = true;
-      });
-
-      return {
-        id: chunks.length === 1 ? id : `${id}-chunk-${i}`,
-        values: await embed(chunk, env),
-        metadata,
-      };
-    })
-  );
-
-  await env.VECTORIZE.upsert(vectors);
-  return vectors.map(v => v.id);
-}
-
-export async function storeEntry(
-  env: Env,
-  id: string,
-  content: string,
-  tags: string[],
-  source: string,
-  now: number,
-  ownerUserId?: string,
-  isPrivate?: boolean
-): Promise<string[]> {
-  const vectorIds = await stageEntryVectors(
-    env, id, content, tags, source, now, ownerUserId, isPrivate,
-  );
-
-  // Persist exact vector IDs so forget() can clean up without guessing
-  await env.DB.prepare(
-    `UPDATE entries SET vector_ids = ? WHERE id = ?`
-  ).bind(JSON.stringify(vectorIds), id).run();
-
-  return vectorIds;
-}
-
-// Delete vectors that are no longer referenced after a re-embed. Ids reused by
-// the new embedding must survive: single-chunk entries are keyed by the entry
-// id, so the re-embedded vector reuses the old id. Deleting the full old set
-// would remove the vector we just inserted, leaving the entry unsearchable.
-export async function deleteStaleVectors(env: Env, oldIds: string[], newIds: string[]): Promise<void> {
-  const stale = oldIds.filter(v => !newIds.includes(v));
-  if (stale.length) await env.VECTORIZE.deleteByIds(stale);
-}
-
-// Re-index all vectors with ownership metadata. Called from POST /vectorize-pending?reindex=true
-// or as a standalone migration step after adding owner_user_id/is_private to vector metadata.
-export async function reindexAllVectors(env: Env, ownerUserId?: string): Promise<{ processed: number; failed: number }> {
-  let processed = 0;
-  let failed = 0;
-
-  // Find all entries that have vectors
-  const sql = `SELECT id, content, tags, source, created_at, vector_ids,
-      owner_user_id, visibility FROM entries
-    WHERE vector_ids != '[]'${ownerUserId ? " AND owner_user_id = ?" : ""}`;
-  const { results: entries } = await env.DB.prepare(sql)
-    .bind(...(ownerUserId ? [ownerUserId] : []))
-    .all() as { results: Record<string, any>[] };
+  options: ReindexOptions = {},
+): Promise<ReindexResult> {
+  const result: ReindexResult = {
+    entries_processed: 0,
+    passages_processed: 0,
+    failed: 0,
+    stale_deleted: 0,
+    failures: [],
+  };
+  const predicates = ["1 = 1"];
+  const bindings: (string | number)[] = [];
+  if (ownerUserId) {
+    predicates.push("e.owner_user_id = ?");
+    bindings.push(ownerUserId);
+  }
+  if (options.pendingBefore !== undefined) {
+    predicates.push("e.vector_ids = '[]'", "e.created_at < ?");
+    bindings.push(options.pendingBefore);
+  }
+  const limit = options.limit === undefined ? "" : ` LIMIT ${Math.max(1, Math.min(100, Math.trunc(options.limit)))}`;
+  const { results: entries } = await env.DB.prepare(
+    `SELECT e.id, e.content, e.tags, e.source, e.created_at, e.vector_ids,
+            e.owner_user_id, e.visibility, e.current_episode_id, e.revision,
+            ep.mutation_id AS current_mutation_id
+     FROM entries e
+     LEFT JOIN episodes ep ON ep.id = e.current_episode_id AND ep.entry_id = e.id
+     WHERE ${predicates.join(" AND ")}
+     ORDER BY e.created_at DESC, e.id ASC${limit}`,
+  ).bind(...bindings).all<ReindexEntryRow>();
 
   for (const entry of entries) {
-    const id = entry.id as string;
-    const oldVectorIds: string[] = JSON.parse(entry.vector_ids as string ?? "[]");
-    const tags: string[] = JSON.parse(entry.tags as string ?? "[]");
-    const ownerUserId = (entry as any).owner_user_id as string ?? "";
-    const visibility = entry.visibility as string;
-    if (visibility !== "private" && visibility !== "public") {
-      failed++;
+    const passages = entry.current_episode_id
+      ? (await env.DB.prepare(
+          `SELECT id, content, section, section_id, start_offset, end_offset, vector_ids
+           FROM passages
+           WHERE entry_id = ? AND episode_id = ?
+           ORDER BY start_offset ASC, id ASC`,
+        ).bind(entry.id, entry.current_episode_id).all<ReindexPassageRow>()).results
+      : (await env.DB.prepare(
+          `SELECT id, content, section, section_id, start_offset, end_offset, vector_ids
+           FROM passages
+           WHERE entry_id = ? AND episode_id IS NULL
+           ORDER BY start_offset ASC, id ASC`,
+        ).bind(entry.id).all<ReindexPassageRow>()).results;
+    const fail = (code: ReindexFailureCode) => {
+      result.failed++;
+      result.failures.push(reindexFailure(entry, passages, code));
+    };
+
+    if (!entry.current_episode_id) {
+      fail("current_episode_missing");
       continue;
     }
-    const isPrivate = visibility === "private";
+    if (!entry.current_mutation_id) {
+      fail("current_episode_metadata_missing");
+      continue;
+    }
+    const tags = parseTrackedIds(entry.tags);
+    const oldEntryIds = parseTrackedIds(entry.vector_ids);
+    const passageIds = passages.map(passage => parseTrackedIds(passage.vector_ids));
+    if (!tags || !oldEntryIds || passageIds.some(ids => ids === null)
+        || !entry.owner_user_id
+        || (entry.visibility !== "private" && entry.visibility !== "public")) {
+      fail("invalid_projection_metadata");
+      continue;
+    }
+
+    const plannedPassages: PlannedPassage[] = passages.map(passage => ({
+      id: passage.id,
+      content: passage.content,
+      section: passage.section,
+      sectionId: passage.section_id,
+      startOffset: passage.start_offset ?? 0,
+      endOffset: passage.end_offset ?? passage.content.length,
+      vectorId: `pv:${passage.id}`,
+    }));
+    let staged: Awaited<ReturnType<typeof stageVersionVectors>>;
+    try {
+      staged = await stageVersionVectors(env, {
+        entryId: entry.id,
+        episodeId: entry.current_episode_id,
+        mutationId: entry.current_mutation_id,
+        content: entry.content,
+        tags,
+        source: entry.source,
+        ownerUserId: entry.owner_user_id,
+        visibility: entry.visibility,
+        now: entry.created_at,
+        passages: plannedPassages,
+        // Canonical IDs may already be the last-known-good vectors. A failed
+        // upsert must not delete those overlapping IDs during cleanup.
+        cleanupOnFailure: false,
+      });
+    } catch (error) {
+      console.error("Re-index vector upsert failed", { entry_id: entry.id, error: safeErrorMessage(error) });
+      fail("vector_upsert_failed");
+      continue;
+    }
+
+    const oldTrackedIds = [...new Set([
+      ...oldEntryIds,
+      ...passageIds.flatMap(ids => ids ?? []),
+    ])];
+    const newTrackedIds = new Set(staged.allVectorIds);
+    const staleIds = oldTrackedIds.filter(id => !newTrackedIds.has(id));
+    const cleanupQueueId = staleIds.length ? crypto.randomUUID() : null;
+    const now = Date.now();
+    const statements: D1PreparedStatement[] = [
+      env.DB.prepare(
+        `UPDATE entries SET vector_ids = ?
+         WHERE id = ? AND owner_user_id = ? AND revision = ? AND current_episode_id = ?`,
+      ).bind(
+        JSON.stringify(staged.entryVectorIds), entry.id, entry.owner_user_id,
+        entry.revision, entry.current_episode_id,
+      ),
+      ...plannedPassages.map(passage => env.DB.prepare(
+        `UPDATE passages SET vector_ids = ?
+         WHERE id = ? AND entry_id = ? AND episode_id = ?`,
+      ).bind(JSON.stringify([passage.vectorId]), passage.id, entry.id, entry.current_episode_id)),
+    ];
+    if (cleanupQueueId) {
+      statements.push(env.DB.prepare(
+        `INSERT INTO vector_cleanup_queue (
+           id, vector_ids, reason, attempts, last_error, created_at, updated_at
+         )
+         SELECT ?, ?, ?, 0, NULL, ?, ?
+         FROM entries
+         WHERE id = ? AND owner_user_id = ? AND revision = ? AND current_episode_id = ?`,
+      ).bind(
+        cleanupQueueId,
+        JSON.stringify(staleIds),
+        `semantic-reindex:${entry.current_episode_id}`,
+        now,
+        now,
+        entry.id,
+        entry.owner_user_id,
+        entry.revision,
+        entry.current_episode_id,
+      ));
+    }
 
     try {
-      // Upsert first so a failed re-embed leaves the last known-good vectors
-      // intact. Delete only ids that the new chunk layout no longer references.
-      const newVectorIds = await storeEntry(
-        env, id, entry.content as string, tags, entry.source as string,
-        entry.created_at as number, ownerUserId || undefined, isPrivate
-      );
-      await deleteStaleVectors(env, oldVectorIds, newVectorIds);
-      processed++;
-    } catch (e) {
-      console.error(`Re-index failed for entry ${id} (non-fatal):`, e);
-      failed++;
+      const persisted = await env.DB.batch(statements);
+      if (persisted.some(item => Number(item.meta?.changes ?? 0) !== 1)) {
+        throw new Error("guarded projection persistence failed");
+      }
+    } catch (error) {
+      console.error("Re-index projection persistence failed", { entry_id: entry.id, error: safeErrorMessage(error) });
+      fail("projection_persist_failed");
+      continue;
+    }
+
+    result.entries_processed++;
+    result.passages_processed += passages.length;
+    if (!cleanupQueueId) continue;
+    try {
+      await env.VECTORIZE.deleteByIds(staleIds);
+      await env.DB.prepare(`DELETE FROM vector_cleanup_queue WHERE id = ?`).bind(cleanupQueueId).run();
+      result.stale_deleted += staleIds.length;
+    } catch (error) {
+      try {
+        await env.DB.prepare(
+          `UPDATE vector_cleanup_queue
+           SET attempts = attempts + 1, last_error = ?, updated_at = ?
+           WHERE id = ?`,
+        ).bind(safeErrorMessage(error), Date.now(), cleanupQueueId).run();
+      } catch (queueError) {
+        // The cleanup row was committed with the projection update. A
+        // best-effort diagnostic update must not prevent exact batch results.
+        console.error("Re-index cleanup queue diagnostic update failed", {
+          entry_id: entry.id,
+          error: safeErrorMessage(queueError),
+        });
+      }
+      fail("stale_delete_failed");
     }
   }
 
-  return { processed, failed };
+  return result;
 }
 
 // ─── Snapshot helper ─────────────────────────────────────────────────────────
@@ -634,158 +785,4 @@ export async function captureEntry(
     crossUserNote,
     ...(awareness ? { awareness } : {}),
   };
-}
-
-// ─── Passage creation (Ticket 07) ───────────────────────────────────────────
-// Chunk content into passages for citation-level recall.
-
-const PASSAGE_CHUNK_CHARS = 1500;  // ~512 tokens
-const PASSAGE_OVERLAP_CHARS = 400; // ~128 tokens
-
-function findParentSection(headers: { level: number; title: string; offset: number }[], currentIndex: number): string | null {
-  const currentLevel = headers[currentIndex].level;
-  for (let i = currentIndex - 1; i >= 0; i--) {
-    if (headers[i].level < currentLevel) return headers[i].title;
-  }
-  return null;
-}
-
-function chunkIntoPassages(content: string): { chunks: { text: string; section: string | null; startOffset: number; endOffset: number }[]; headers: { level: number; title: string; offset: number }[] } {
-  const sections: { text: string; section: string | null; startOffset: number; endOffset: number }[] = [];
-  // Split on markdown headers to detect sections
-  const headerRegex = /^(#{1,4})\s+(.+)$/gm;
-  const headers: { level: number; title: string; offset: number }[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = headerRegex.exec(content)) !== null) {
-    headers.push({ level: m[1].length, title: m[2].trim(), offset: m.index });
-  }
-
-  // If no headers, treat entire content as one section
-  if (headers.length === 0) {
-    for (let i = 0; i < content.length; i += PASSAGE_CHUNK_CHARS - PASSAGE_OVERLAP_CHARS) {
-      const end = Math.min(i + PASSAGE_CHUNK_CHARS, content.length);
-      sections.push({ text: content.slice(i, end), section: null, startOffset: i, endOffset: end });
-      if (end >= content.length) break;
-    }
-    return { chunks: sections, headers: [] };
-  }
-
-  // Chunk within each section
-  for (let h = 0; h < headers.length; h++) {
-    const start = headers[h].offset;
-    const end = h + 1 < headers.length ? headers[h + 1].offset : content.length;
-    const sectionText = content.slice(start, end);
-    const sectionName = headers[h].title;
-
-    for (let i = 0; i < sectionText.length; i += PASSAGE_CHUNK_CHARS - PASSAGE_OVERLAP_CHARS) {
-      const chunkEnd = Math.min(i + PASSAGE_CHUNK_CHARS, sectionText.length);
-      sections.push({
-        text: sectionText.slice(i, chunkEnd),
-        section: sectionName,
-        startOffset: start + i,
-        endOffset: start + chunkEnd,
-      });
-      if (chunkEnd >= sectionText.length) break;
-    }
-  }
-
-  return { chunks: sections, headers };
-}
-
-export async function createPassagesForEntry(
-  entryId: string,
-  episodeId: string,
-  content: string,
-  env: Env,
-  ctx: ExecutionContext,
-  ownerUserId?: string,
-  isPrivate?: boolean
-): Promise<void> {
-  const { chunks, headers } = chunkIntoPassages(content);
-  const now = Date.now();
-
-  // Compatibility helper: preserve the same one-document-per-episode contract
-  // as the canonical versioning service, even when no hierarchy is present.
-  const docId = crypto.randomUUID();
-  const sectionMap = new Map<string, string>(); // section title -> section id
-  const title = headers[0]?.title ?? "Untitled Memory";
-  try {
-    await env.DB.prepare(
-      `INSERT INTO documents (
-         id, title, source_url, content_type, created_at, episode_id,
-         owner_user_id, content_hash, version, title_origin
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      docId,
-      title,
-      null,
-      headers.length > 0 ? "research" : "text",
-      now,
-      episodeId,
-      ownerUserId ?? "",
-      await sha256Hex(content),
-      "1",
-      "generated",
-    ).run();
-
-    for (let i = 0; i < headers.length; i++) {
-      const sectionId = crypto.randomUUID();
-      const parentTitle = findParentSection(headers, i);
-      const parentSectionId = parentTitle ? sectionMap.get(parentTitle) ?? null : null;
-      await env.DB.prepare(
-        `INSERT INTO document_sections (
-           id, document_id, parent_section_id, title, level, order_index,
-           created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).bind(sectionId, docId, parentSectionId, headers[i].title, headers[i].level, i, now).run();
-      sectionMap.set(headers[i].title, sectionId);
-    }
-  } catch (e) {
-    console.error("Document hierarchy insert failed (non-fatal):", e);
-    return;
-  }
-
-  for (const chunk of chunks) {
-    const passageId = crypto.randomUUID();
-    try {
-      await env.DB.prepare(
-        `INSERT INTO passages (
-           id, entry_id, episode_id, document_id, section_id, content,
-           section, page, page_end, start_offset, end_offset, vector_ids,
-           created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).bind(
-        passageId,
-        entryId,
-        episodeId,
-        docId,
-        chunk.section ? sectionMap.get(chunk.section) ?? null : null,
-        chunk.text,
-        chunk.section,
-        null,
-        null,
-        chunk.startOffset,
-        chunk.endOffset,
-        "[]",
-        now,
-      ).run();
-    } catch (e) {
-      console.error("Passage insert failed (non-fatal):", e);
-      continue;
-    }
-
-    // Vectorize passage — fire-and-forget
-    ctx.waitUntil(
-      (async () => {
-        try {
-          const values = await embed(chunk.text, env);
-          const vectorId = `passage-${passageId}`;
-          await env.VECTORIZE.insert([{ id: vectorId, values, metadata: { content: chunk.text, passageId, entryId, parentId: entryId, section: chunk.section ?? "", source: "passage", owner_user_id: ownerUserId ?? "", is_private: isPrivate ?? false } }]);
-          await env.DB.prepare(`UPDATE passages SET vector_ids = ? WHERE id = ?`).bind(JSON.stringify([vectorId]), passageId).run();
-        } catch (e) {
-          console.error("Passage vectorize failed (non-fatal):", e);
-        }
-      })()
-    );
-  }
 }

@@ -1063,6 +1063,11 @@ function configureNightlyCandidate(
   classifier: Record<string, unknown> | Error,
   score = 0.96,
 ) {
+  const targetEpisodeId = one<{ current_episode_id: string }>(
+    harness.db,
+    `SELECT current_episode_id FROM entries WHERE id = ?`,
+    targetEntryId,
+  ).current_episode_id;
   const run = vi.fn(async (model: string) => {
     if (model === "@cf/baai/bge-small-en-v1.5") {
       return { data: [new Array(384).fill(0.01)] };
@@ -1074,7 +1079,7 @@ function configureNightlyCandidate(
     matches: [{
       id: `vector:${targetEntryId}`,
       score,
-      metadata: { parentId: targetEntryId, is_private: false },
+      metadata: { parentId: targetEntryId, episodeId: targetEpisodeId, is_private: false },
     }],
   }));
   (harness.env as any).AI = { run };

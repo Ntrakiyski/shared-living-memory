@@ -31,11 +31,23 @@ function makeEnv(aiResponse: string, vectorMatches: any[] = [], dbEntries: any[]
 }
 
 function entry(id: string, content: string) {
-  return { id, content, tags: "[]", source: "claude", created_at: Date.now(), vector_ids: "[]", recall_count: 0, importance_score: 0 };
+  return {
+    id,
+    content,
+    tags: "[]",
+    source: "claude",
+    created_at: Date.now(),
+    vector_ids: "[]",
+    recall_count: 0,
+    importance_score: 0,
+    owner_user_id: "_system",
+    visibility: "public",
+    current_episode_id: `episode-${id}`,
+  };
 }
 
 function match(id: string, score: number) {
-  return { id, score, metadata: { parentId: id } };
+  return { id, score, metadata: { parentId: id, episodeId: `episode-${id}` } };
 }
 
 describe("checkDuplicateAndContradiction()", () => {

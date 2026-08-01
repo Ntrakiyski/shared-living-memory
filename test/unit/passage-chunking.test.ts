@@ -1,83 +1,56 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { createPassagesForEntry } from "../../src/testing";
-import { makeTestEnv, makeTestDb, makeVectorizeMock } from "../helpers/make-env";
-import type { Env } from "../../src/testing";
-import { D1Mock } from "../helpers/d1-mock";
+import { describe, expect, it } from "vitest";
+import { planVersionPassages } from "../../src/entry-version-service";
 
-const ctx = { waitUntil: (_: Promise<any>) => {} } as any;
+describe("canonical version passage planning", () => {
+  it("splits plain text into overlapping canonical passage chunks", () => {
+    const content = "A".repeat(3000);
 
-describe("createPassagesForEntry chunking (Ticket 07)", () => {
-  let env: Env;
-  let db: D1Mock;
+    const { passages, sections } = planVersionPassages(content, "episode-1");
 
-  beforeEach(() => {
-    db = makeTestDb();
-    env = makeTestEnv(db);
+    expect(passages).toHaveLength(3);
+    expect(sections).toEqual([]);
+    expect(passages[0]).toMatchObject({
+      content: "A".repeat(1500),
+      section: null,
+      startOffset: 0,
+      endOffset: 1500,
+    });
+    expect(passages[1].startOffset).toBe(1100);
+    expect(passages.every((passage) => passage.vectorId === `pv:${passage.id}`)).toBe(true);
   });
 
-  it("splits plain text into overlapping chunks", async () => {
-    const content = "A".repeat(3000); // 3000 chars → 2 chunks (1500 + 1500 with overlap)
-    await createPassagesForEntry("entry-1", "ep-1", content, env, ctx);
-
-    const passages = db.passages.filter((p: any) => p.entry_id === "entry-1");
-    expect(passages.length).toBeGreaterThanOrEqual(2);
-    // Each chunk should have section = null (no markdown headers)
-    for (const p of passages) {
-      expect(p.section).toBeNull();
-    }
-    // First chunk starts at 0
-    expect(passages[0].start_offset).toBe(0);
-    // Content should be contiguous (with overlap)
-    expect(passages[0].content.length).toBeLessThanOrEqual(1500);
-  });
-
-  it("creates section-aware chunks for markdown content", async () => {
+  it("plans section-aware chunks and parent hierarchy for markdown", () => {
     const content = [
-      "# Introduction\n\nThis is the introduction with enough text to fill a chunk. " + "X".repeat(1400),
-      "\n\n## Methods\n\nThe methods section describes the approach. " + "Y".repeat(1400),
-      "\n\n## Results\n\nThe results show significant findings. " + "Z".repeat(1400),
+      "# Introduction\n\n" + "X".repeat(1400),
+      "## Methods\n\n" + "Y".repeat(1400),
+      "## Results\n\n" + "Z".repeat(1400),
     ].join("\n");
 
-    await createPassagesForEntry("entry-2", "ep-2", content, env, ctx);
+    const { passages, sections } = planVersionPassages(content, "episode-2");
 
-    const passages = db.passages.filter((p: any) => p.entry_id === "entry-2");
-    expect(passages.length).toBeGreaterThanOrEqual(3);
-
-    // Passages should have section names from headers
-    const sections = passages.map((p: any) => p.section);
-    expect(sections).toContain("Introduction");
-    expect(sections).toContain("Methods");
-    expect(sections).toContain("Results");
+    expect(passages.map((passage) => passage.section)).toEqual(expect.arrayContaining([
+      "Introduction",
+      "Methods",
+      "Results",
+    ]));
+    expect(sections.map((section) => section.title)).toEqual([
+      "Introduction",
+      "Methods",
+      "Results",
+    ]);
+    expect(sections[1].parentId).toBe(sections[0].id);
+    expect(sections[2].parentId).toBe(sections[0].id);
   });
 
-  it("creates document hierarchy when content has headers", async () => {
-    const content = "# Title\n\nContent here.\n\n## Sub\n\nMore content.";
-    await createPassagesForEntry("entry-3", "ep-3", content, env, ctx);
-
-    // Documents and document_sections should be created
-    expect(db.documents.length).toBe(1);
-    expect(db.documents[0].title).toBe("Title");
-
-    expect(db.document_sections.length).toBe(2);
-    const titles = db.document_sections.map((s: any) => s.title);
-    expect(titles).toContain("Title");
-    expect(titles).toContain("Sub");
+  it("returns no passages or sections for empty content", () => {
+    expect(planVersionPassages("", "episode-3")).toEqual({ passages: [], sections: [] });
   });
 
-  it("handles empty content gracefully", async () => {
-    await createPassagesForEntry("entry-4", "ep-4", "", env, ctx);
-    const passages = db.passages.filter((p: any) => p.entry_id === "entry-4");
-    expect(passages).toHaveLength(0);
-  });
+  it("plans one unsectioned passage for ordinary text", () => {
+    const result = planVersionPassages("Just plain text with no headers.", "episode-4");
 
-  it("creates one document envelope for content without headers", async () => {
-    await createPassagesForEntry("entry-5", "ep-5", "Just plain text with no headers.", env, ctx);
-    expect(db.documents.length).toBe(1);
-    expect(db.documents[0]).toMatchObject({
-      episode_id: "ep-5",
-      content_type: "text",
-      title: "Untitled Memory",
-    });
-    expect(db.document_sections.length).toBe(0);
+    expect(result.sections).toEqual([]);
+    expect(result.passages).toHaveLength(1);
+    expect(result.passages[0]).toMatchObject({ section: null, sectionId: null });
   });
 });

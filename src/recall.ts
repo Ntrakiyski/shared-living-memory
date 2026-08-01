@@ -342,11 +342,11 @@ function vectorEpisodeId(match: VectorizeMatch): string | null {
 }
 
 function vectorMatchesState(match: VectorizeMatch, state: EntryStateRow): boolean {
-  // Legacy entries and legacy vectors did not carry version lineage. Preserve
-  // them, but once both sides identify an episode the vector must be for the
-  // selected state. This drops stale version-scoped entry and passage vectors.
+  if ((match.metadata as Record<string, unknown> | undefined)?.keywordOnly === true) return true;
+  // Semantic vectors are canonical only when both D1 and Vectorize identify the
+  // same immutable episode. Legacy/missing lineage fails closed.
   const vectorEpisode = vectorEpisodeId(match);
-  return !state.current_episode_id || !vectorEpisode || vectorEpisode === state.current_episode_id;
+  return state.current_episode_id !== null && vectorEpisode === state.current_episode_id;
 }
 
 // Keyword candidates: entries whose content contains any query token, bounded by
@@ -601,7 +601,7 @@ function fuseDenseAndKeyword(
       out.push({ id: dm.id, score, metadata: dm.metadata });
     } else {
       const r = keywordRowById.get(pid)!;
-      out.push({ id: pid, score, metadata: { parentId: pid, created_at: r.created_at, tags: JSON.parse(r.tags ?? "[]"), content: r.content, source: r.source } });
+      out.push({ id: pid, score, metadata: { parentId: pid, keywordOnly: true, created_at: r.created_at, tags: JSON.parse(r.tags ?? "[]"), content: r.content, source: r.source } });
     }
   }
   return out;

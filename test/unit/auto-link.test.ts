@@ -31,7 +31,11 @@ function makeAI(verdict: string) {
 }
 
 function match(id: string, score: number) {
-  return { id, score, metadata: { parentId: id, isUpdate: false } };
+  return {
+    id,
+    score,
+    metadata: { parentId: id, episodeId: `episode-${id}`, isUpdate: false },
+  };
 }
 
 function seedExisting(db: D1Mock, tags: string[] = []) {
@@ -44,6 +48,7 @@ function seedExisting(db: D1Mock, tags: string[] = []) {
     vector_ids: "[]",
     owner_user_id: TEST_USER_ID,
     visibility: "public",
+    current_episode_id: "episode-existing",
   });
 }
 

@@ -108,10 +108,10 @@ describe("POST /capture", () => {
   });
 
   it("blocks a near-exact duplicate (score ≥ 0.95)", async () => {
-    db.entries.push({ id: "existing", content: "Duplicate note", tags: "[]", source: "api", created_at: 1, vector_ids: '["existing"]', owner_user_id: TEST_USER_ID });
+    db.entries.push({ id: "existing", content: "Duplicate note", tags: "[]", source: "api", created_at: 1, vector_ids: '["existing"]', owner_user_id: TEST_USER_ID, current_episode_id: "episode-existing" });
     const vectorize = makeVectorizeMock({
       query: vi.fn().mockResolvedValue({
-        matches: [{ id: "existing", score: 0.97, metadata: { parentId: "existing" } }],
+        matches: [{ id: "existing", score: 0.97, metadata: { parentId: "existing", episodeId: "episode-existing" } }],
       }),
     });
     env = makeTestEnv(db, { VECTORIZE: vectorize });
@@ -320,10 +320,10 @@ describe("POST /capture", () => {
   });
 
   it("stores flagged duplicate (score 0.85–0.94) with duplicate-candidate tag", async () => {
-    db.entries.push({ id: "near", content: "Similar existing note", tags: "[]", source: "api", created_at: 1, vector_ids: '["near"]', owner_user_id: TEST_USER_ID });
+    db.entries.push({ id: "near", content: "Similar existing note", tags: "[]", source: "api", created_at: 1, vector_ids: '["near"]', owner_user_id: TEST_USER_ID, current_episode_id: "episode-near" });
     const vectorize = makeVectorizeMock({
       query: vi.fn().mockResolvedValue({
-        matches: [{ id: "near", score: 0.88, metadata: { parentId: "near" } }],
+        matches: [{ id: "near", score: 0.88, metadata: { parentId: "near", episodeId: "episode-near" } }],
       }),
     });
     env = makeTestEnv(db, { VECTORIZE: vectorize });

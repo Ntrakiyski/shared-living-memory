@@ -286,6 +286,15 @@ export class D1Mock {
           if (row) row.vector_ids = vector_ids;
           return { meta: { changes: row ? 1 : 0 } };
         }
+        if (s.startsWith("UPDATE passages SET vector_ids")) {
+          const [vector_ids, id, entryId, episodeId] = args;
+          const row = db.passages.find((passage: any) =>
+            passage.id === id
+            && (entryId === undefined || passage.entry_id === entryId)
+            && (episodeId === undefined || passage.episode_id === episodeId));
+          if (row) row.vector_ids = vector_ids;
+          return { meta: { changes: row ? 1 : 0 } };
+        }
         if (s.startsWith("UPDATE entries SET tags = ? WHERE id")) {
           const [tags, id] = args;
           const row = db.entries.find((e: any) => e.id === id);
@@ -1750,6 +1759,13 @@ export class D1Mock {
             .map((row: any) => ({ ...row }));
           return { results };
         }
+        if (s.includes("FROM passages") && s.includes("WHERE entry_id = ? AND episode_id IS NULL")) {
+          const results = db.passages
+            .filter((row: any) => row.entry_id === args[0] && row.episode_id == null)
+            .sort((a: any, b: any) => ((a.start_offset ?? 0) - (b.start_offset ?? 0)) || String(a.id).localeCompare(String(b.id)))
+            .map((row: any) => ({ ...row }));
+          return { results };
+        }
         if (s.includes("FROM vector_cleanup_queue")) {
           return { results: db.vector_cleanup_queue.map((row: any) => ({ ...row })) };
         }
@@ -1828,17 +1844,31 @@ export class D1Mock {
             }));
           return { results };
         }
-        if (s.includes("FROM entries WHERE vector_ids != '[]'")) {
-          // reindexAllVectors query — entries with existing vectors.
+        if (s.includes("ep.mutation_id AS current_mutation_id") && s.includes("FROM entries e")) {
+          let bindingIndex = 0;
+          const ownerUserId = s.includes("e.owner_user_id = ?") ? args[bindingIndex++] : undefined;
+          const pendingBefore = s.includes("e.created_at < ?") ? Number(args[bindingIndex++]) : undefined;
+          const limit = Number(s.match(/LIMIT (\d+)/)?.[1] ?? Number.MAX_SAFE_INTEGER);
           const results = db.entries
             .map((entry: any) => normalizeEntry(entry))
-            .filter((entry: any) => entry.vector_ids && entry.vector_ids !== "[]")
-            .filter((entry: any) => !s.includes("AND owner_user_id = ?") || entry.owner_user_id === args[0])
+            .filter((entry: any) => ownerUserId === undefined || entry.owner_user_id === ownerUserId)
+            .filter((entry: any) => pendingBefore === undefined
+              || (entry.vector_ids === "[]" && entry.created_at < pendingBefore))
+            .sort((a: any, b: any) => (b.created_at - a.created_at) || String(a.id).localeCompare(String(b.id)))
+            .slice(0, limit)
             .map((entry: any) => ({
-              id: entry.id, content: entry.content, tags: entry.tags, source: entry.source,
-              created_at: entry.created_at, vector_ids: entry.vector_ids,
+              id: entry.id,
+              content: entry.content,
+              tags: entry.tags,
+              source: entry.source,
+              created_at: entry.created_at,
+              vector_ids: entry.vector_ids,
               owner_user_id: entry.owner_user_id,
               visibility: entry.visibility,
+              current_episode_id: entry.current_episode_id,
+              revision: entry.revision,
+              current_mutation_id: db.episodes.find((episode: any) =>
+                episode.id === entry.current_episode_id && episode.entry_id === entry.id)?.mutation_id ?? null,
             }));
           return { results };
         }

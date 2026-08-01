@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { checkVectorizeHealth } from "../../src/testing";
+import {
+  assertVectorizeMetadataIndexes,
+  checkVectorizeHealth,
+  evaluateKnownSemanticCanary,
+} from "../../src/testing";
 import { makeTestEnv, makeTestDb, makeVectorizeMock } from "../helpers/make-env";
 
 describe("checkVectorizeHealth", () => {
@@ -36,5 +40,39 @@ describe("checkVectorizeHealth", () => {
     expect(health.ok).toBe(false);
     expect(health.indexName).toBe("shared-living-memory-vectors");
     expect(health.error).toContain("index not found");
+  });
+
+  it("accepts Wrangler metadata-index JSON with both required indexed types", () => {
+    const output = JSON.stringify([
+      { propertyName: "extra", type: "string" },
+      { property_name: "OWNER_USER_ID", indexType: "STRING" },
+      { propertyName: "IS_PRIVATE", type: "BOOLEAN" },
+    ]);
+
+    expect(() => assertVectorizeMetadataIndexes(output)).not.toThrow();
+  });
+
+  it("reports safe missing and mismatched metadata-index codes", () => {
+    const output = JSON.stringify([
+      { propertyName: "owner_user_id", type: "boolean" },
+    ]);
+
+    expect(() => assertVectorizeMetadataIndexes(output)).toThrowError(
+      "vector_metadata_indexes_invalid:owner_user_id_type,is_private_missing",
+    );
+  });
+
+  it("treats zero filtered results for the known semantic target as readiness failure", () => {
+    expect(evaluateKnownSemanticCanary([], "entry-canary")).toEqual({
+      ok: false,
+      code: "semantic_canary_zero_results",
+      match_count: 0,
+    });
+  });
+
+  it("accepts the known semantic target only when D1-authorized filtered results contain it", () => {
+    expect(evaluateKnownSemanticCanary([
+      { id: "vector-1", score: 0.9, metadata: { parentId: "entry-canary" } },
+    ], "entry-canary")).toEqual({ ok: true, code: "ok", match_count: 1 });
   });
 });

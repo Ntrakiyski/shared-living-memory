@@ -9,7 +9,11 @@ import { TEST_USER_ID } from "../helpers/test-principal";
 const ctx = { waitUntil: (_: Promise<any>) => {} } as any;
 
 function makeMatch(id: string, score: number, overrides: Record<string, any> = {}) {
-  return { id, score, metadata: { parentId: id, isUpdate: false, ...overrides } };
+  return {
+    id,
+    score,
+    metadata: { parentId: id, episodeId: `episode-${id}`, isUpdate: false, ...overrides },
+  };
 }
 
 function makeContradictionAI(response: string): Ai {
@@ -81,7 +85,7 @@ describe("Bitemporal facts (Ticket 05)", () => {
       recorded_at: createdAt,
       epistemic_status: "candidate",
       revision: 0,
-      current_episode_id: null,
+      current_episode_id: "episode-incumbent",
       visibility: "public",
     });
     env = makeTestEnv(db, {
@@ -133,6 +137,7 @@ describe("Bitemporal facts (Ticket 05)", () => {
       contradiction_wins: 0, contradiction_losses: 0, owner_user_id: SYSTEM_USER_ID,
       valid_from: now + 3600000, valid_to: null, recorded_at: now - 100000,
       epistemic_status: "canonical",
+      current_episode_id: "episode-future-entry",
     });
     // Entry valid from the past — should be included
     db.entries.push({
@@ -141,6 +146,7 @@ describe("Bitemporal facts (Ticket 05)", () => {
       contradiction_wins: 0, contradiction_losses: 0, owner_user_id: SYSTEM_USER_ID,
       valid_from: now - 200000, valid_to: null, recorded_at: now - 200000,
       epistemic_status: "canonical",
+      current_episode_id: "episode-past-entry",
     });
 
     env = makeTestEnv(db, {
@@ -182,6 +188,7 @@ describe("Bitemporal facts (Ticket 05)", () => {
       contradiction_wins: 0, contradiction_losses: 0, owner_user_id: SYSTEM_USER_ID,
       valid_from: now - 200000, valid_to: now - 100000, recorded_at: now - 200000,
       epistemic_status: "stale",
+      current_episode_id: "episode-expired-entry",
     });
     // Entry still valid — should be included
     db.entries.push({
@@ -190,6 +197,7 @@ describe("Bitemporal facts (Ticket 05)", () => {
       contradiction_wins: 0, contradiction_losses: 0, owner_user_id: SYSTEM_USER_ID,
       valid_from: now - 200000, valid_to: null, recorded_at: now - 200000,
       epistemic_status: "canonical",
+      current_episode_id: "episode-current-entry",
     });
 
     env = makeTestEnv(db, {
@@ -222,11 +230,12 @@ describe("Bitemporal facts (Ticket 05)", () => {
       auth_key_hash: "", auth_key_prefix: "", status: "active", created_at: now,
     });
 
-    // Pre-migration entry with no temporal columns set
+    // Pre-temporal entry whose semantic projection is still current.
     db.entries.push({
       id: "legacy-entry", content: "Legacy fact", tags: "[]", source: "api",
       created_at: now - 100000, vector_ids: "[]", recall_count: 0, importance_score: 0,
       contradiction_wins: 0, contradiction_losses: 0, owner_user_id: SYSTEM_USER_ID,
+      current_episode_id: "episode-legacy-entry",
     });
 
     env = makeTestEnv(db, {

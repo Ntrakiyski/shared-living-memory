@@ -204,14 +204,14 @@ interface Header {
   offset: number;
 }
 
-interface PlannedSection extends Header {
+export interface PlannedSection extends Header {
   id: string;
   parentId: string | null;
   orderIndex: number;
   endOffset: number;
 }
 
-interface PlannedPassage {
+export interface PlannedPassage {
   id: string;
   content: string;
   section: string | null;
@@ -363,6 +363,14 @@ function planPassages(
   return passages;
 }
 
+export function planVersionPassages(
+  content: string,
+  episodeId: string,
+): { sections: PlannedSection[]; passages: PlannedPassage[] } {
+  const sections = planSections(findHeaders(content), content.length);
+  return { sections, passages: planPassages(content, episodeId, sections) };
+}
+
 function isDocumentVersion(
   contentType: string,
   sourceUrl: string | null,
@@ -385,20 +393,23 @@ async function cleanupStagedVectors(env: Env, vectorIds: string[]): Promise<unkn
   }
 }
 
-async function stageVectors(
+export interface StageVersionVectorsInput {
+  entryId: string;
+  episodeId: string;
+  mutationId: string;
+  content: string;
+  tags: string[];
+  source: string;
+  ownerUserId: string;
+  visibility: EntryVisibility;
+  now: number;
+  passages: PlannedPassage[];
+  cleanupOnFailure?: boolean;
+}
+
+export async function stageVersionVectors(
   env: Env,
-  details: {
-    entryId: string;
-    episodeId: string;
-    mutationId: string;
-    content: string;
-    tags: string[];
-    source: string;
-    ownerUserId: string;
-    visibility: EntryVisibility;
-    now: number;
-    passages: PlannedPassage[];
-  },
+  details: StageVersionVectorsInput,
 ): Promise<{ entryVectorIds: string[]; allVectorIds: string[] }> {
   const entryChunks = chunkText(details.content);
   // Vectorize IDs are capped at 64 bytes. The immutable episode UUID is enough
@@ -456,7 +467,7 @@ async function stageVectors(
     await env.VECTORIZE.upsert([...entryVectors, ...passageVectors]);
     return { entryVectorIds, allVectorIds };
   } catch (cause) {
-    const cleanupError = writeAttempted
+    const cleanupError = writeAttempted && details.cleanupOnFailure !== false
       ? await cleanupStagedVectors(env, allVectorIds)
       : undefined;
     throw new EntryVersionVectorStageError(cause, cleanupError);
@@ -667,7 +678,10 @@ export async function commitEntryVersion(
   const episodeContentHash = await sha256Hex(input.rawContent);
   const documentContentHash = await sha256Hex(input.materializedContent);
   const baselineHash = baselineEpisodeId ? await sha256Hex(current!.content) : null;
-  const sections = planSections(findHeaders(input.materializedContent), input.materializedContent.length);
+  const { sections, passages: plannedPassages } = planVersionPassages(
+    input.materializedContent,
+    episodeId,
+  );
   // Every immutable episode has exactly one document envelope. Conversational
   // notes may have no passage/section children, but the 1:1 envelope keeps
   // provenance and future enrichment unambiguous.
@@ -676,9 +690,7 @@ export async function commitEntryVersion(
   // Conversational notes cite their immutable episode. Passage-level evidence
   // is reserved for document-like material where offsets and hierarchy add
   // information beyond the episode itself.
-  const passages = hasPassageEvidence
-    ? planPassages(input.materializedContent, episodeId, sections)
-    : [];
+  const passages = hasPassageEvidence ? plannedPassages : [];
   const page = input.page === undefined
     ? (current?.current_page ?? null)
     : input.page;
@@ -706,7 +718,7 @@ export async function commitEntryVersion(
     ? [...new Set(parseJsonArray(current.vector_ids))]
     : [];
 
-  const staged = await stageVectors(env, {
+  const staged = await stageVersionVectors(env, {
     entryId: targetEntryId,
     episodeId,
     mutationId,
