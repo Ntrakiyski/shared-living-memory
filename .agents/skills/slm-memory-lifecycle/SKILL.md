@@ -254,6 +254,135 @@ Feedback is analytics-only during the pilot. It does not change recall behavior.
 
 ---
 
+---
+
+## Governed Actions — proposals with risk and approval
+
+For consequential mutations (cross-user changes, destructive operations, high-risk edits), use the governed action proposal flow instead of direct tool calls.
+
+### When to use governed actions
+
+| Scenario | Tool |
+|---|---|
+| Cross-user entry update | `create_action_proposal` → `review_action_proposal` → `execute_approved_action` |
+| Destructive operation (visibility change, batch delete) | Governed proposal with `risk_level: "high"` |
+| Change affecting multiple entries | Proposal with `target_ids` array |
+| Audit-required mutation | Proposal with `idempotency_key` for retry safety |
+
+### Proposal workflow
+
+```
+Agent identifies a governed change needed
+├── `create_action_proposal` with:
+│   action_type: one of entry.create | entry.append | entry.update | entry.restore |
+│                entry.status.set | entry.epistemic-status.set | edge.publish | edge.remove
+│   payload_json: JSON string of the exact mutation payload
+│   target_ids: [list of entry IDs affected]
+│   risk_level: "low" | "medium" | "high" | "critical"
+│   reason: Why this change is needed (human-readable)
+│   idempotency_key: Unique key for retry safety
+│   visibility_scope: "private" (your review only) | "team" (any admin can review)
+│   expected_revision: Current revision of the target entry (optimistic lock)
+│   expires_at: Optional Unix ms — auto-stale after this time
+│
+├── Human reviews: `list_action_proposals` to check status
+├── Human approves: `review_action_proposal` with { proposal_id, decision: "approve", reason }
+│   or rejects: `review_action_proposal` with { proposal_id, decision: "reject", reason }
+│
+└── Agent executes: `execute_approved_action` with { proposal_id }
+    └── Only executable after human approval
+```
+
+### Service identities cannot review/approve
+
+Only human users with the admin role can approve proposals. Service identities can create and execute but never approve.
+
+---
+
+## Cross-User Relationships — propose before linking
+
+Never use `link` directly between entries owned by different users. Use the proposal flow.
+
+```
+You want to connect two entries
+├── Both entries are owned by you
+│   └── `link` directly with { source_id, target_id, type }
+│
+├── One or both entries are owned by other users
+│   └── `propose_edge` with { source_id, target_id, type, reason }
+│       └── Creates a pending proposal requiring human approval
+│       └── Use `list-proposals` to check status
+│       └── Admin approves with `approve-proposal` or rejects with `reject-proposal`
+│
+└── The relationship is uncertain or needs discussion
+    └── `propose_edge` even if you own both — the proposal serves as documentation
+```
+
+---
+
+## Visibility Transitions — private ↔ public
+
+Visibility changes have consequences. Always confirm before changing.
+
+```
+User wants to change visibility
+├── Private → Public
+│   ├── Warn: "This will make the memory visible to the entire team. Current content, source, and citations will be exposed. Continue?"
+│   ├── User confirms → `update` with new visibility
+│   └── The entry becomes discoverable in team recall and graph
+│
+├── Public → Private
+│   ├── Warn: "This will remove the memory from team recall and graph. Others who already saw it may have stored references."
+│   ├── User confirms → `update` with new visibility
+│   └── The entry is removed from team-visible indexes (may be briefly stale in Vectorize)
+│
+└── Private entry linked to by a public entry
+    └── The private content is NOT exposed. Only the link metadata (IDs, type) is visible.
+```
+
+---
+
+## History-Before-Mutation — inspect before you change
+
+Before any mutation on an existing entry, check its history to avoid overwriting someone else's work.
+
+```
+You're about to append/update/status-change an entry
+├── `history` with { entry_id }
+│   ├── Lists all immutable episodes (append events)
+│   ├── Lists all snapshots (pre-update state captures)
+│   └── Shows revision numbers for optimistic concurrency
+│
+├── Check the last episode
+│   ├── Same actor as you? → Proceed with append/update
+│   └── Different actor? → Check if your change conflicts. Use `connections` to understand context.
+│
+└── Revision changed since you last read?
+    └── The entry was modified. Re-read it with `recall` first, then proceed.
+```
+
+---
+
+## Bitemporal Recall — time-aware search
+
+Shared Living Memory tracks two timelines. Use both for precise queries.
+
+```
+`recall` with temporal filters:
+  as_of:    "What was the truth at this point in time?"
+            Example: query for a decision as_of the meeting date, not today.
+            Use when: asking "what was the project status on July 15?"
+
+  known_at: "What did the team know at this point in time?"
+            Example: query for what was known before a new discovery.
+            Use when: asking "what did we know before the incident on Aug 1?"
+
+  after:    Only entries created after this timestamp
+  before:   Only entries created before this timestamp
+```
+
+---
+
 ## Quick-reference: tool decision matrix
 
 | I want to... | Use this tool |
@@ -262,16 +391,23 @@ Feedback is analytics-only during the pilot. It does not change recall behavior.
 | Add to existing entry | `append` |
 | Replace entire entry | `update` |
 | Search memory | `recall` |
+| Time-travel search | `recall` with `as_of` / `known_at` |
 | Browse by time | `list_recent` |
 | Mark as outdated | `set_status` status:"deprecated" |
 | Mark as authoritative | `set_status` status:"canonical" |
 | Change confidence level | `set_epistemic_status` |
-| Connect two entries | `link` |
+| Connect two entries (same owner) | `link` |
 | Propose cross-user link | `propose_edge` |
+| Approve/reject a proposed link | `approve-proposal` / `reject-proposal` |
 | See linked entries | `connections` |
 | Read source citations | `passages` |
 | See past versions | `history` |
 | Restore old version | `restore` |
-| Permanent deletion | `forget` |
+| Change visibility (private ↔ public) | `update` with visibility field |
+| Permanent deletion | `forget` with `confirm_entry_id` |
 | Rate search quality | `rate_recall` |
 | Keep memory salient | `reinforce` |
+| Propose governed mutation | `create_action_proposal` |
+| Review a governed proposal | `review_action_proposal` |
+| Execute approved proposal | `execute_approved_action` |
+| List pending proposals | `list-proposals` / `list_action_proposals` |
