@@ -3077,7 +3077,19 @@
         <div id="admin-people-panel" class="sb-section" style="display:none">
           <div class="sb-section-title">People</div>
           <div id="admin-people-list"></div>
-          <button class="sb-section-btn" onclick="showAdminCreateRow()">+ Invite</button>
+          <div id="admin-create-row" style="display:none;margin-top:8px">
+            <input type="text" id="admin-create-username" placeholder="New username" maxlength="32" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-1);color:var(--text-primary);font-size:13px" />
+            <select id="admin-create-role" style="margin-top:6px;padding:4px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-1);color:var(--text-primary)">
+              <option value="member">Member</option>
+              <option value="admin">Admin</option>
+            </select>
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <button onclick="adminCreateUser()" style="padding:4px 12px;border:0;border-radius:var(--radius-sm);background:var(--accent);color:white;cursor:pointer;font-size:13px">Create</button>
+              <button onclick="document.getElementById('admin-create-row').style.display='none'" style="padding:4px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:none;cursor:pointer;font-size:13px">Cancel</button>
+            </div>
+            <div id="admin-create-error" style="color:var(--danger);font-size:12px;margin-top:4px"></div>
+          </div>
+          <button onclick="document.getElementById('admin-create-row').style.display=''" class="sb-section-btn" style="margin-top:6px">+ Invite</button>
         </div>
         <div class="sb-user" id="sb-user-display">
           <i class="ti ti-user-circle"></i><span id="sb-username-text"></span>
@@ -3743,6 +3755,29 @@
             '<div class="admin-user-row"><span><strong>' + escHtml(u.username) + '</strong> &mdash; ' + u.role + (u.status !== 'active' ? ' (' + u.status + ')' : '') + '</span></div>'
           ).join('')
         } catch {}
+      }
+
+      async function adminCreateUser() {
+        const username = document.getElementById('admin-create-username').value.trim()
+        const role = document.getElementById('admin-create-role').value
+        const err = document.getElementById('admin-create-error')
+        err.textContent = ''
+        if (!username) { err.textContent = 'Username is required.'; return }
+        try {
+          const res = await fetch(`${WORKER_URL}/api/users`, {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ username, role }),
+          })
+          const data = await res.json()
+          if (!res.ok) throw new Error(data.error || 'Failed')
+          document.getElementById('admin-create-username').value = ''
+          document.getElementById('admin-create-row').style.display = 'none'
+          alert('Created ' + username + '. Key: ' + data.key + '\n\nSave this key — it will not be shown again.')
+          loadAdminUsers()
+        } catch (e) {
+          err.textContent = e.message
+        }
       }
 
       function escHtml(s) { return String(s).replace(/[&<>"']/g, function(c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c }) }
