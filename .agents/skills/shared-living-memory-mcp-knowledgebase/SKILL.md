@@ -1,6 +1,6 @@
 ---
 name: shared-living-memory-mcp-knowledgebase
-description: "Use when an agent or human wants to connect to Shared Living Memory through MCP and use it as a living team knowledgebase: capture knowledge, recall with citations, respect privacy, create links, inspect history, and translate knowledge between different people or agent domains."
+description: "Use when an agent or human wants to connect to Shared Living Memory through MCP and use it as a living team knowledgebase: capture knowledge, recall with citations, respect privacy, create links, inspect history, and translate knowledge between different people or agent domains. Also loads when memory tools are invoked, when the user mentions Shared Living Memory, or when a memory lifecycle decision is needed."
 ---
 
 # Shared Living Memory MCP Knowledgebase
@@ -8,6 +8,16 @@ description: "Use when an agent or human wants to connect to Shared Living Memor
 Use this skill after Shared Living Memory is connected through MCP, or when helping a human/agent decide how to use the knowledgebase safely.
 
 Shared Living Memory is a governed team knowledgebase. Treat entries as durable knowledge with owners, visibility, provenance, versions, citations, relationships, and audit boundaries.
+
+**For the full memory lifecycle operating manual (when to use each tool, decision trees, stage transitions), load `slm-memory-lifecycle`.** This skill covers setup, core concepts, and safety rules.
+
+## Memory lifecycle
+
+```
+CAPTURE → RECALL → VERIFY → MAINTAIN → LINK → DEPRECATE → FORGET/RESTORE
+```
+
+Every entry follows this path. See `slm-memory-lifecycle` for the detailed decision tree at each stage.
 
 ## First-run identity setup
 
