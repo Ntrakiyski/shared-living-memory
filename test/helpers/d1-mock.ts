@@ -104,6 +104,20 @@ function guardedEntry(
   return row;
 }
 
+function passageGuardPasses(
+  db: { passages: any[] },
+  entryId: unknown,
+  episodeId: unknown,
+  expectedCount: unknown,
+  sql: string,
+): boolean {
+  if (!sql.includes("FROM passages p")) return true;
+  const count = db.passages.filter(
+    (passage: any) => passage.entry_id === entryId && passage.episode_id === episodeId,
+  ).length;
+  return count === Number(expectedCount);
+}
+
 export class D1Mock {
   entries: any[] = [];
   edges: any[] = [];
@@ -283,23 +297,33 @@ export class D1Mock {
           return { meta: { changes: row ? 1 : 0 } };
         }
         if (s.startsWith("UPDATE entries SET vector_ids")) {
-          const [vector_ids, id, ownerUserId, revision, currentEpisodeId] = args;
+          const [
+            vector_ids, id, ownerUserId, revision, currentEpisodeId,
+            guardEntryId, guardEpisodeId, expectedPassageCount,
+          ] = args;
           const row = s.includes("owner_user_id = ?")
             ? guardedEntry(db.entries, id, ownerUserId, revision, false, currentEpisodeId)
             : db.entries.find((e: any) => e.id === id);
-          if (row) row.vector_ids = vector_ids;
-          return { meta: { changes: row ? 1 : 0 } };
+          const projectionIntact = passageGuardPasses(
+            db, guardEntryId, guardEpisodeId, expectedPassageCount, s,
+          );
+          if (row && projectionIntact) row.vector_ids = vector_ids;
+          return { meta: { changes: row && projectionIntact ? 1 : 0 } };
         }
         if (s.startsWith("UPDATE passages SET vector_ids")) {
           const [
             vector_ids, id, entryId, episodeId,
             guardEntryId, ownerUserId, revision, currentEpisodeId,
+            guardPassageEntryId, guardEpisodeId, expectedPassageCount,
           ] = args;
           const entryGuardPassed = !s.includes("AND EXISTS")
             || guardedEntry(
               db.entries, guardEntryId, ownerUserId, revision, false, currentEpisodeId,
             ) !== null;
-          const row = entryGuardPassed
+          const projectionIntact = passageGuardPasses(
+            db, guardPassageEntryId, guardEpisodeId, expectedPassageCount, s,
+          );
+          const row = entryGuardPassed && projectionIntact
             ? db.passages.find((passage: any) =>
               passage.id === id
               && (entryId === undefined || passage.entry_id === entryId)
@@ -801,12 +825,16 @@ export class D1Mock {
           const [
             id, vector_ids, reason, created_at, updated_at,
             entryId, ownerUserId, revision, currentEpisodeId,
+            guardEntryId, guardEpisodeId, expectedPassageCount,
           ] = args;
           if (s.includes("SELECT")) {
             const entry = guardedEntry(
               db.entries, entryId, ownerUserId, revision, false, currentEpisodeId,
             );
-            if (!entry) return { meta: { changes: 0 } };
+            const projectionIntact = passageGuardPasses(
+              db, guardEntryId, guardEpisodeId, expectedPassageCount, s,
+            );
+            if (!entry || !projectionIntact) return { meta: { changes: 0 } };
           }
           db.vector_cleanup_queue.push({
             id, vector_ids, reason, attempts: 0, last_error: null,

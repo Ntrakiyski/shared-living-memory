@@ -434,6 +434,56 @@ describe("Vector Metadata & Filtering", () => {
     expect(db.vector_cleanup_queue).toEqual([]);
   });
 
+  it("keeps projection persistence atomic when a planned passage disappears before the batch", async () => {
+    const deleteByIds = vi.fn().mockResolvedValue({ mutationId: "cleanup-ok" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        upsert: vi.fn().mockImplementation(async () => {
+          db.passages = db.passages.filter((passage: any) => passage.id !== "passage-race-passage");
+          return { mutationId: "staged" };
+        }),
+        deleteByIds,
+      }),
+    });
+    db.entries.push({
+      id: "passage-race", content: "losing projection", tags: "[]", source: "api", created_at: 1000,
+      vector_ids: "[]", owner_user_id: "alice-id", revision: 1,
+      visibility: "private", current_episode_id: "episode-passage-race",
+    });
+    db.episodes.push({
+      id: "episode-passage-race", entry_id: "passage-race", mutation_id: "mutation-passage-race",
+      materialized_content: "losing projection",
+    });
+    db.passages.push({
+      id: "passage-race-passage", entry_id: "passage-race", episode_id: "episode-passage-race",
+      content: "newly staged passage", vector_ids: '["legacy-passage-race-passage"]',
+    });
+
+    const result = await reindexAllVectors(env);
+
+    expect(result).toMatchObject({ entries_processed: 0, failed: 1, stale_deleted: 0 });
+    expect(result.failures).toEqual([{
+      entry_id: "passage-race",
+      code: "projection_persist_failed",
+      entry_vector_count: 0,
+      passage_count: 1,
+      passage_vector_count: 1,
+    }]);
+    expect(deleteByIds).toHaveBeenCalledOnce();
+    expect(deleteByIds).toHaveBeenCalledWith([
+      "ev:episode-passage-race:0",
+      "pv:passage-race-passage",
+    ]);
+    expect(db.entries[0]).toMatchObject({
+      id: "passage-race",
+      revision: 1,
+      current_episode_id: "episode-passage-race",
+      vector_ids: "[]",
+    });
+    expect(db.passages).toHaveLength(0);
+    expect(db.vector_cleanup_queue).toEqual([]);
+  });
+
   it("directly deletes new-only vectors when the aborted-cleanup queue insert fails", async () => {
     const deleteByIds = vi.fn().mockResolvedValue({ mutationId: "cleanup-ok" });
     env = makeTestEnv(db, {

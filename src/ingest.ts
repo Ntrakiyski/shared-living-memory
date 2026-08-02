@@ -237,13 +237,21 @@ export async function reindexAllVectors(
     const staleIds = oldTrackedIds.filter(id => !newTrackedIds.has(id));
     const cleanupQueueId = staleIds.length ? crypto.randomUUID() : null;
     const now = Date.now();
+    const projectionGuard = {
+      sql: `AND (
+        SELECT COUNT(*) FROM passages p
+        WHERE p.entry_id = ? AND p.episode_id = ?
+      ) = ?`,
+      bindings: [entry.id, entry.current_episode_id, plannedPassages.length],
+    };
     const statements: D1PreparedStatement[] = [
       env.DB.prepare(
         `UPDATE entries SET vector_ids = ?
-         WHERE id = ? AND owner_user_id = ? AND revision = ? AND current_episode_id = ?`,
+         WHERE id = ? AND owner_user_id = ? AND revision = ? AND current_episode_id = ?
+         ${projectionGuard.sql}`,
       ).bind(
         JSON.stringify(staged.entryVectorIds), entry.id, entry.owner_user_id,
-        entry.revision, entry.current_episode_id,
+        entry.revision, entry.current_episode_id, ...projectionGuard.bindings,
       ),
       ...plannedPassages.map(passage => env.DB.prepare(
         `UPDATE passages SET vector_ids = ?
@@ -252,10 +260,12 @@ export async function reindexAllVectors(
              SELECT 1 FROM entries e
              WHERE e.id = ? AND e.owner_user_id = ?
                AND e.revision = ? AND e.current_episode_id = ?
-           )`,
+           )
+           ${projectionGuard.sql}`,
       ).bind(
         JSON.stringify([passage.vectorId]), passage.id, entry.id, entry.current_episode_id,
         entry.id, entry.owner_user_id, entry.revision, entry.current_episode_id,
+        ...projectionGuard.bindings,
       )),
     ];
     if (cleanupQueueId) {
@@ -265,7 +275,8 @@ export async function reindexAllVectors(
          )
          SELECT ?, ?, ?, 0, NULL, ?, ?
          FROM entries
-         WHERE id = ? AND owner_user_id = ? AND revision = ? AND current_episode_id = ?`,
+         WHERE id = ? AND owner_user_id = ? AND revision = ? AND current_episode_id = ?
+           ${projectionGuard.sql}`,
       ).bind(
         cleanupQueueId,
         JSON.stringify(staleIds),
@@ -276,6 +287,7 @@ export async function reindexAllVectors(
         entry.owner_user_id,
         entry.revision,
         entry.current_episode_id,
+        ...projectionGuard.bindings,
       ));
     }
 
