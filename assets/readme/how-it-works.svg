@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="540" viewBox="0 0 1200 540"
+     role="img" aria-labelledby="title desc">
+  <title id="title">How Shared Living Memory works</title>
+  <desc id="desc">People and AI agents capture knowledge, the system governs and retrieves each entry with identity and provenance, and recall returns evidence with author, visibility, source, and matched passage.</desc>
+
+  <defs>
+    <pattern id="lines" width="1200" height="42" patternUnits="userSpaceOnUse">
+      <path d="M0 41.5H1200" stroke="#26241F" stroke-opacity=".035"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#B26641"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="540" rx="28" fill="#F4F1EA"/>
+  <rect width="1200" height="540" rx="28" fill="url(#lines)"/>
+  <rect x="1" y="1" width="1198" height="538" rx="27" fill="none" stroke="#26241F" stroke-opacity=".10"/>
+
+  <g transform="translate(60 44)">
+    <text x="0" y="0" dominant-baseline="hanging"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="16" font-weight="700" letter-spacing="2.4" fill="#8A4E2F">
+      HOW IT WORKS
+    </text>
+    <text x="0" y="69"
+          font-family="Georgia, 'Times New Roman', serif"
+          font-size="45" font-weight="600" letter-spacing="-1.2" fill="#26241F">
+      From scattered context to trustworthy recall.
+    </text>
+    <text x="0" y="105"
+          font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="19" fill="#6E6B62">
+      Preserve who said it, who may see it, where it came from, and how it changed.
+    </text>
+  </g>
+
+  <path d="M390 304H432" stroke="#B26641" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M765 304H807" stroke="#B26641" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g transform="translate(60 176)">
+    <rect width="330" height="260" rx="20" fill="#FCFBF7" stroke="#D8D1C4"/>
+    <text x="24" y="48" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="45" font-weight="700" fill="#E2DDD0">01</text>
+    <circle cx="281" cy="39" r="18" fill="#EAD9CE"/>
+    <circle cx="281" cy="34" r="6" fill="#B26641"/>
+    <path d="M269 53c3-11 21-11 24 0" fill="none" stroke="#B26641" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="24" y="98" font-family="Georgia, 'Times New Roman', serif"
+          font-size="29" font-weight="600" fill="#26241F">Capture</text>
+    <text x="24" y="135" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="18" fill="#6E6B62">People and agents save decisions,</text>
+    <text x="24" y="162" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="18" fill="#6E6B62">research, sources, and project</text>
+    <text x="24" y="189" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="18" fill="#6E6B62">context through familiar interfaces.</text>
+    <rect x="24" y="215" width="282" height="27" rx="13.5" fill="#F1E4DB"/>
+    <text x="65" y="234" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="14" font-weight="700" fill="#8A4E2F">DASHBOARD · MCP · REST</text>
+  </g>
+
+  <g transform="translate(435 176)">
+    <rect width="330" height="260" rx="20" fill="#26241F"/>
+    <text x="24" y="48" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="45" font-weight="700" fill="#555149">02</text>
+    <rect x="263" y="21" width="42" height="42" rx="12" fill="#3A3731"/>
+    <path d="M274 42h20M284 32v20" stroke="#D38A5E" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="24" y="98" font-family="Georgia, 'Times New Roman', serif"
+          font-size="29" font-weight="600" fill="#FCFBF7">Govern + retrieve</text>
+    <text x="24" y="131" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="17" fill="#C8C1B4">Keep owner, scope, source, status,</text>
+    <text x="24" y="155" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="17" fill="#C8C1B4">revision, and immutable history.</text>
+    <text x="24" y="179" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="17" fill="#C8C1B4">Search by meaning, words, graph,</text>
+    <text x="24" y="203" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="17" fill="#C8C1B4">tags, or a point in time.</text>
+    <rect x="24" y="220" width="282" height="27" rx="13.5" fill="#3A3731"/>
+    <text x="57" y="239" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="14" font-weight="700" fill="#D38A5E">PRIVATE BY DEFAULT · VERSIONED</text>
+  </g>
+
+  <g transform="translate(810 176)">
+    <rect width="330" height="260" rx="20" fill="#FCFBF7" stroke="#C99F86" stroke-width="1.5"/>
+    <text x="24" y="48" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="45" font-weight="700" fill="#E2DDD0">03</text>
+    <rect x="263" y="21" width="42" height="42" rx="12" fill="#F1E4DB"/>
+    <path d="M274 35h18v15h-18zM280 29h18v15" fill="none" stroke="#B26641" stroke-width="2.1"/>
+    <text x="24" y="98" font-family="Georgia, 'Times New Roman', serif"
+          font-size="29" font-weight="600" fill="#26241F">Recall with evidence</text>
+    <text x="24" y="131" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="17" fill="#6E6B62">Return the answer with its author,</text>
+    <text x="24" y="155" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="17" fill="#6E6B62">visibility, source, and matched</text>
+    <text x="24" y="179" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="17" fill="#6E6B62">passage — plus a path back</text>
+    <text x="24" y="203" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="17" fill="#6E6B62">through version history.</text>
+    <rect x="24" y="220" width="282" height="27" rx="13.5" fill="#F1E4DB"/>
+    <text x="61" y="239" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="14" font-weight="700" fill="#8A4E2F">ANSWER · CITATION · CONTEXT</text>
+  </g>
+
+  <g transform="translate(60 472)">
+    <rect width="1080" height="42" rx="21" fill="#ECE8DD"/>
+    <circle cx="24" cy="21" r="7" fill="#B26641"/>
+    <text x="41" y="27" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="16" font-weight="700" fill="#26241F">D1 = durable authority</text>
+    <path d="M303 11v20" stroke="#CFC7B9"/>
+    <circle cx="331" cy="21" r="7" fill="#5B8A6B"/>
+    <text x="348" y="27" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="16" font-weight="700" fill="#26241F">Vectorize = rebuildable index</text>
+    <path d="M688 11v20" stroke="#CFC7B9"/>
+    <circle cx="716" cy="21" r="7" fill="#6E6B62"/>
+    <text x="733" y="27" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="16" font-weight="700" fill="#26241F">Audits and metrics = content-free</text>
+  </g>
+</svg>
