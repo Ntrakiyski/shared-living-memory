@@ -9,11 +9,12 @@ export function req(
   opts: { body?: unknown; token?: string | null; userCredentials?: { username: string; key: string } } = {}
 ): Request {
   const { body, userCredentials } = opts;
-  const isAdminUserRoute = /^\/api\/users(?:\?|$)/.test(path);
+  // /api/bootstrap is the only route that still gates on the workspace key.
+  const isBootstrapRoute = method === "POST" && path === "/api/bootstrap";
   const hasExplicitToken = Object.prototype.hasOwnProperty.call(opts, "token");
   const token = hasExplicitToken
     ? opts.token
-    : (userCredentials || isAdminUserRoute ? TOKEN : TEST_USER_API_KEY);
+    : (userCredentials || isBootstrapRoute ? TOKEN : TEST_USER_API_KEY);
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token !== null) headers["Authorization"] = `Bearer ${token}`;
   if (userCredentials) {

@@ -134,7 +134,7 @@ describe("Visibility Enforcement", () => {
 
     const { ctx } = makeCtx();
     const res = await worker.fetch(
-      req("POST", "/forget", { body: { id: bobPublic.id }, userCredentials: { username: "alice", key: aliceKey } }),
+      req("POST", "/forget", { body: { id: bobPublic.id, confirm_entry_id: bobPublic.id }, userCredentials: { username: "alice", key: aliceKey } }),
       env, ctx
     );
     expect(res.status).toBe(403);

@@ -138,6 +138,7 @@ export class D1Mock {
   security_events: any[] = [];
   action_proposals: any[] = [];
   proposal_events: any[] = [];
+  erasure_receipts: any[] = [];
 
   prepare(sql: string) {
     const s = sql.replace(/\s+/g, " ").trim();
@@ -458,16 +459,59 @@ export class D1Mock {
           db.agentRuns.push({ id, user_id: userId, started_at: startedAt, completed_at: null, tool_count: 0 });
           return { meta: { changes: 1 } };
         }
+        if (s.startsWith("INSERT INTO erasure_receipts")) {
+          const [operation_id, entry_id, owner_user_id, actor_user_id, vector_count, status, created_at, updated_at, completed_at] = args;
+          db.erasure_receipts.push({
+            operation_id, entry_id, owner_user_id, actor_user_id,
+            vector_count, status, created_at, updated_at, completed_at,
+          });
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("INSERT INTO audit_completion_reconciliation")) {
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("UPDATE audit_completion_reconciliation")) {
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("UPDATE erasure_receipts")) {
+          const [completedAt, updatedAt, operationId] = args;
+          const row = db.erasure_receipts.find(
+            (r: any) => r.operation_id === operationId && r.status === "pending_cleanup",
+          );
+          if (!row) return { meta: { changes: 0 } };
+          row.status = "complete";
+          row.completed_at = completedAt;
+          row.updated_at = updatedAt;
+          return { meta: { changes: 1 } };
+        }
         if (s.startsWith("INSERT INTO agent_events")) {
           const [id, runId, toolName, inputSummary, outputSummary, durationMs, error, createdAt] = args;
           db.agentEvents.push({ id, run_id: runId, tool_name: toolName, input_summary: inputSummary, output_summary: outputSummary, duration_ms: durationMs, error, created_at: createdAt });
           return { meta: { changes: 1 } };
         }
-        if (s.startsWith("UPDATE agent_runs SET completed_at")) {
-          const [completedAt, toolCount, id] = args;
-          const row = db.agentRuns.find((r: any) => r.id === id);
-          if (row) { row.completed_at = completedAt; row.tool_count = toolCount; }
-          return { meta: { changes: row ? 1 : 0 } };
+        if (s.startsWith("UPDATE agent_runs")) {
+          const runId = args[args.length - 1];
+          const row = db.agentRuns.find((r: any) => r.id === runId);
+          if (!row) return { meta: { changes: 0 } };
+          if (s.startsWith("UPDATE agent_runs SET completed_at = ?, tool_count")) {
+            row.completed_at = args[0];
+            row.tool_count = args[1];
+          } else if (s.startsWith("UPDATE agent_runs SET status = ?")) {
+            row.status = args[0];
+            row.completed_at = args[1];
+            row.redacted_result_summary = args[2];
+            row.result_hash = args[3];
+            row.error_code = args[4];
+          } else if (s.startsWith("UPDATE agent_runs SET completed_at = ?, status = ?")) {
+            row.completed_at = args[0];
+            row.status = args[1];
+            row.redacted_result_summary = args[2];
+            row.result_hash = args[3];
+            row.error_code = args[4];
+          } else {
+            return { meta: { changes: 0 } };
+          }
+          return { meta: { changes: 1 } };
         }
         if (s.startsWith("DELETE FROM edge_proposals WHERE source_id")) {
           const [sourceId, targetId] = args;
@@ -1190,6 +1234,12 @@ export class D1Mock {
           const row = db.users.find((u: any) => u.id === userId);
           return row ? { id: row.id, username: row.username, status: row.status } : null;
         }
+        if (s.includes("SELECT role FROM users WHERE id")) {
+          const userId = args[0] as string;
+          const row = db.users.find((u: any) => u.id === userId && u.status === "active");
+          if (row) return { role: row.role ?? "member" };
+          return userId === TEST_USER_ID ? { role: "admin" } : null;
+        }
         if (s.includes("SELECT username FROM users WHERE id")) {
           const userId = args[0] as string;
           const row = db.users.find((u: any) => u.id === userId);
@@ -1252,6 +1302,20 @@ export class D1Mock {
         }
         if (s.includes("COUNT(*) as count") && s.includes("FROM entries") && s.includes("epistemic_status = 'stale'")) {
           return { count: db.entries.filter((e: any) => e.epistemic_status === "stale").length };
+        }
+        // ─── Erasure receipts (first) — metadata-only status lookup ─────
+        if (s.includes("FROM erasure_receipts") && s.includes("WHERE operation_id = ?")) {
+          const row = db.erasure_receipts.find((r: any) => r.operation_id === args[0]);
+          if (!row) return null;
+          return {
+            operation_id: row.operation_id,
+            entry_id: row.entry_id,
+            owner_user_id: row.owner_user_id,
+            status: row.status,
+            vector_count: row.vector_count,
+            created_at: row.created_at,
+            completed_at: row.completed_at,
+          };
         }
         // ─── Agent runs/events first() — must precede generic COUNT ──
         if (s.includes("FROM agent_runs") && s.includes("COUNT(*) as count") && s.includes("started_at >= ?")) {
@@ -2607,6 +2671,7 @@ export class D1Mock {
       "security_events",
       "action_proposals",
       "proposal_events",
+      "erasure_receipts",
     ] as const;
     const snapshot = new Map<string, any[]>();
     for (const table of tableNames) snapshot.set(table, structuredClone(this[table]));
@@ -2641,5 +2706,6 @@ export class D1Mock {
     this.security_events = [];
     this.action_proposals = [];
     this.proposal_events = [];
+    this.erasure_receipts = [];
   }
 }

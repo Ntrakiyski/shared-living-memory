@@ -2952,7 +2952,25 @@
           <i class="ti ti-brain"></i>
         </div>
         <h1>Shared Living Memory</h1>
-        <!-- Step 1: Connect to server -->
+        <!-- Bootstrap: workspace key + create first admin -->
+        <div id="auth-bootstrap-step" class="field-group" style="display:none">
+          <label class="sr-only" for="auth-bootstrap-token">Workspace key</label>
+          <input type="password" id="auth-bootstrap-token" placeholder="Workspace key" autocomplete="current-password" />
+          <button id="auth-bootstrap-btn" type="button" onclick="bootstrapConnect()">Continue</button>
+        </div>
+        <div id="auth-bootstrap-user" class="field-group" style="display:none">
+          <p style="color:var(--text-secondary);font-size:12px;margin:-4px 0 8px 0">This workspace has no active users yet. Create the first administrator.</p>
+          <label class="sr-only" for="auth-bootstrap-username">Administrator username</label>
+          <input type="text" id="auth-bootstrap-username" placeholder="Administrator username" autocomplete="off" maxlength="32" />
+          <button id="auth-bootstrap-create-btn" type="button" onclick="bootstrapCreateAdmin()">Create Administrator</button>
+        </div>
+        <!-- Personal-key sign-in (non-bootstrap) -->
+        <div id="auth-signin-step" class="field-group" style="display:none">
+          <label class="sr-only" for="auth-signin-key">Personal API key</label>
+          <input type="password" id="auth-signin-key" placeholder="Personal API key" autocomplete="current-password" />
+          <button id="auth-signin-btn" type="button" onclick="signInWithKey()">Sign In</button>
+        </div>
+        <!-- Legacy connect + login — shown when bootstrap check cannot reach the server -->
         <form id="auth-connect-step" class="field-group" onsubmit="connect(); return false">
           <input type="text" name="username" value="workspace" autocomplete="username" hidden />
           <label class="sr-only" for="auth-url">Shared Living Memory server URL</label>
@@ -3013,6 +3031,11 @@
           <button class="sb-tab" id="sb-tab-remember" onclick="switchTab('remember')"><i class="ti ti-plus"></i><span>Remember</span></button>
           <button class="sb-tab" id="sb-tab-graph" onclick="switchTab('graph')"><i class="ti ti-affiliate"></i><span>Graph</span></button>
         </nav>
+        <div id="admin-people-panel" class="sb-section" style="display:none">
+          <div class="sb-section-title">People</div>
+          <div id="admin-people-list"></div>
+          <button class="sb-section-btn" onclick="showAdminCreateRow()">+ Invite</button>
+        </div>
         <div class="sb-user" id="sb-user-display">
           <i class="ti ti-user-circle"></i><span id="sb-username-text"></span>
         </div>
@@ -3550,7 +3573,135 @@
         // page reload requires authentication again.
         ;['slm_token', 'slm_key', 'slm_auth_mode'].forEach((key) => localStorage.removeItem(key))
         document.getElementById('auth-url').value = localStorage.getItem('slm_url') || origin
+
+        if (typeof bootstrapCheck === 'function') bootstrapCheck()
       }
+
+      // ── Bootstrap / personal-key sign-in ────────────────────────────────
+
+      async function bootstrapCheck() {
+        const url = document.getElementById('auth-url').value.trim().replace(/\/$/, '')
+        try {
+          const res = await fetch(`${url}/api/bootstrap-status`)
+          if (!res.ok) throw new Error('unreachable')
+          const data = await res.json()
+          if (data.needs_bootstrap) {
+            document.getElementById('auth-signin-step').style.display = 'none'
+            document.getElementById('auth-bootstrap-step').style.display = ''
+            document.getElementById('auth-bootstrap-user').style.display = 'none'
+            document.getElementById('auth-connect-step').style.display = 'none'
+            document.getElementById('auth-user-step').style.display = 'none'
+          } else {
+            document.getElementById('auth-bootstrap-step').style.display = 'none'
+            document.getElementById('auth-bootstrap-user').style.display = 'none'
+            document.getElementById('auth-connect-step').style.display = 'none'
+            document.getElementById('auth-user-step').style.display = 'none'
+            document.getElementById('auth-signin-step').style.display = ''
+          }
+        } catch {
+          // Offline / unreachable — the old connect flow stays visible.
+        }
+      }
+
+      async function bootstrapConnect() {
+        const url = document.getElementById('auth-url').value.trim().replace(/\/$/, '')
+        const workspaceKey = document.getElementById('auth-bootstrap-token').value.trim()
+        const err = document.getElementById('auth-error')
+        const btn = document.getElementById('auth-bootstrap-btn')
+        if (!url || !workspaceKey) { err.textContent = 'URL and workspace key are required.'; return }
+        btn.disabled = true; btn.textContent = 'Checking...'; err.textContent = ''
+        try {
+          const res = await fetch(`${url}/api/bootstrap-status`)
+          if (!res.ok) throw new Error('Could not reach the server.')
+          const data = await res.json()
+          if (!data.needs_bootstrap) { bootstrapCheck(); return }
+          WORKER_URL = url; AUTH_TOKEN = workspaceKey
+          localStorage.setItem('slm_url', url)
+          document.getElementById('auth-bootstrap-step').style.display = 'none'
+          document.getElementById('auth-bootstrap-user').style.display = ''
+          err.textContent = ''
+        } catch (e) {
+          err.textContent = e.message || 'Could not connect.'
+        } finally {
+          btn.disabled = false; btn.textContent = 'Continue'
+        }
+      }
+
+      async function bootstrapCreateAdmin() {
+        const username = document.getElementById('auth-bootstrap-username').value.trim()
+        const err = document.getElementById('auth-error')
+        const btn = document.getElementById('auth-bootstrap-create-btn')
+        if (!username) { err.textContent = 'Enter a username for the first administrator.'; return }
+        btn.disabled = true; btn.textContent = 'Creating...'; err.textContent = ''
+        try {
+          const res = await fetch(`${WORKER_URL}/api/bootstrap`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH_TOKEN}` },
+            body: JSON.stringify({ username }),
+          })
+          const data = await res.json()
+          if (!res.ok) throw new Error(data.error || 'Bootstrap failed.')
+          document.getElementById('auth-bootstrap-user').style.display = 'none'
+          document.getElementById('key-reveal').style.display = ''
+          document.getElementById('key-reveal-value').textContent = data.key
+          CURRENT_USERNAME = data.username; USER_API_KEY = data.key
+          localStorage.setItem('slm_username', data.username)
+          AUTH_TOKEN = ''
+        } catch (e) {
+          err.textContent = e.message || 'Could not create administrator.'
+        } finally {
+          btn.disabled = false; btn.textContent = 'Create Administrator'
+        }
+      }
+
+      async function signInWithKey() {
+        const url = document.getElementById('auth-url').value.trim().replace(/\/$/, '')
+        const key = document.getElementById('auth-signin-key').value.trim()
+        const err = document.getElementById('auth-error')
+        const btn = document.getElementById('auth-signin-btn')
+        if (!url || !key) { err.textContent = 'URL and personal API key are required.'; return }
+        btn.disabled = true; btn.textContent = 'Signing in...'; err.textContent = ''
+        WORKER_URL = url
+        try {
+          const res = await fetch(`${url}/api/me`, {
+            headers: { Authorization: `Bearer ${key}` },
+          })
+          if (res.status === 401) throw new Error('Invalid personal API key.')
+          if (!res.ok) throw new Error(`Server error: ${res.status}`)
+          const data = await res.json()
+          if (!data.ok || !data.user) throw new Error('Could not resolve identity.')
+          CURRENT_USERNAME = data.user.username; USER_API_KEY = key
+          localStorage.setItem('slm_url', url)
+          localStorage.setItem('slm_username', data.user.username)
+          showApp()
+          if (data.user.role === 'admin') showAdminPanel()
+        } catch (e) {
+          err.textContent = e.message || 'Could not sign in.'
+        } finally {
+          btn.disabled = false; btn.textContent = 'Sign In'
+        }
+      }
+
+      function showAdminPanel() {
+        const panel = document.getElementById('admin-people-panel')
+        if (panel) panel.style.display = ''
+        loadAdminUsers()
+      }
+
+      async function loadAdminUsers() {
+        try {
+          const res = await fetch(`${WORKER_URL}/api/users`, { headers: authHeaders() })
+          if (!res.ok) return
+          const data = await res.json()
+          const list = document.getElementById('admin-people-list')
+          if (!list || !data.users) return
+          list.innerHTML = data.users.map((u) =>
+            '<div class="admin-user-row"><span><strong>' + escHtml(u.username) + '</strong> &mdash; ' + u.role + (u.status !== 'active' ? ' (' + u.status + ')' : '') + '</span></div>'
+          ).join('')
+        } catch {}
+      }
+
+      function escHtml(s) { return String(s).replace(/[&<>"']/g, function(c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c }) }
 
       function authHeaders(extra) {
         const headers = Object.assign({}, extra || {})
@@ -4411,7 +4562,7 @@
           const res = await fetch(`${WORKER_URL}/forget`, {
             method: 'POST',
             headers: authHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ id: idToForget }),
+            body: JSON.stringify({ id: idToForget, confirm_entry_id: idToForget }),
           })
           const data = await res.json()
           if (!res.ok) throw new Error(data.error || 'Server error')

@@ -23,8 +23,9 @@ import {
 import { runScheduledIntegrationSync } from "./integrations-mirror";
 import { drainVectorCleanupQueue } from "./vector-cleanup";
 import { resumePendingDeactivations } from "./deactivation";
-import { reconcilePendingOverlapAwareness } from "./awareness-events";
 import { reconcileMandatoryAuditCompletions } from "./mandatory-audit";
+import { flagPendingErasures } from "./erasure";
+import { reconcilePendingOverlapAwareness } from "./awareness-events";
 
 const oauthProvider = new OAuthProvider({
   apiRoute: "/mcp",
@@ -90,6 +91,11 @@ export default {
       initializeDatabase(env)
         .then(() => reconcileMandatoryAuditCompletions(env))
         .catch((error) => console.error("Mandatory-audit reconciliation failed (non-fatal):", error)),
+    );
+    ctx.waitUntil(
+      initializeDatabase(env)
+        .then(() => flagPendingErasures(env))
+        .catch((error) => console.error("Erasure stale-sweep failed (non-fatal):", error)),
     );
   },
 };

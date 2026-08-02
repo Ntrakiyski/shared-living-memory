@@ -149,6 +149,8 @@ describe("user deactivation service", () => {
     await expect(requestUserDeactivation({
       requesterUserId: "member-requester",
       targetUserId: "only-admin",
+      transferToUserId: "only-admin",
+      privateExportAcknowledgement: "waived",
       deactivationId: "unauthorized",
       now: 10,
     }, env)).rejects.toMatchObject({ code: "ADMIN_REQUIRED" });
@@ -156,6 +158,8 @@ describe("user deactivation service", () => {
     await expect(requestUserDeactivation({
       requesterUserId: "only-admin",
       targetUserId: "only-admin",
+      transferToUserId: "only-admin",
+      privateExportAcknowledgement: "waived",
       deactivationId: "last-admin",
       now: 10,
     }, env)).rejects.toMatchObject({ code: "LAST_ACTIVE_ADMIN" });
@@ -263,6 +267,8 @@ describe("user deactivation service", () => {
     const requested = await requestUserDeactivation({
       requesterUserId: "admin",
       targetUserId: "member",
+      transferToUserId: "admin",
+      privateExportAcknowledgement: "waived",
       deactivationId: "deactivation-1",
       now: 10,
     }, env);
@@ -278,63 +284,69 @@ describe("user deactivation service", () => {
     expect((db.sqlite.prepare(`SELECT status FROM service_credentials WHERE id = 'member-credential'`).get() as any).status)
       .toBe("revoked");
 
+    // Step 1 — Vectorize fails. The erasure commits anyway (D1 mutates, vectors
+    // are queued for the repair schedule), the cursor advances, and the
+    // deactivation never blocks on remote vector cleanup.
     deleteByIds.mockRejectedValueOnce(new Error("vector service unavailable"));
-    const blocked = await resumeUserDeactivation({
+    const afterError = await resumeUserDeactivation({
       deactivationId: requested.id,
       actorUserId: "admin",
       batchSize: 1,
       now: 20,
     }, env);
-    expect(blocked).toMatchObject({ phase: "blocked", processedThisRun: 0, remainingEntries: 2 });
-    expect(blocked.deactivation.transferCursor).toBeNull();
-    expect(blocked.deactivation.lastError).toContain("vector service unavailable");
-    expect(count(db, "entries")).toBe(2);
-    expect(count(db, "episodes")).toBe(2);
-    expect(count(db, "proposal_events")).toBe(1);
+    expect(afterError).toMatchObject({ phase: "entries", processedThisRun: 1, remainingEntries: 1 });
+    expect(afterError.deactivation).toMatchObject({ transferCursor: "a-private", processedEntries: 1 });
+    expect(count(db, "entries")).toBe(1);               // b-public remains
+    expect(count(db, "episodes")).toBe(1);               // public-episode remains
+    expect(count(db, "proposal_events")).toBe(0);        // private-event purged
     expect((db.sqlite.prepare(`SELECT status FROM users WHERE id = 'member'`).get() as any).status)
       .toBe("deactivating");
+    // Vectors were NOT deleted (deleteByIds failed); they are queued.
+    expect(vectors.has("entry-vector")).toBe(true);
+    expect(vectors.has("passage-vector")).toBe(true);
+    expect(vectors.has("historical-vector")).toBe(true);
+    expect(vectors.has("public-vector")).toBe(true);
+    // An erasure queue row is persisted so the repair schedule can retry.
+    expect(count(db, "vector_cleanup_queue")).toBeGreaterThanOrEqual(1);
+    expect(count(db, "erasure_receipts")).toBe(1);
+    const receipt = db.sqlite.prepare(
+      `SELECT status, vector_count FROM erasure_receipts WHERE entry_id = 'a-private'`,
+    ).get() as { status: string; vector_count: number };
+    expect(receipt).toBeTruthy();
+    expect(receipt.status).toBe("pending_cleanup");
+    expect(receipt.vector_count).toBe(3);
 
-    const firstBatch = await resumeUserDeactivation({
+    // Step 2 — resume again: the public entry is transferred to the admin,
+    // all remaining owned entries are cleared, and the deactivation finalizes.
+    deleteByIds.mockClear();
+    const secondBatch = await resumeUserDeactivation({
       deactivationId: requested.id,
       actorUserId: "admin",
       batchSize: 1,
       now: 30,
     }, env);
-    expect(firstBatch).toMatchObject({ phase: "entries", processedThisRun: 1, remainingEntries: 1 });
-    expect(firstBatch.deactivation.transferCursor).toBe("a-private");
-    for (const table of [
-      "entry_snapshots",
-      "passages",
-      "document_sections",
-      "edge_proposals",
-      "edges",
-      "action_proposals",
-      "proposal_events",
-      "vector_cleanup_queue",
-    ]) {
-      expect(count(db, table), table).toBe(0);
-    }
-    expect(db.sqlite.prepare(`SELECT id FROM entries WHERE id = 'a-private'`).get()).toBeUndefined();
-    expect(db.sqlite.prepare(`SELECT id FROM episodes WHERE id = 'private-episode'`).get()).toBeUndefined();
-    expect(db.sqlite.prepare(`SELECT id FROM documents WHERE id = 'private-document'`).get()).toBeUndefined();
-    expect(vectors.has("entry-vector")).toBe(false);
-    expect(vectors.has("passage-vector")).toBe(false);
-    expect(vectors.has("historical-vector")).toBe(false);
-    expect(vectors.has("public-vector")).toBe(true);
+    expect(secondBatch).toMatchObject({ phase: "completed", processedThisRun: 1, remainingEntries: 0 });
+    expect(secondBatch.deactivation).toMatchObject({ status: "completed", processedEntries: 2 });
+    // Only the public entry (transferred, not purged) and its children survive.
+    expect(count(db, "entries")).toBe(1);
+    expect(count(db, "episodes")).toBe(1);
+    expect(count(db, "documents")).toBe(1);
+    expect(count(db, "document_sections")).toBe(0);      // private-section was purged in step 1
+    expect(count(db, "entry_snapshots")).toBe(0);         // private-snapshot purged in step 1
+    expect(count(db, "passages")).toBe(0);                // private-passage purged in step 1
+    expect(count(db, "edge_proposals")).toBe(0);          // purged in step 1
+    expect(count(db, "edges")).toBe(0);                   // purged in step 1
+    expect(count(db, "action_proposals")).toBe(0);        // purged in step 1
+    expect(count(db, "proposal_events")).toBe(0);         // purged in step 1
+    // proposal_events triggers are restored after purge.
     expect((db.sqlite.prepare(
       `SELECT COUNT(*) AS count FROM sqlite_master
        WHERE type = 'trigger' AND name IN ('proposal_events_no_update', 'proposal_events_no_delete')`,
     ).get() as { count: number }).count).toBe(2);
-    expect(kv.values.has(integrationSecretKey)).toBe(true);
-
-    const completed = await resumeUserDeactivation({
-      deactivationId: requested.id,
-      actorUserId: "admin",
-      batchSize: 1,
-      now: 40,
-    }, env);
-    expect(completed).toMatchObject({ phase: "completed", processedThisRun: 1, remainingEntries: 0 });
-    expect(completed.deactivation).toMatchObject({ status: "completed", processedEntries: 2 });
+    // Public vector untouched (transfer, not erasure). Queued vectors still
+    // pending (repair schedule will drain them separately).
+    expect(vectors.has("public-vector")).toBe(true);
+    expect(kv.values.has(integrationSecretKey)).toBe(false);
 
     const retained = db.sqlite.prepare(
       `SELECT owner_user_id, created_by_user_id, visibility
@@ -351,8 +363,7 @@ describe("user deactivation service", () => {
       .toBe("admin");
     expect((db.sqlite.prepare(`SELECT status FROM users WHERE id = 'member'`).get() as any).status)
       .toBe("inactive");
-    expect(kv.values.has(integrationSecretKey)).toBe(false);
-    expect(kv.deletes).toEqual([integrationSecretKey]);
+    expect(kv.deletes).toContain(integrationSecretKey);
   });
 
   it("schedules bounded jobs with requester preference and deterministic admin fallback", async () => {
@@ -365,12 +376,16 @@ describe("user deactivation service", () => {
     await requestUserDeactivation({
       requesterUserId: "admin-requester",
       targetUserId: "member-fallback",
+      transferToUserId: "admin-requester",
+      privateExportAcknowledgement: "waived",
       deactivationId: "job-fallback",
       now: 10,
     }, env);
     await requestUserDeactivation({
       requesterUserId: "admin-preferred",
       targetUserId: "member-preferred",
+      transferToUserId: "admin-preferred",
+      privateExportAcknowledgement: "waived",
       deactivationId: "job-preferred",
       now: 11,
     }, env);
@@ -432,6 +447,8 @@ describe("user deactivation service", () => {
     await requestUserDeactivation({
       requesterUserId: "admin",
       targetUserId: "member",
+      transferToUserId: "admin",
+      privateExportAcknowledgement: "waived",
       deactivationId: "job-without-admin",
       now: 10,
     }, env);

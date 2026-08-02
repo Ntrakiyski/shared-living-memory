@@ -15,7 +15,7 @@
  */
 
 import { type CaptureRequest, type CaptureRequestError, type CaptureResponse, type Env } from "./types";
-import { loginHtml, hmacKey, generateApiKey, AUTH_PEPPER, requireAuthAsync, resolveUserByApiKey, isAuthorized, json } from "./auth";
+import { loginHtml, hmacKey, generateApiKey, AUTH_PEPPER, requireAuthAsync, resolveUserByApiKey, isAuthorized, json, rotateUserKey } from "./auth";
 import { CORS_HEADERS, D1_MAX_BOUND_PARAMS, graceMs, LLM_MODEL, COMPRESSION_MIN_AGE_MS, compressionEligibilitySql, VECTORIZE_FIX_HINT } from "./config";
 import { initializeDatabase, checkVectorizeHealth } from "./db";
 import { buildVisibilityClause, buildEntryFilterQuery, getStatus, withStatus, withKind } from "./tags";
@@ -68,14 +68,20 @@ import {
   listActionProposals,
   reviewActionProposal,
 } from "./action-proposals";
-import { OperatorPolicyError } from "./operator-policy";
+import { OperatorPolicyError, decideOperatorAction } from "./operator-policy";
+import { withMandatoryAudit, MandatoryAuditError } from "./mandatory-audit";
+import {
+  eraseEntryArtifacts,
+  getErasureStatus,
+  type EraseEntryResult,
+} from "./erasure";
 import {
   listAwarenessEvents,
   markAwarenessEventRead,
 } from "./awareness-events";
 import { recallEntries, type RecallMatch } from "./recall";
 import { reinforceOwnedEntry } from "./reinforcement";
-import { forgetEntry, deprecateEntry, applyStatus, compressTag } from "./lifecycle";
+import { deprecateEntry, applyStatus, compressTag } from "./lifecycle";
 import { classifyEntry, extractHashtags } from "./classification";
 import { escapeLikePattern } from "./helpers";
 import { INTEGRATION_PROVIDERS, getProvider, loadIntegration, saveIntegration, integrationStatus } from "./integrations";
@@ -394,12 +400,22 @@ export const defaultHandler = {
       return storageUnavailableResponse();
     }
 
-    // POST /api/users — create a new user (requires workspace key)
-    if (url.pathname === "/api/users" && request.method === "POST") {
+    // GET /api/bootstrap-status — unauthenticated boolean used by the
+    // dashboard to decide between the bootstrap wizard and normal sign-in.
+    if (url.pathname === "/api/bootstrap-status" && request.method === "GET") {
+      const row = await env.DB.prepare(
+        `SELECT COUNT(*) AS active_count FROM users WHERE status = 'active'`,
+      ).first<{ active_count: number }>();
+      return json({ needs_bootstrap: Number(row?.active_count ?? 0) === 0 });
+    }
+
+    // POST /api/bootstrap — create the first admin atomically. Requires the
+    // workspace key as Bearer. Succeeds only when no active user exists yet;
+    // racing second requests see zero rows changed and return 409.
+    if (url.pathname === "/api/bootstrap" && request.method === "POST") {
       if (!isAuthorized(request, env)) {
         return json({ ok: false, error: "Unauthorized" }, 401);
       }
-
       let body: { username?: string };
       try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
       if (!body.username?.trim()) return json({ ok: false, error: "username is required" }, 400);
@@ -408,15 +424,90 @@ export const defaultHandler = {
       if (username.length > 32) return json({ ok: false, error: "username must be 32 characters or less" }, 400);
       if (!/^[a-zA-Z0-9_]+$/.test(username)) return json({ ok: false, error: "username must be alphanumeric (underscores allowed)" }, 400);
       const normalized = username.toLowerCase();
-      const { publicId, secret, fullKey } = generateApiKey();
-      const keyHash = await hmacKey(secret, AUTH_PEPPER);
+      const { publicId, fullKey } = generateApiKey();
+      const keyHash = await hmacKey(fullKey.slice(fullKey.indexOf(".") + 1), AUTH_PEPPER);
+
+      const result = await env.DB.prepare(
+        `INSERT INTO users (
+           id, username, normalized_username, auth_key_hash, auth_key_prefix,
+           status, created_at, role
+         )
+         SELECT ?, ?, ?, ?, ?, 'active', ?, 'admin'
+         WHERE (SELECT COUNT(*) FROM users WHERE status = 'active') = 0`,
+      ).bind(
+        publicId, username, normalized, keyHash, fullKey.slice(0, 15), Date.now(),
+      ).run();
+
+      if (!result.meta?.changes) {
+        return json({ ok: false, error: "Bootstrap has already been completed. Sign in with your personal key." }, 409);
+      }
+
+      return json({ ok: true, username, key: fullKey }, 201);
+    }
+
+    // GET /api/me — current user identity, never includes the key hash.
+    if (url.pathname === "/api/me" && request.method === "GET") {
+      const { error: authErr, user_id } = await requireAuthAsync(request, env);
+      if (authErr) return authErr;
+      const user = await env.DB.prepare(
+        `SELECT id, username, role, status, created_at FROM users WHERE id = ?`,
+      ).bind(user_id!).first<{ id: string; username: string; role: string; status: string; created_at: number }>();
+      if (!user) return json({ ok: false, error: "Unauthorized" }, 401);
+      return json({ ok: true, user: { id: user.id, username: user.username, role: user.role as string, status: user.status, created_at: user.created_at } });
+    }
+
+    // POST /api/me/rotate-key — self-service key rotation. Returns the new key
+    // once in plaintext; the old key is immediately invalid.
+    if (url.pathname === "/api/me/rotate-key" && request.method === "POST") {
+      const { error: authErr, user_id } = await requireAuthAsync(request, env);
+      if (authErr) return authErr;
+      const rotated = await rotateUserKey(user_id!, user_id!, env);
+      if (!rotated) return json({ ok: false, error: "User not found or not active" }, 404);
+      return json({ ok: true, username: rotated.username, key: rotated.key });
+    }
+
+    // POST /api/users/:id/rotate-key — administrator key rotation for any user.
+    {
+      const rotateMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/rotate-key$/);
+      if (rotateMatch && request.method === "POST") {
+        const { error: authErr, user_id } = await requireAuthAsync(request, env);
+        if (authErr) return authErr;
+        if (!await isActiveAdmin(user_id, env)) {
+          return json({ ok: false, error: "Administrator role required" }, 403);
+        }
+        const rotated = await rotateUserKey(user_id!, rotateMatch[1], env);
+        if (!rotated) return json({ ok: false, error: "Target user not found or not active" }, 404);
+        return json({ ok: true, username: rotated.username, key: rotated.key });
+      }
+    }
+
+    // POST /api/users — create a new user (admin-gated: requires personal key)
+    if (url.pathname === "/api/users" && request.method === "POST") {
+      const { error: authErr, user_id } = await requireAuthAsync(request, env);
+      if (authErr) return authErr;
+      if (!await isActiveAdmin(user_id, env)) {
+        return json({ ok: false, error: "Administrator role required" }, 403);
+      }
+
+      let body: { username?: string; role?: string };
+      try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
+      if (!body.username?.trim()) return json({ ok: false, error: "username is required" }, 400);
+
+      const username = body.username.trim();
+      if (username.length > 32) return json({ ok: false, error: "username must be 32 characters or less" }, 400);
+      if (!/^[a-zA-Z0-9_]+$/.test(username)) return json({ ok: false, error: "username must be alphanumeric (underscores allowed)" }, 400);
+      const normalized = username.toLowerCase();
+      const role = body.role === "admin" ? "admin" : "member";
+      const { publicId, fullKey } = generateApiKey();
+      const keyHash = await hmacKey(fullKey.slice(fullKey.indexOf(".") + 1), AUTH_PEPPER);
 
       try {
-        await (env.DB as any).prepare(
-          "INSERT INTO users (id, username, normalized_username, auth_key_hash, auth_key_prefix, status, created_at) VALUES (?, ?, ?, ?, ?, 'active', ?)"
-        ).bind(
-          publicId, username, normalized, keyHash, fullKey.slice(0, 15), Date.now()
-        ).run();
+        await env.DB.prepare(
+          `INSERT INTO users (
+             id, username, normalized_username, auth_key_hash, auth_key_prefix,
+             status, created_at, role
+           ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`,
+        ).bind(publicId, username, normalized, keyHash, fullKey.slice(0, 15), Date.now(), role).run();
       } catch (e: any) {
         if (String(e?.message ?? e).includes("UNIQUE constraint")) {
           return json({ ok: false, error: `Username '${username}' already exists` }, 409);
@@ -424,13 +515,15 @@ export const defaultHandler = {
         throw e;
       }
 
-      return json({ ok: true, username, key: fullKey }, 201);
+      return json({ ok: true, username, key: fullKey, role }, 201);
     }
 
-    // GET /api/users — list active users (requires workspace key)
+    // GET /api/users — list active users (admin-gated: requires personal key)
     if (url.pathname === "/api/users" && request.method === "GET") {
-      if (!isAuthorized(request, env)) {
-        return json({ ok: false, error: "Unauthorized" }, 401);
+      const { error: authErr, user_id } = await requireAuthAsync(request, env);
+      if (authErr) return authErr;
+      if (!await isActiveAdmin(user_id, env)) {
+        return json({ ok: false, error: "Administrator role required" }, 403);
       }
 
       const { results } = await (env.DB as any).prepare(
@@ -556,13 +649,18 @@ export const defaultHandler = {
           return json({ ok: false, error: "Administrator role required" }, 403);
         }
 
-        let body: { transfer_to_user_id?: string; batch_size?: number } = {};
+        let body: { transfer_to_user_id?: string; private_export_acknowledgement?: string; batch_size?: number } = {};
         try { body = await request.json(); } catch { /* optional body */ }
+        if (!body.transfer_to_user_id) return json({ ok: false, error: "transfer_to_user_id is required" }, 400);
+        if (body.private_export_acknowledgement !== "completed" && body.private_export_acknowledgement !== "waived") {
+          return json({ ok: false, error: "private_export_acknowledgement must be completed or waived" }, 400);
+        }
         try {
           const deactivation = await requestUserDeactivation({
             requesterUserId: user_id!,
             targetUserId: deactivateMatch[1],
             transferToUserId: body.transfer_to_user_id,
+            privateExportAcknowledgement: body.private_export_acknowledgement as "completed" | "waived",
           }, env);
           const progress = await resumeUserDeactivation({
             deactivationId: deactivation.id,
@@ -1681,19 +1779,27 @@ export const defaultHandler = {
       });
     }
 
-    // POST /forget — delete-by-id, mirrors the MCP `forget` tool
+    // POST /forget — complete permanent erasure, shared with deactivation.
+    // Requires confirm_entry_id to match the target ID and routes through the
+    // mandatory-audit envelope: intent is persisted before any mutation and a
+    // committed erasure is never reported as failed.
     if (url.pathname === "/forget" && request.method === "POST") {
       const { error: authErr, user_id } = await requireAuthAsync(request, env);
       if (authErr) return authErr;
 
-      let body: { id?: string };
+      let body: { id?: string; confirm_entry_id?: string };
       try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
       if (!body.id?.trim()) return json({ ok: false, error: "id is required" }, 400);
-
       const id = body.id.trim();
+      if (!body.confirm_entry_id || body.confirm_entry_id.trim() !== id) {
+        return json({ ok: false, error: "confirm_entry_id must match id to confirm permanent deletion" }, 400);
+      }
 
-      // Ownership check: only allow forgetting entries owned by the requesting user
-      // Pre-migration entries (empty owner_user_id) are treated as system-owned
+      const actor = await activeHumanActor(user_id, env);
+      if (!actor) return json({ ok: false, error: "Unauthorized" }, 401);
+
+      // Ownership check: only allow forgetting entries owned by the requesting
+      // user. Pre-migration entries (empty owner_user_id) are system-owned.
       const entry = await env.DB.prepare(
         `SELECT owner_user_id FROM entries WHERE id = ?`
       ).bind(id).first() as Record<string, any> | null;
@@ -1703,13 +1809,75 @@ export const defaultHandler = {
         return json({ ok: false, error: "Forbidden" }, 403);
       }
 
-      const result = await forgetEntry(id, env);
+      const decision = decideOperatorAction({ actor, operation: "entry.forget", autonomyProfile: "human-reviewed" });
+      let erasure: EraseEntryResult | undefined;
+      let result: EraseEntryResult;
+      try {
+        result = await withMandatoryAudit<EraseEntryResult>(
+          env,
+          {
+            actor,
+            subjectUserId: user_id!,
+            operation: "entry.forget",
+            decision,
+            targetIds: [id],
+            redactedRequest: { entry_id: id, permanent_delete: true },
+          },
+          async () => {
+            const value = await eraseEntryArtifacts(id, actor, env);
+            erasure = value;
+            return value;
+          },
+          (value: EraseEntryResult) => value.status === "not_found" ? null : {
+            erasure_status: value.status,
+            operation_id: value.operationId,
+            vector_count: value.vectorCount,
+          },
+        );
+      } catch (error) {
+        // The mutation committed but audit finalization failed. Never report a
+        // committed non-idempotent mutation as failed; reconciliation finishes it.
+        if (error instanceof MandatoryAuditError && error.stage === "succeeded") {
+          if (erasure && erasure.status !== "not_found") {
+            return json({
+              ok: true,
+              id,
+              erasure_status: erasure.status,
+              operation_id: erasure.operationId,
+              vector_count: erasure.vectorCount,
+              audit_status: "pending",
+              retry: false,
+            }, 202);
+          }
+          return json({ ok: true, id, audit_status: "pending", retry: false }, 202);
+        }
+        console.error("Permanent erasure failed (non-fatal to request):", error);
+        return json({ ok: false, error: "Permanent deletion failed" }, 500);
+      }
 
       if (result.status === "not_found") {
         return json({ ok: false, error: `No entry found with ID: ${id}` }, 404);
       }
+      if (result.status === "pending_cleanup") {
+        return json({ ok: true, id, erasure_status: "pending_cleanup", operation_id: result.operationId, vector_count: result.vectorCount, retry: false }, 202);
+      }
+      return json({ ok: true, id, erasure_status: "complete", operation_id: result.operationId, vector_count: result.vectorCount });
+    }
 
-      return json({ ok: true, id, deletedVectors: result.vectorCount });
+    // GET /erasure-status — metadata-only status lookup for a permanent erasure
+    if (url.pathname === "/erasure-status" && request.method === "GET") {
+      const { error: authErr, user_id } = await requireAuthAsync(request, env);
+      if (authErr) return authErr;
+
+      const operationId = url.searchParams.get("operation_id");
+      if (!operationId?.trim()) return json({ ok: false, error: "operation_id is required" }, 400);
+
+      const view = await getErasureStatus(env, operationId.trim());
+      if (!view) return json({ ok: false, error: "No erasure operation found with that operation_id" }, 404);
+      if (view.ownerUserId !== user_id && !(await isActiveAdmin(user_id, env))) {
+        return json({ ok: false, error: "Forbidden" }, 403);
+      }
+      return json({ ok: true, erasure: view });
     }
 
     // POST /restore — restore an entry from a snapshot, creates a NEW entry

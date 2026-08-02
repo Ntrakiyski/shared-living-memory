@@ -596,6 +596,20 @@ CREATE TABLE IF NOT EXISTS vector_cleanup_queue (
   updated_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS erasure_receipts (
+  operation_id  TEXT PRIMARY KEY,
+  entry_id      TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  actor_user_id TEXT NOT NULL,
+  vector_count  INTEGER NOT NULL DEFAULT 0,
+  status        TEXT NOT NULL CHECK (status IN ('complete', 'pending_cleanup', 'stale')),
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  completed_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_erasure_receipts_status ON erasure_receipts(status);
+CREATE INDEX IF NOT EXISTS idx_erasure_receipts_entry ON erasure_receipts(entry_id);
+
 -- Do not insert schema_migrations rows here. CREATE TABLE IF NOT EXISTS cannot
 -- prove that an existing legacy table has the current columns. src/db.ts records
 -- a version only after its ordered migration batch succeeds.

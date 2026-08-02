@@ -276,6 +276,26 @@ export interface UserDeactivation {
   completedAt: number | null;
 }
 
+/** Content-free boolean status returned by GET /api/bootstrap-status. */
+export interface BootstrapStatus {
+  needsBootstrap: boolean;
+}
+
+/** One-time plaintext response for key creation / rotation. */
+export interface NewKeyResponse {
+  username: string;
+  key: string;
+}
+
+/** GET /api/me response — never exposes the key hash. */
+export interface MeResponse {
+  id: string;
+  username: string;
+  role: UserRole;
+  status: string;
+  createdAt: number;
+}
+
 export const AWARENESS_EVENT_TYPES = ["cross_user_overlap"] as const;
 export type AwarenessEventType = (typeof AWARENESS_EVENT_TYPES)[number];
 

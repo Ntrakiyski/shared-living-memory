@@ -1120,6 +1120,54 @@ const MIGRATIONS: readonly Migration[] = [
       return statements;
     },
   },
+  {
+    version: 12,
+    name: "strip_agent_event_content",
+    statements: async (db) => {
+      // Agent events created before the mandatory-audit envelope (migration 6)
+      // may carry raw content excerpts in input_summary / output_summary. This
+      // migration zeroes those fields and backfills the redacted columns from
+      // the original values so no query path ever reconstructs raw content from
+      // audit data. The redacted columns already exist (migration 6), but some
+      // rows may lack them.
+      const events = await tableColumns(db, "agent_events");
+      const statements: string[] = [];
+      if (events.has("redacted_input_summary")) {
+        statements.push(
+          `UPDATE agent_events
+           SET redacted_input_summary = COALESCE(redacted_input_summary, input_summary),
+               redacted_output_summary = COALESCE(redacted_output_summary, output_summary)
+           WHERE (input_summary IS NOT NULL AND input_summary != '')
+              OR (output_summary IS NOT NULL AND output_summary != '')`,
+        );
+      }
+      statements.push(
+        `UPDATE agent_events
+         SET input_summary = CASE WHEN input_summary IS NULL OR input_summary = '' THEN input_summary ELSE '[redacted-v12]' END,
+             output_summary = CASE WHEN output_summary IS NULL OR output_summary = '' THEN output_summary ELSE '[redacted-v12]' END`,
+      );
+      return statements;
+    },
+  },
+  {
+    version: 13,
+    name: "erasure_receipts",
+    statements: sql(
+      `CREATE TABLE IF NOT EXISTS erasure_receipts (
+         operation_id TEXT PRIMARY KEY,
+         entry_id TEXT NOT NULL,
+         owner_user_id TEXT NOT NULL,
+         actor_user_id TEXT NOT NULL,
+         vector_count INTEGER NOT NULL DEFAULT 0,
+         status TEXT NOT NULL CHECK (status IN ('complete', 'pending_cleanup', 'stale')),
+         created_at INTEGER NOT NULL,
+         updated_at INTEGER NOT NULL,
+         completed_at INTEGER
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_erasure_receipts_status ON erasure_receipts(status)`,
+      `CREATE INDEX IF NOT EXISTS idx_erasure_receipts_entry ON erasure_receipts(entry_id)`,
+    ),
+  },
 ] as const;
 
 async function ensureMigrationTable(db: D1Database): Promise<void> {
@@ -1264,6 +1312,9 @@ async function validateCurrentSchema(db: D1Database): Promise<void> {
       completed_at FROM overlap_awareness_reconciliation LIMIT 0`,
     `SELECT id, vector_ids, reason, attempts, last_error, created_at, updated_at
       FROM vector_cleanup_queue LIMIT 0`,
+    `SELECT operation_id, entry_id, owner_user_id, actor_user_id,
+      vector_count, status, created_at, updated_at, completed_at
+      FROM erasure_receipts LIMIT 0`,
   ];
 
   try {

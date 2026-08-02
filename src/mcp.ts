@@ -50,7 +50,8 @@ import {
 import { recallEntries, renderRecallText } from "./recall";
 import type { RecallMatch } from "./recall";
 import { reinforceOwnedEntry } from "./reinforcement";
-import { forgetEntry, applyStatus } from "./lifecycle";
+import { applyStatus } from "./lifecycle";
+import { eraseEntryArtifacts } from "./erasure";
 import { buildEntryFilterQuery, getStatus, withKind, withStatus, buildVisibilityClause } from "./tags";
 import { createEdge, deleteEdge, getConnections, EDGE_TYPES, isValidEdgeType, edgeLabel } from "./graph";
 import { EPISTEMIC_STATUS_VALUES, isValidTransition, VALID_EPISTEMIC_TRANSITIONS, type EpistemicStatus } from "./types";
@@ -69,7 +70,7 @@ import {
 
 import { decideOperatorAction, requireAllowedDecision } from "./operator-policy";
 import { verifyServiceActor } from "./service-actor";
-import { withMandatoryAudit } from "./mandatory-audit";
+import { withMandatoryAudit, MandatoryAuditError } from "./mandatory-audit";
 import { MCP_ONBOARDING_MARKDOWN, MCP_ONBOARDING_RESOURCE_URI } from "./mcp-onboarding";
 
 // ─── MCP Server ───────────────────────────────────────────────────────────────
@@ -992,28 +993,62 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── forget ───────────────────────────────────────────────────────────────
+  // Permanent deletion is a compliance/erasure operation routed through the
+  // mandatory-audit envelope (intent persisted before mutation). It is NOT the
+  // ordinary correction path — agents must prefer deprecation via set_status.
   server.registerTool(
     "forget",
     {
-      description: "Permanently delete an entry from your shared living memory by ID. Only call when the user explicitly asks to delete something. Confirm the entry ID using recall or list_recent first. This action cannot be undone.",
+      description: "Permanently delete an entry from your shared living memory by ID. This is a compliance/erasure operation, not a correction: prefer `set_status` with `status: deprecated` for ordinary mistakes, and never invoke permanent deletion implicitly. Only call `forget` when the user explicitly asks to delete something forever. Confirm the entry ID with recall or list_recent first, then pass it again as confirm_entry_id. This action cannot be undone.",
       inputSchema: {
         id: z.string().describe("Entry ID from recall or list_recent"),
+        confirm_entry_id: z.string().describe("Must exactly match `id` to confirm permanent deletion"),
       },
     },
-    audited("forget", async ({ id }) => {
+    async ({ id, confirm_entry_id }) => {
+      if (confirm_entry_id !== id) {
+        return { content: [{ type: "text", text: "confirm_entry_id must match id to confirm permanent deletion. This action cannot be undone." }] };
+      }
       if (userId) {
         const row = await env.DB.prepare(`SELECT owner_user_id FROM entries WHERE id = ?`).bind(id).first() as { owner_user_id: string } | null;
         if (row && row.owner_user_id && row.owner_user_id !== userId && row.owner_user_id !== "") {
           return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
         }
       }
-      const result = await forgetEntry(id, env);
-      if (result.status === "not_found") {
-        return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
+      const decision = decideOperatorAction({ actor, operation: "entry.forget", autonomyProfile: "human-reviewed" });
+      try {
+        const result = await withMandatoryAudit(
+          env,
+          {
+            actor,
+            subjectUserId: userId,
+            operation: "entry.forget",
+            decision,
+            targetIds: [id],
+            redactedRequest: { entry_id: id, permanent_delete: true },
+          },
+          () => eraseEntryArtifacts(id, actor, env),
+          (value) => value.status === "not_found" ? null : {
+            erasure_status: value.status,
+            operation_id: value.operationId,
+            vector_count: value.vectorCount,
+          },
+        );
+        if (result.status === "not_found") {
+          return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
+        }
+        if (result.status === "pending_cleanup") {
+          return { content: [{ type: "text", text: `Permanent deletion committed for entry ${id}; ${result.vectorCount} vector(s) queued for remote cleanup (operation ${result.operationId}). Do not retry — the repair schedule finishes it.` }] };
+        }
+        return { content: [{ type: "text", text: `Permanently deleted entry ${id} and ${result.vectorCount} vector(s)` }] };
+      } catch (error) {
+        // A committed non-idempotent mutation must never be reported as failed.
+        if (error instanceof MandatoryAuditError && error.stage === "succeeded") {
+          return { content: [{ type: "text", text: `Permanent deletion committed for entry ${id} but audit finalization is pending reconciliation. Do not retry.` }] };
+        }
+        throw error;
       }
-      return { content: [{ type: "text", text: `Deleted entry ${id} and ${result.vectorCount} vector(s)` }] };
-    })
-  );
+    });
 
   // ── link ─────────────────────────────────────────────────────────────────
   server.registerTool(
