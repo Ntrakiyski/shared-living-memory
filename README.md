@@ -1,97 +1,56 @@
-<!-- PROJECT HERO -->
-<div align="center">
-  <img src="assets/readme-hero.svg" alt="Shared Living Memory — a governed team knowledgebase running on Cloudflare Workers" width="100%"/>
-</div>
+<p align="center">
+  <img src="./assets/readme/hero.svg" width="100%" alt="Shared Living Memory — one governed memory layer for a team and its AI agents">
+</p>
 
----
+<p align="center">
+  <a href="https://shared-living-memory.nikolay-trakiyski.workers.dev"><strong>Open the live deployment</strong></a>
+  ·
+  <a href="#quick-start">Quick start</a>
+  ·
+  <a href="#connect-an-ai-agent">Connect an agent</a>
+  ·
+  <a href="docs/team-pilot/operator-runbook.md">Operator runbook</a>
+</p>
 
-## What is Shared Living Memory?
+Shared Living Memory gives a small team and its AI agents **one durable place to preserve decisions, research, sources, preferences, and project context**. Knowledge can move between ChatGPT, Claude, Codex, Cursor, Hermes, or another MCP client without losing who created it, who may see it, where it came from, or how it changed.
 
-**A governed, multi-user knowledgebase that runs entirely on Cloudflare's edge.** Every entry has an owner, a visibility scope, versioned episodes, immutable snapshots, bitemporal lookup, and citation-backed recall. D1 is the single durable authority; Vectorize is a rebuildable retrieval index.
+It is not another notes app. It is a **governed knowledge layer** for people and agents that need to share context without turning it into an anonymous vector-search dump.
 
-It is designed for teams of 3&ndash;5 people who want shared knowledge, not a search engine. The real product is **translation between different mental maps** &mdash; explaining one person's knowledge in another person's context.
+## The value
 
-### What it is not
+| Without a shared memory layer | With Shared Living Memory |
+| --- | --- |
+| Re-explain the same context in each chat, document, and handoff | Capture once, then recall from the dashboard, REST API, or any MCP client |
+| Search returns text without enough trust to act on it | Recall returns the author, visibility, source, matched passage, and citation context |
+| Shared knowledge and private notes become mixed together | Human memories are private by default; team sharing is deliberate and visible |
+| Corrections silently overwrite what used to be known | Append, update, history, snapshots, temporal recall, and restore preserve change over time |
+| Agents accumulate broad access and mutate knowledge directly | Personal and service identities operate through scopes, proposals, revision checks, and audit boundaries |
 
-- Not a note-taking app
-- Not a general-purpose vector database
-- Not an autonomous agent platform
-- Not a replacement for Notion, Obsidian, or Google Docs
+## How it works
 
----
+<p align="center">
+  <img src="./assets/readme/how-it-works.svg" width="100%" alt="Three stages: capture knowledge, govern and retrieve it with identity and provenance, then recall it with evidence">
+</p>
 
-## Architecture
+1. **Capture** — people and agents save useful knowledge through the dashboard, REST, or MCP.
+2. **Govern** — each entry keeps an owner, private/public scope, provenance, epistemic status, revision, episodes, and snapshots.
+3. **Retrieve** — recall combines semantic, keyword, tag, graph, and temporal paths while excluding deprecated, superseded, or retracted knowledge from current answers.
+4. **Use with evidence** — results identify the author and scope and cite the passage that actually matched, so another person or agent can judge the answer rather than merely trust it.
 
-<div align="center">
-  <table>
-    <tr>
-      <td align="center"><b>API</b></td>
-      <td align="center"><b>Auth</b></td>
-      <td align="center"><b>Storage</b></td>
-      <td align="center"><b>Retrieval</b></td>
-      <td align="center"><b>AI</b></td>
-    </tr>
-    <tr>
-      <td align="center">REST + MCP</td>
-      <td align="center">HMAC-SHA-256<br/>personal API keys</td>
-      <td align="center">D1 (SQLite at edge)<br/>single durable authority</td>
-      <td align="center">Vectorize<br/>384-dim cosine<br/>rebuildable from D1</td>
-      <td align="center">Workers AI<br/>embeddings + LLM</td>
-    </tr>
-  </table>
-</div>
+## What it enables
 
-**Key invariant:** D1 is authoritative. Vectorize can be completely rebuilt from the current D1 state. Logs, audits, and metrics store identifiers, counts, timings, and hashes &mdash; never memory bodies, query text, credentials, or model prompts.
+| Capability | Why it matters |
+| --- | --- |
+| **Shared team memory** | Public entries become reusable team knowledge while each person keeps a private workspace. |
+| **Context across AI tools** | The same governed knowledge is available through MCP instead of being trapped in one chat history. |
+| **Translation between mental maps** | A discovery captured by one person or domain agent can be explained in the context of another person, project, or specialty. |
+| **Trustworthy correction** | Append, update, status changes, history, and restore let knowledge evolve without rewriting the past. |
+| **Explicit relationships** | Link supporting, contradicting, derived, limiting, or generally related knowledge into a navigable graph. |
+| **Operable erasure and offboarding** | Confirmed permanent deletion, metadata-only receipts, private-data export, and user deactivation provide clear lifecycle boundaries. |
 
----
+## Connect an AI agent
 
-## Proven
-
-| | |
-|---|---|
-| **Test suite** | 1,124 tests across 106 files |
-| **Type safety** | Full TypeScript, `tsc --noEmit` clean |
-| **Coverage** | 79% statements &middot; 70% branches &middot; 86% functions |
-| **CI** | GitHub Actions: typecheck + full suite + dependabot |
-| **Deployment** | [shared-living-memory.nikolay-trakiyski.workers.dev](https://shared-living-memory.nikolay-trakiyski.workers.dev) |
-| **Canary** | 5-minute pilot canary with automated incident issues |
-
----
-
-## Quick start
-
-```bash
-git clone https://github.com/Ntrakiyski/shared-living-memory.git
-cd shared-living-memory
-npm install              # uses legacy-peer-deps (.npmrc)
-cp .dev.vars.example .dev.vars
-npm run dev              # wrangler dev --local
-```
-
-```bash
-npm test                 # all 1,124 tests (vitest)
-npm run typecheck        # wrangler types + tsc --noEmit
-```
-
-### First admin bootstrap
-
-```bash
-# Check if workspace needs bootstrap
-curl http://localhost:8787/api/bootstrap-status
-
-# Create the first administrator (requires workspace key)
-curl -X POST http://localhost:8787/api/bootstrap \
-  -H "Authorization: Bearer YOUR-WORKSPACE-KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin"}'
-# {"ok":true,"username":"admin","key":"slm_xxxxx.yyyyyyyy"}
-```
-
----
-
-## MCP integration
-
-Shared Living Memory is an MCP server. Connect any MCP-capable client with a personal API key:
+Shared Living Memory exposes an MCP server. Use a **personal API key** as the bearer token:
 
 ```json
 {
@@ -106,74 +65,81 @@ Shared Living Memory is an MCP server. Connect any MCP-capable client with a per
 }
 ```
 
-**Agent skills**: `.agents/skills/shared-living-memory-mcp-knowledgebase/SKILL.md` contains the authoritative AI agent instructions for using Shared Living Memory through MCP.
+The checked-in agent skill at [`.agents/skills/shared-living-memory-mcp-knowledgebase/SKILL.md`](.agents/skills/shared-living-memory-mcp-knowledgebase/SKILL.md) defines the intended capture, recall, privacy, history, linking, and translation behavior.
 
-### MCP tools
+<details>
+<summary><strong>Available MCP tools</strong></summary>
 
-| Tool | Description |
-|---|---|
-| `remember` | Capture a durable memory |
-| `recall` | Semantic + temporal search with citations |
-| `append` | Add new information without replacing |
-| `update` | Replace the current entry projection |
-| `set_status` | Mark deprecated, outdated, or canonical |
+| Tool | Purpose |
+| --- | --- |
+| `remember` | Capture durable knowledge |
+| `recall` | Semantic and temporal retrieval with citations |
+| `append` | Add information without replacing the current entry |
+| `update` | Create a new current projection |
+| `set_status` | Mark knowledge canonical, outdated, deprecated, or otherwise governed |
 | `link` / `unlink` | Manage explicit graph relationships |
-| `connections` | Inspect one-hop neighbor entries |
-| `history` / `restore` | Inspect versions and restore from snapshots |
-| `forget` | Permanent compliance erasure (requires confirmation) |
-| `rate_recall` | Feedback for pilot metrics (analytics only) |
+| `connections` | Inspect one-hop related entries |
+| `history` / `restore` | Inspect versions and restore from an immutable snapshot |
+| `forget` | Permanently erase an entry with explicit confirmation |
+| `rate_recall` | Record privacy-safe helpful/not-helpful pilot feedback |
 
----
+</details>
 
-## Pilot readiness (August 2026)
+## Quick start
 
-The `codex/slm-team-pilot-readiness` branch delivers a 10-task implementation plan for a limited 3&ndash;5 person team pilot:
+### Run locally
 
-| # | Task | Status |
-|---|---|---|
-| 1 | Safe capture and export | Done |
-| 2 | Restore production semantic retrieval | Done |
-| 3 | Make recall, citations, and answers trustworthy | Done |
-| 4 | Complete permanent erasure and remove content from audit | Done |
-| 5 | Reliable identity, administration, and human key lifecycle | Done |
-| 6 | Make the documented MCP journey real | Done |
-| 7 | Make correction, attribution, and visibility understandable | Done |
-| 8 | Add privacy-safe recall receipts, feedback, and evaluation | Done |
-| 9 | Stage, observe, secure, and recover the service | Done |
-| 10 | Rehearse and document the pilot launch | Done |
+```bash
+git clone https://github.com/Ntrakiyski/shared-living-memory.git
+cd shared-living-memory
+npm install
+cp .dev.vars.example .dev.vars
+npm run dev
+```
 
-Full plan: [docs/superpowers/plans/2026-08-01-team-pilot-readiness.md](docs/superpowers/plans/2026-08-01-team-pilot-readiness.md)
+`.dev.vars` needs one workspace bootstrap secret:
 
----
+```dotenv
+AUTH_TOKEN=replace-with-a-secure-workspace-key
+```
 
-## Key design decisions
+Then open `http://localhost:8787`, create the first administrator, and copy the generated personal API key when it is shown.
 
-**Privacy by default.** New human memories are private. Publishing to the team is always deliberate and visible.
+### Verify the project
 
-**D1 is authoritative.** Vectorize is a rebuildable index. A Vectorize outage never leaves searchable content after the D1 projection is gone.
+```bash
+npm test
+npm run typecheck
+```
 
-**Content-free audits.** Mandatory audit events store operation IDs, result counts, timings, and SHA-256 hashes &mdash; never raw content, query text, credentials, or model prompts.
+The current pilot-readiness implementation is backed by **1,124 tests across 106 files**, a clean TypeScript typecheck, health/readiness endpoints, and a scheduled production canary.
 
-**Personal API keys only.** The workspace key is a transport gate. Every user authenticates with their own HMAC-SHA-256 hashed API key. No passwords.
+## Technical foundation
 
-**Optimistic revision checks.** Two concurrent edits cannot silently overwrite each other. Every mutation carries a revision token.
+| Boundary | Implementation |
+| --- | --- |
+| Application | Cloudflare Worker with dashboard, REST API, MCP endpoint, and scheduled lifecycle jobs |
+| Durable authority | Cloudflare D1 — current projections, immutable episodes, snapshots, relationships, identities, and governance state |
+| Retrieval index | Cloudflare Vectorize — 384-dimensional cosine index that can be rebuilt from D1 |
+| AI | Workers AI for embeddings and grounded answer generation |
+| Identity | Personal HMAC-SHA-256 API keys plus scoped service identities |
+| Privacy | Private-by-default human capture, owner-aware reads, scoped vector metadata, and content-free operational logs |
 
-**Versioned, immutable history.** Append creates a new episode. Update creates a new version. Restore creates a new entry from a snapshot. History is never rewritten.
+**Core invariant:** D1 is authoritative. Vectorize accelerates retrieval, but it is disposable and rebuildable. Audits and metrics store identifiers, hashes, counts, and timings—not memory bodies, raw queries, credentials, or model prompts.
 
----
+## Pilot scope
 
-## Documentation
+The repository is prepared for a bounded **3–5 person internal team pilot**. The completed readiness plan covers safe capture/export, semantic retrieval, trustworthy citations, permanent erasure, human identity and key lifecycle, MCP onboarding, visibility and correction UX, privacy-safe recall feedback, observability, recovery, and launch rehearsal.
 
-| Document | Audience |
-|---|---|
-| [Participant Guide](docs/team-pilot/participant-guide.md) | Pilot users |
-| [Operator Runbook](docs/team-pilot/operator-runbook.md) | Administrators |
-| [Evaluation Scorecard](docs/team-pilot/evaluation-scorecard.md) | Decision makers |
-| [Architecture Plan](docs/superpowers/plans/2026-08-01-team-pilot-readiness.md) | Contributors |
-| [Agent Skill](.agents/skills/shared-living-memory-mcp-knowledgebase/SKILL.md) | AI agents |
+- [Pilot implementation plan](docs/superpowers/plans/2026-08-01-team-pilot-readiness.md)
+- [Participant guide](docs/team-pilot/participant-guide.md)
+- [Operator runbook](docs/team-pilot/operator-runbook.md)
+- [Evaluation scorecard](docs/team-pilot/evaluation-scorecard.md)
 
----
+## Project boundaries
+
+Shared Living Memory is intentionally **not** a general note-taking product, a general-purpose vector database, or an autonomous agent runtime. External agents such as Hermes use it through governed MCP/REST access; they do not bypass its identity, visibility, history, or audit rules.
 
 ## License
 
-MIT
+[MIT](LICENSE)
