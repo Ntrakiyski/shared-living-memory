@@ -25,7 +25,7 @@ import {
   GRAPH_MAX_NODES,
 } from "./config";
 import { embed } from "./helpers";
-import { getKind, getStatus } from "./tags";
+import { getKind, getStatus, isRecallEligible } from "./tags";
 import { queryVisibleVectors, vectorMatchParentId } from "./vector-access";
 import { sanitizeSourceMetadataForOutput } from "./source-metadata";
 
@@ -385,17 +385,19 @@ export interface GraphNeighbor {
   viaConfidence: number;
 }
 
-// Returns the subset of `ids` whose entry is tagged status:deprecated.
+// Returns the subset of `ids` whose entry is no longer recall-eligible
+// (status:deprecated tag, or epistemic superseded/retracted).
 async function deprecatedIdsAmong(ids: string[], env: Env): Promise<Set<string>> {
   const deprecated = new Set<string>();
   for (let i = 0; i < ids.length; i += D1_MAX_BOUND_PARAMS) {
     const batch = ids.slice(i, i + D1_MAX_BOUND_PARAMS);
     const ph = batch.map(() => "?").join(", ");
     const { results } = await env.DB.prepare(
-      `SELECT id, tags FROM entries WHERE id IN (${ph})`
+      `SELECT id, tags, epistemic_status FROM entries WHERE id IN (${ph})`
     ).bind(...batch).all() as { results: Record<string, any>[] };
     for (const r of results) {
-      if (getStatus(JSON.parse(r.tags ?? "[]")) === "deprecated") deprecated.add(r.id as string);
+      const tags = JSON.parse(r.tags ?? "[]");
+      if (!isRecallEligible(tags, r.epistemic_status)) deprecated.add(r.id as string);
     }
   }
   return deprecated;

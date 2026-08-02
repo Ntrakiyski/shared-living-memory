@@ -26,6 +26,7 @@
 |---|---|
 | **1. Safe capture and export** (done, reviewed) | Capture is **private by default** in REST, MCP, and the dashboard; duplicate 409s keep your input and say "not stored"; failed writes never show "Kept"; payload/size/tag/URL limits; a narrow credential detector blocks keys/tokens; `source_url`/`source_title` supported; export is now explicit `my_data` vs `team_public` (no private revisions leak into team export); legacy source metadata is sanitized. |
 | **2. Restore semantic retrieval** (done, one fix pending review) | Canonical entry + passage vector IDs rebuilt through one staging path; reindex deletes only stale vectors; legacy/null lineage fails closed; new production-like race/erasure regressions. **Last open item:** a passage-only atomicity bug is fixed locally and needs the final review sign-off. |
+| **3. Trustworthy recall and answers** (done) | Recall excludes `superseded`/`retracted` entries (and `status:deprecated`) everywhere — dense, keyword, tag, and graph-expansion paths share one eligibility filter. Passage-vector hits carry their `passageId` through to citations: the exact passage the vector matched is cited first (not just the newest chunk), and `/recall` exposes `matched_passage_id`. `/chat` is now server-grounded: client-supplied `memories` is rejected, evidence comes from server-side recall only, and a no-match query answers without calling the LLM. Every recall card (MCP + REST) labels its author and scope (`[yours · private]` / `[by user · public]`). |
 
 ---
 
@@ -49,7 +50,7 @@ Legend: each stage = one mergeable slice. **Gate rule:** a stage with a `▶` ga
 - ▶ **Gate:** reviewer sign-off on the atomicity fix (passage-only race regression) before the branch merges.
 
 ### Stage 3 — Trustworthy recall and answers
-**Status:** `[ ]` not started
+**Status:** `[x]` done on branch · not merged to main
 
 - **User stories:**
   - "As a teammate, I can trust that outdated/retracted memories are never presented as current fact."

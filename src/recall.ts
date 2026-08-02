@@ -49,7 +49,7 @@ import {
   CHUNK_OVERLAP_CHARS,
   STALENESS_RECALL_PENALTY,
 } from "./config";
-import { buildVisibilityClause } from "./tags";
+import { buildVisibilityClause, isRecallEligible } from "./tags";
 import { expandGraph } from "./graph";
 import { inferQueryTags, extractHashtags } from "./classification";
 import { synthesizeInsight } from "./lifecycle";
@@ -207,7 +207,12 @@ export interface RecallMatch {
   relations?: { type: string; confidence: number; targetId: string; targetContent?: string }[];
   epistemicStatus?: string;
   ownerUserId?: string;
+  ownerUsername?: string;
   visibility?: "private" | "public";
+  // The passage id of the vector that produced this match (passage-vector hits).
+  // Kept so citations can point at the exact passage that matched, not the first
+  // passage by recency order.
+  passageId?: string | null;
 }
 
 export interface RecallSearchResult {
@@ -243,7 +248,15 @@ export function renderRecallText(
     const score = (m.score * 100).toFixed(0);
     const updateLabel = m.isUpdate ? " [updated]" : "";
     const hopLabel = m.hop > 0 ? ` [related · ${m.hop} hop${m.hop > 1 ? "s" : ""}]` : "";
-    const crossUserLabel = m.crossUserMention ? ` · also by ${m.crossUserMention.ownerUsername}` : "";
+    const isOwned = !!viewerUserId && m.ownerUserId === viewerUserId;
+    const authorLabel = isOwned
+      ? "yours"
+      : m.ownerUsername
+        ? `by ${m.ownerUsername}`
+        : "";
+    const scopeLabel = m.visibility === "private" ? "private" : m.visibility === "public" ? "public" : "";
+    const attribution = [authorLabel, scopeLabel].filter(Boolean).join(" · ");
+    const attributionLabel = attribution ? ` [${attribution}]` : "";
     const epistemicLabel = m.epistemicStatus && m.epistemicStatus !== "canonical" ? ` [${m.epistemicStatus}]` : "";
     const passageLabel = m.passages?.length
       ? `\nEVIDENCE:\n${m.passages.map(p => {
@@ -256,6 +269,7 @@ export function renderRecallText(
             SOURCE_LABEL_MAX_CODE_POINTS,
           );
           const citation = {
+            ...(p.id ? { passageId: p.id } : {}),
             ...(safeMetadata.sourceTitle ? { title: safeMetadata.sourceTitle } : {}),
             ...(safeMetadata.sourceUrl ? { url: safeMetadata.sourceUrl } : {}),
             ...(p.page != null ? { page: p.page } : {}),
@@ -272,7 +286,7 @@ export function renderRecallText(
         }).join("\n")}`
       : "";
     const relationLabel = m.relations?.length ? `\nLINKS: ${m.relations.slice(0, 3).map(r => `${r.type}(${(r.confidence * 100).toFixed(0)}%)→${r.targetId.slice(0, 8)}`).join(", ")}` : "";
-    return `${i + 1}. [${date}${src}${tagList}] (${score}% match)${updateLabel}${hopLabel}${crossUserLabel}${epistemicLabel}\nID: ${m.id}\n${m.content}${passageLabel}${relationLabel}`;
+    return `${i + 1}. [${date}${src}${tagList}]${attributionLabel} (${score}% match)${updateLabel}${hopLabel}${epistemicLabel}\nID: ${m.id}\n${m.content}${passageLabel}${relationLabel}`;
   }).join("\n\n");
   return insight ? `**Insight:** ${insight}\n\n---\n\n${text}` : text;
 }
@@ -608,11 +622,11 @@ function fuseDenseAndKeyword(
 }
 
 export async function recallEntries(
-  params: { query: string; topK: number; tag?: string; after?: number; before?: number; kind?: MemoryKind; hops?: number; userId?: string; asOf?: number; knownAt?: number },
+  params: { query: string; topK: number; tag?: string; after?: number; before?: number; kind?: MemoryKind; hops?: number; userId?: string; asOf?: number; knownAt?: number; skipInsight?: boolean },
   env: Env,
   ctx: ExecutionContext
 ): Promise<RecallSearchResult> {
-  const { query, topK } = params;
+  const { query, topK, skipInsight } = params;
   let { tag, after, before, kind } = params;
   const asOf = params.asOf;
   const knownAt = params.knownAt;
@@ -807,7 +821,7 @@ export async function recallEntries(
     const state = stateByEntry.get(id);
     if (!state) return [];
     const tags = parseStringArray(state.tags);
-    if (!tags || tags.includes("auto-pattern") || tags.includes("status:deprecated")) return [];
+    if (!tags || tags.includes("auto-pattern") || !isRecallEligible(tags, state.epistemic_status)) return [];
     if (tag && !tags.includes(tag)) return [];
     if (kind && (KIND_VALUES as readonly string[]).includes(kind) && !tags.includes(`kind:${kind}`)) return [];
     if (after !== undefined && state.created_at < after) return [];
@@ -842,6 +856,7 @@ export async function recallEntries(
       epistemicStatus: row.epistemic_status,
       ownerUserId: row.owner_user_id,
       visibility: row.visibility,
+      passageId: typeof meta?.passageId === "string" ? meta.passageId : null,
     }];
   });
 
@@ -1001,7 +1016,8 @@ export async function recallEntries(
                AND ds.document_id = passages.document_id
            )
          )
-       ORDER BY created_at DESC, start_offset ASC, id ASC
+       ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END,
+                created_at DESC, start_offset ASC, id ASC
        LIMIT 5`
     ).bind(
       state.owner_user_id,
@@ -1010,6 +1026,7 @@ export async function recallEntries(
       selectedEpisodeId,
       selectedEpisodeId,
       state.owner_user_id,
+      match.passageId ?? null,
     ).all() as { results: Record<string, any>[] };
 
     const selectedPassages = passageRows
@@ -1070,34 +1087,38 @@ export async function recallEntries(
     }];
   }));
 
-  // ── Cross-user mentions: flag high-similarity public entries from other users ──
-  if (userId) {
-    // Use D1 ownership, never mutable Vectorize metadata, for cross-user attribution.
-    const crossUserOwnerIds = new Set<string>();
-    for (const m of matches) {
-      const ownerId = (d1Map.get(m.id) as any)?.owner_user_id;
-      if (ownerId && ownerId !== userId) crossUserOwnerIds.add(ownerId);
-    }
-    if (crossUserOwnerIds.size) {
-      const ownerIds = [...crossUserOwnerIds];
+  // ── Attribution: resolve author usernames so every card can name its author ──
+  // Use D1 ownership, never mutable Vectorize metadata, for cross-user attribution.
+  const ownerIdToUsername = new Map<string, string>();
+  if (matches.length) {
+    const ownerIds = [...new Set(matches.map(m => m.ownerUserId).filter((id): id is string => !!id))];
+    if (ownerIds.length) {
       const placeholders = ownerIds.map(() => "?").join(", ");
       const { results: ownerRows } = await env.DB.prepare(
         `SELECT id, username FROM users WHERE id IN (${placeholders})`
       ).bind(...ownerIds).all() as { results: { id: string; username: string }[] };
-      const usernameMap = new Map(ownerRows.map(r => [r.id, r.username]));
+      for (const row of ownerRows) ownerIdToUsername.set(row.id, row.username);
+    }
+  }
+  for (const m of matches) {
+    if (m.ownerUserId) {
+      const username = ownerIdToUsername.get(m.ownerUserId);
+      if (username) m.ownerUsername = username;
+    }
+  }
 
-      // Attach crossUserMention to matches owned by other users with high similarity
-      const seenOwnerMatches = new Set<string>();
-      for (const m of matches) {
-        const ownerId = (d1Map.get(m.id) as any)?.owner_user_id;
-        if (!ownerId || ownerId === userId) continue;
-        const username = usernameMap.get(ownerId);
-        if (!username) continue;
-        // Only mention once per owner
-        if (seenOwnerMatches.has(ownerId)) continue;
-        seenOwnerMatches.add(ownerId);
-        m.crossUserMention = { entryId: m.id, ownerUsername: username, similarity: m.score };
-      }
+  // ── Cross-user mentions: flag high-similarity public entries from other users ──
+  if (userId) {
+    // Only mention once per owner, and only for entries from other users.
+    const seenOwnerMatches = new Set<string>();
+    for (const m of matches) {
+      const ownerId = m.ownerUserId;
+      if (!ownerId || ownerId === userId) continue;
+      const username = ownerIdToUsername.get(ownerId);
+      if (!username) continue;
+      if (seenOwnerMatches.has(ownerId)) continue;
+      seenOwnerMatches.add(ownerId);
+      m.crossUserMention = { entryId: m.id, ownerUsername: username, similarity: m.score };
     }
   }
 
@@ -1106,8 +1127,9 @@ export async function recallEntries(
   const proposed_edges: { source_id: string; target_id: string; type: string; reason: string }[] = [];
 
   // Synthesize over exactly what's shown (seeds + any surfaced neighbors) so the
-  // insight stays grounded in the returned results.
-  const insight = matches.length > 1
+  // insight stays grounded in the returned results. Chat answers call the LLM
+  // themselves, so callers that only need retrieval can skip this extra call.
+  const insight = matches.length > 1 && !skipInsight
     ? await synthesizeInsight(embedQuery, matches.map(m => ({ id: m.id, content: m.content })), env)
     : "";
 

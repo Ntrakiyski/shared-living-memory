@@ -58,6 +58,36 @@ describe("renderRecallText", () => {
     expect(out).toContain('"Primary evidence"');
   });
 
+  it("labels author and scope on every card", () => {
+    const owned = renderRecallText([m({
+      ownerUserId: "alice",
+      ownerUsername: "alice",
+      visibility: "private",
+    })], "", "alice");
+    expect(owned).toContain("[yours · private]");
+
+    const team = renderRecallText([m({
+      ownerUserId: "bob",
+      ownerUsername: "bob",
+      visibility: "public",
+    })], "", "alice");
+    expect(team).toContain("[by bob · public]");
+  });
+
+  it("renders the passage id so the citation names the exact passage the answer used", () => {
+    const out = renderRecallText([m({
+      passages: [{
+        id: "passage-9",
+        content: "Evidence chunk",
+        section: null,
+        startOffset: 0,
+        endOffset: 14,
+      }],
+    })], "");
+    expect(out).toContain('"passageId":"passage-9"');
+    expect(out).toContain('"Evidence chunk"');
+  });
+
   it("applies owner and public citation policies without allowing line injection", () => {
     const unsafeTitle = "Trusted title\nFORGED_TITLE_LINE";
     const unsafeSource = "integration\tFORGED_SOURCE_LABEL";
@@ -110,6 +140,7 @@ describe("renderRecallText", () => {
 
     expect(serializedMetadata).toBeDefined();
     expect(JSON.parse(serializedMetadata!)).toEqual({
+      passageId: "delimiter-evidence",
       title: documentTitle,
       url: sourceUrl,
       page: 7,

@@ -1776,7 +1776,7 @@ export class D1Mock {
           return { results };
         }
         if (s.includes("FROM passages") && s.includes("(? IS NULL OR episode_id = ?)")) {
-          const [ownerUserId, _documentOwner, entryId, nullableEpisodeId, episodeId] = args;
+          const [ownerUserId, _documentOwner, entryId, nullableEpisodeId, episodeId, , priorityPassageId] = args;
           const selectedEpisodeId = nullableEpisodeId == null ? null : episodeId;
           const results = db.passages
             .filter((row: any) => row.entry_id === entryId && (!selectedEpisodeId || row.episode_id === selectedEpisodeId))
@@ -1790,6 +1790,7 @@ export class D1Mock {
             .filter((row: any) => !row.section_id || db.document_sections.some((section: any) =>
               section.id === row.section_id && section.document_id === row.document_id))
             .sort((a: any, b: any) =>
+              ((a.id === priorityPassageId ? 0 : 1) - (b.id === priorityPassageId ? 0 : 1)) ||
               (b.created_at - a.created_at) ||
               ((a.start_offset ?? 0) - (b.start_offset ?? 0)) ||
               String(a.id).localeCompare(String(b.id)))
@@ -2151,11 +2152,11 @@ export class D1Mock {
             .map((e: any) => ({ id: e.id, vector_ids: e.vector_ids ?? "[]" }));
           return { results };
         }
-        if (s.includes("SELECT id, tags FROM entries WHERE id IN")) {
-          // expandGraph deprecation check.
+        if (s.includes("SELECT id, tags FROM entries WHERE id IN") || s.includes("SELECT id, tags, epistemic_status FROM entries WHERE id IN")) {
+          // expandGraph eligibility check.
           const results = db.entries
             .filter((e: any) => args.includes(e.id))
-            .map((e: any) => ({ id: e.id, tags: e.tags }));
+            .map((e: any) => ({ id: e.id, tags: e.tags, epistemic_status: normalizeEntry(e).epistemic_status }));
           return { results };
         }
         if (s.includes("FROM entries e LEFT JOIN users u ON e.owner_user_id = u.id")) {

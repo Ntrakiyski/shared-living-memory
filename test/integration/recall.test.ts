@@ -4,7 +4,7 @@ import { makeTestEnv, makeTestDb, makeVectorizeMock } from "../helpers/make-env"
 import { req } from "../helpers/make-request";
 import type { Env } from "../../src/testing";
 import { D1Mock } from "../helpers/d1-mock";
-import { TEST_USER_ID } from "../helpers/test-principal";
+import { TEST_USER_AUTH_HASH, TEST_USER_ID } from "../helpers/test-principal";
 
 // Returns an AI mock that always resolves a contradiction verdict (for captureEntry).
 function makeContradictionAI(response: string): Ai {
@@ -609,6 +609,215 @@ describe("GET /recall", () => {
     const res = await worker.fetch(req("GET", "/recall?query=release+v1.9&tag=rel"), env, ctx);
     const data = await res.json() as any;
     expect(data.results[0].id).toBe("v19");
+  });
+});
+
+describe("GET /recall — recall eligibility excludes superseded/retracted", () => {
+  let env: Env;
+  let db: D1Mock;
+
+  beforeEach(() => {
+    db = makeTestDb();
+    env = makeTestEnv(db);
+  });
+
+  it("excludes an entry with epistemic_status superseded from dense recall", async () => {
+    db.entries.push(
+      versioned({ id: "live", content: "Active deployment notes", tags: "[]", source: "api", created_at: 1000, vector_ids: '["live-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+      versioned({ id: "stale-fact", content: "Outdated deployment notes", tags: "[]", source: "api", created_at: 1000, vector_ids: '["stale-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "superseded" }),
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [makeMatch("live", 0.9), makeMatch("stale-fact", 0.85)],
+        }),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=deployment"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results.map((r: any) => r.id)).toEqual(["live"]);
+  });
+
+  it("excludes an entry with epistemic_status retracted from dense recall", async () => {
+    db.entries.push(
+      versioned({ id: "live", content: "Current pricing model", tags: "[]", source: "api", created_at: 1000, vector_ids: '["live-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+      versioned({ id: "retracted", content: "Recalled pricing claim", tags: "[]", source: "api", created_at: 1000, vector_ids: '["retracted-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "retracted" }),
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [makeMatch("live", 0.9), makeMatch("retracted", 0.95)],
+        }),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=pricing"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results.map((r: any) => r.id)).toEqual(["live"]);
+  });
+
+  it("keeps a stale (penalized) entry but drops superseded on the tag path", async () => {
+    db.entries.push(
+      versioned({ id: "canon", content: "Canonical work note", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["canon-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+      versioned({ id: "s1", content: "Stale work note", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["s1-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "stale" }),
+      versioned({ id: "sup", content: "Superseded work note", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["sup-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "superseded" }),
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        getByIds: vi.fn().mockResolvedValue([
+          { id: "canon-vec", values: SIMILAR_VEC, metadata: { parentId: "canon", episodeId: "episode-canon", isUpdate: false } },
+          { id: "s1-vec", values: SIMILAR_VEC, metadata: { parentId: "s1", episodeId: "episode-s1", isUpdate: false } },
+          { id: "sup-vec", values: SIMILAR_VEC, metadata: { parentId: "sup", episodeId: "episode-sup", isUpdate: false } },
+        ]),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=work&tag=work"), env, ctx);
+    const data = await res.json() as any;
+    const ids = data.results.map((r: any) => r.id);
+    expect(ids).toContain("canon");
+    expect(ids).toContain("s1");
+    expect(ids).not.toContain("sup");
+  });
+
+  it("excludes superseded entries surfaced via graph expansion", async () => {
+    db.entries.push(
+      versioned({ id: "seed", content: "Seed planning memory", tags: "[]", source: "api", created_at: 1000, vector_ids: '["seed-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+      versioned({ id: "rel", content: "Related planning memory", tags: "[]", source: "api", created_at: 1000, vector_ids: '["rel-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "superseded" }),
+    );
+    db.edges.push({
+      id: "edge-1", source_id: "seed", target_id: "rel", type: "relates_to",
+      weight: 0.9, confidence: 1, provenance: "inferred", metadata: "{}",
+      created_at: 1000, updated_at: 1000,
+    });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({ matches: [makeMatch("seed", 0.9)] }),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=planning&hops=1"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results.map((r: any) => r.id)).toEqual(["seed"]);
+  });
+
+  it("keyword-only recall still excludes superseded entries", async () => {
+    db.entries.push(
+      versioned({ id: "kw-live", content: "Deployment runbook", tags: "[]", source: "api", created_at: 1000, vector_ids: "[]", recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+      versioned({ id: "kw-sup", content: "Deployment runbook (superseded)", tags: "[]", source: "api", created_at: 1000, vector_ids: "[]", recall_count: 0, importance_score: 0, epistemic_status: "superseded" }),
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({ query: vi.fn().mockRejectedValue(new Error("index not found")) }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=deployment"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results.map((r: any) => r.id)).toEqual(["kw-live"]);
+  });
+});
+
+describe("GET /recall — passage-level citations", () => {
+  let env: Env;
+  let db: D1Mock;
+
+  beforeEach(() => {
+    db = makeTestDb();
+    env = makeTestEnv(db);
+  });
+
+  it("puts the vector-matched passage first in the citation list and exposes matched_passage_id", async () => {
+    const now = 2000;
+    db.entries.push(
+      versioned({ id: "entry-cites", content: "Decision log", tags: "[]", source: "api", created_at: now, vector_ids: '["ev:episode-entry-cites:0"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+    );
+    db.episodes.push({
+      id: "episode-entry-cites", entry_id: "entry-cites", mutation_id: "mutation-1",
+      materialized_content: "Decision log",
+    });
+    // Newest passage first by recency, but the vector hit the OLDER middle chunk.
+    db.passages.push(
+      { id: "passage-newest", entry_id: "entry-cites", episode_id: "episode-entry-cites", content: "Newest chunk", created_at: now + 100, start_offset: 0 },
+      { id: "passage-match", entry_id: "entry-cites", episode_id: "episode-entry-cites", content: "The chunk the vector actually matched", created_at: now, start_offset: 40 },
+      { id: "passage-old", entry_id: "entry-cites", episode_id: "episode-entry-cites", content: "Oldest chunk", created_at: now - 100, start_offset: 80 },
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [{
+            id: "pv:passage-match", score: 0.9,
+            metadata: { parentId: "entry-cites", episodeId: "episode-entry-cites", isUpdate: false, passageId: "passage-match" },
+          }],
+        }),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=decision"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results).toHaveLength(1);
+    expect(data.results[0].matched_passage_id).toBe("passage-match");
+    expect(data.results[0].passages).toHaveLength(3);
+    expect(data.results[0].passages[0].id).toBe("passage-match");
+    expect(data.results[0].passages[0].content).toBe("The chunk the vector actually matched");
+    expect(data.results[0].passages.map((p: any) => p.id)).toEqual(["passage-match", "passage-newest", "passage-old"]);
+  });
+
+  it("falls back to recency ordering when the match carries no passage id", async () => {
+    const now = 2000;
+    db.entries.push(
+      versioned({ id: "entry-plain", content: "Plain note", tags: "[]", source: "api", created_at: now, vector_ids: '["ev:episode-entry-plain:0"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+    );
+    db.episodes.push({
+      id: "episode-entry-plain", entry_id: "entry-plain", mutation_id: "mutation-1",
+      materialized_content: "Plain note",
+    });
+    db.passages.push(
+      { id: "p-a", entry_id: "entry-plain", episode_id: "episode-entry-plain", content: "Older chunk", created_at: now - 100, start_offset: 0 },
+      { id: "p-b", entry_id: "entry-plain", episode_id: "episode-entry-plain", content: "Newer chunk", created_at: now, start_offset: 40 },
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [{
+            id: "ev:episode-entry-plain:0", score: 0.9,
+            metadata: { parentId: "entry-plain", episodeId: "episode-entry-plain", isUpdate: false },
+          }],
+        }),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=note"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results[0].matched_passage_id).toBeNull();
+    expect(data.results[0].passages.map((p: any) => p.id)).toEqual(["p-b", "p-a"]);
+  });
+
+  it("labels author and scope on every result", async () => {
+    db.users.push({
+      id: TEST_USER_ID, username: "alice", normalized_username: "alice",
+      auth_key_hash: TEST_USER_AUTH_HASH, auth_key_prefix: "", status: "active", created_at: 1000,
+    });
+    db.users.push({
+      id: "bob-id", username: "bob", normalized_username: "bob",
+      auth_key_hash: "", auth_key_prefix: "", status: "active", created_at: 1000,
+    });
+    db.entries.push(
+      versioned({ id: "mine", content: "My private note", tags: "[]", source: "api", created_at: 1000, vector_ids: '["mine-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical", visibility: "private" }),
+      versioned({ id: "team", content: "Bob's public note", tags: "[]", source: "api", created_at: 1000, vector_ids: '["team-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical", owner_user_id: "bob-id", visibility: "public" }),
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [makeMatch("mine", 0.9), makeMatch("team", 0.8)],
+        }),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=note"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results.map((r: any) => r.id)).toEqual(["mine", "team"]);
+    expect(data.results[0]).toMatchObject({ owner_user_id: TEST_USER_ID, owner_username: "alice", scope: "private", is_owned: true });
+    expect(data.results[1]).toMatchObject({ owner_user_id: "bob-id", owner_username: "bob", scope: "public", is_owned: false });
   });
 });
 
