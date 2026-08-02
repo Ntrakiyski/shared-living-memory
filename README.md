@@ -1,56 +1,96 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="Shared Living Memory — one governed memory layer for a team and its AI agents">
+  <img src="./assets/readme/hero.svg" width="100%" alt="Shared Living Memory keeps decisions, client context, research, and AI findings reusable across a growing team">
 </p>
 
 <p align="center">
   <a href="https://shared-living-memory.nikolay-trakiyski.workers.dev"><strong>Open the live deployment</strong></a>
   ·
-  <a href="#quick-start">Quick start</a>
+  <a href="#one-decision-reused-across-the-whole-team">See the team workflow</a>
   ·
   <a href="#connect-an-ai-agent">Connect an agent</a>
   ·
-  <a href="docs/team-pilot/operator-runbook.md">Operator runbook</a>
+  <a href="#run-locally">Run locally</a>
 </p>
 
-Shared Living Memory gives a small team and its AI agents **one durable place to preserve decisions, research, sources, preferences, and project context**. Knowledge can move between ChatGPT, Claude, Codex, Cursor, Hermes, or another MCP client without losing who created it, who may see it, where it came from, or how it changed.
+Important knowledge is created all day—in client calls, project chats, documents, code reviews, and conversations with AI. As the team grows, that knowledge becomes fragmented. People repeat the same explanations, new teammates rebuild context from old threads, and handoffs carry the final answer but lose the reasoning behind it.
 
-It is not another notes app. It is a **governed knowledge layer** for people and agents that need to share context without turning it into an anonymous vector-search dump.
+**Shared Living Memory adds one governed knowledge layer behind those tools.** Decisions, client context, research, sources, preferences, and operating know-how can be captured once and reused by people and agents without losing ownership, privacy, history, or evidence.
 
-## The value
+It is designed to reduce repeated explanations, shorten onboarding, preserve decision rationale through handoffs, and keep human and AI work aligned with the team's current knowledge.
 
-| Without a shared memory layer | With Shared Living Memory |
+## What changes as the team grows
+
+| Team moment | What the shared layer preserves |
 | --- | --- |
-| Re-explain the same context in each chat, document, and handoff | Capture once, then recall from the dashboard, REST API, or any MCP client |
-| Search returns text without enough trust to act on it | Recall returns the author, visibility, source, matched passage, and citation context |
-| Shared knowledge and private notes become mixed together | Human memories are private by default; team sharing is deliberate and visible |
-| Corrections silently overwrite what used to be known | Append, update, history, snapshots, temporal recall, and restore preserve change over time |
-| Agents accumulate broad access and mutate knowledge directly | Personal and service identities operate through scopes, proposals, revision checks, and audit boundaries |
+| A project moves to a new owner | The decision, the reason behind it, its source, and the current status move with the work. |
+| A new teammate joins | They can retrieve current context and follow the evidence instead of asking several people to reconstruct it. |
+| Someone starts work in an AI tool | The agent retrieves governed team knowledge instead of depending on copied chat history or a manually attached document. |
+| An assumption or decision changes | The current answer can change without erasing what was previously known or why it changed. |
+| A teammate or agent leaves | Public team knowledge can remain useful while private data, credentials, and access follow explicit offboarding rules. |
 
-## How it works
+## One decision, reused across the whole team
+
+Consider a client approving a scope change:
+
+1. A project owner captures the decision, the reasoning, the source, and who may see it.
+2. Engineering asks about the scope from an MCP-connected agent and receives the current decision with its citation.
+3. Sales or operations asks the same question and receives an explanation in the context of their work.
+4. A new teammate joins later and can see both the current answer and how it evolved.
+5. If the decision is reversed, the previous state remains in history while outdated or retracted knowledge stops appearing as current truth.
+
+The value is not only that the decision was stored. **The reasoning survives every handoff.**
+
+## How the shared layer works
 
 <p align="center">
-  <img src="./assets/readme/how-it-works.svg" width="100%" alt="Three stages: capture knowledge, govern and retrieve it with identity and provenance, then recall it with evidence">
+  <img src="./assets/readme/how-it-works.svg" width="100%" alt="Knowledge is captured during work, kept trustworthy with ownership and history, and reused by people and AI tools with evidence attached">
 </p>
 
-1. **Capture** — people and agents save useful knowledge through the dashboard, REST, or MCP.
-2. **Govern** — each entry keeps an owner, private/public scope, provenance, epistemic status, revision, episodes, and snapshots.
-3. **Retrieve** — recall combines semantic, keyword, tag, graph, and temporal paths while excluding deprecated, superseded, or retracted knowledge from current answers.
-4. **Use with evidence** — results identify the author and scope and cite the passage that actually matched, so another person or agent can judge the answer rather than merely trust it.
+1. **Capture during work** — people and agents save useful decisions, client context, research, sources, and discoveries through the dashboard, REST API, or MCP.
+2. **Keep it trustworthy** — every important item keeps its owner, visibility, provenance, status, revision, immutable episodes, and version snapshots.
+3. **Reuse it in context** — people and agents ask from the tools they already use and receive the current answer with the author, scope, source, and matched evidence attached.
 
-## What it enables
+## More than searchable notes
 
-| Capability | Why it matters |
+Search can return matching text. Shared Living Memory is designed to return **usable context**.
+
+A useful answer needs more than the memory body:
+
+- **Original meaning** — who captured it, what they meant, and why it mattered.
+- **Recipient context** — how the same knowledge applies to another role, project, or agent domain.
+- **Evidence** — the source and matched passage that support the answer.
+- **Change awareness** — whether the knowledge is current, superseded, deprecated, retracted, or contradicted.
+- **A path back** — links, history, snapshots, and related entries that let someone inspect rather than blindly trust the result.
+
+This is the translation layer between different mental maps. An engineering decision can be explained for sales. A research repository saved by one person can be mapped to another team's current project. An AI finding can remain a proposal until a human reviews it instead of silently becoming shared truth.
+
+## Why the team can rely on it
+
+| Guardrail | Behavior |
 | --- | --- |
-| **Shared team memory** | Public entries become reusable team knowledge while each person keeps a private workspace. |
-| **Context across AI tools** | The same governed knowledge is available through MCP instead of being trapped in one chat history. |
-| **Translation between mental maps** | A discovery captured by one person or domain agent can be explained in the context of another person, project, or specialty. |
-| **Trustworthy correction** | Append, update, status changes, history, and restore let knowledge evolve without rewriting the past. |
-| **Explicit relationships** | Link supporting, contradicting, derived, limiting, or generally related knowledge into a navigable graph. |
-| **Operable erasure and offboarding** | Confirmed permanent deletion, metadata-only receipts, private-data export, and user deactivation provide clear lifecycle boundaries. |
+| **Clear ownership** | Every entry belongs to a human or scoped service identity; shared knowledge never becomes anonymous by default. |
+| **Private by default** | New human memories begin private. Publishing to the team is a deliberate visibility change. |
+| **Citation-backed recall** | Results identify the author, visibility, source, and passage that actually matched the query. |
+| **Versioned truth** | Append, update, history, temporal recall, and restore preserve how knowledge changed without rewriting the past. |
+| **Status-aware retrieval** | Deprecated, superseded, or retracted knowledge is excluded from current answers while remaining inspectable in history. |
+| **Governed agents** | Service identities use explicit scopes, revision checks, proposals, and audit boundaries instead of unrestricted database access. |
+| **Erasure and offboarding** | Permanent deletion requires confirmation; private export, deactivation, transfer, and cleanup follow explicit lifecycle rules. |
+| **Content-free operations** | Logs, audits, and metrics store identifiers, hashes, counts, and timings—not memory bodies, raw queries, credentials, or model prompts. |
+
+## Use it where work already happens
+
+**Dashboard**  
+Humans can capture, recall, correct, link, inspect history, manage visibility, and administer the workspace.
+
+**MCP**  
+AI assistants and domain agents can use the same governed knowledge through personal or scoped service identities.
+
+**REST API**  
+Internal tools, automations, and integrations can capture or retrieve knowledge without bypassing the same ownership and privacy model.
 
 ## Connect an AI agent
 
-Shared Living Memory exposes an MCP server. Use a **personal API key** as the bearer token:
+Use a **personal API key** as the bearer token for an MCP-capable client:
 
 ```json
 {
@@ -85,9 +125,34 @@ The checked-in agent skill at [`.agents/skills/shared-living-memory-mcp-knowledg
 
 </details>
 
-## Quick start
+## Technical foundation
 
-### Run locally
+| Boundary | Implementation |
+| --- | --- |
+| Application | Cloudflare Worker with dashboard, REST API, MCP endpoint, and scheduled lifecycle jobs |
+| Durable authority | Cloudflare D1 for current projections, immutable episodes, snapshots, relationships, identities, and governance state |
+| Retrieval index | Cloudflare Vectorize with a 384-dimensional cosine index that can be rebuilt from D1 |
+| AI | Workers AI for embeddings and server-grounded answer generation |
+| Identity | Personal HMAC-SHA-256 API keys plus scoped service identities |
+| Privacy | Owner-aware reads, private-by-default capture, scoped vector metadata, and content-free operational logs |
+
+**Core invariant:** D1 is authoritative. Vectorize accelerates retrieval, but it is disposable and rebuildable. Removing an entry from the durable authority does not depend on the vector index remaining healthy.
+
+## Current validation scope
+
+The product direction is a shared memory layer for a growing team. The current repository is prepared for a bounded **3–5 person internal pilot**, rather than claiming organization-wide production readiness.
+
+The pilot-readiness implementation currently includes:
+
+- **1,124 tests across 106 files**
+- a clean TypeScript typecheck
+- health and readiness endpoints
+- a scheduled production canary with incident handling
+- safe bootstrap, personal-key rotation, and user lifecycle controls
+- permanent erasure with metadata-only receipts
+- participant, operator, recovery, and evaluation documentation
+
+## Run locally
 
 ```bash
 git clone https://github.com/Ntrakiyski/shared-living-memory.git
@@ -103,7 +168,7 @@ npm run dev
 AUTH_TOKEN=replace-with-a-secure-workspace-key
 ```
 
-Then open `http://localhost:8787`, create the first administrator, and copy the generated personal API key when it is shown.
+Open `http://localhost:8787`, create the first administrator, and copy the generated personal API key when it is shown.
 
 ### Verify the project
 
@@ -112,33 +177,21 @@ npm test
 npm run typecheck
 ```
 
-The current pilot-readiness implementation is backed by **1,124 tests across 106 files**, a clean TypeScript typecheck, health/readiness endpoints, and a scheduled production canary.
+## Documentation
 
-## Technical foundation
-
-| Boundary | Implementation |
+| Document | Purpose |
 | --- | --- |
-| Application | Cloudflare Worker with dashboard, REST API, MCP endpoint, and scheduled lifecycle jobs |
-| Durable authority | Cloudflare D1 — current projections, immutable episodes, snapshots, relationships, identities, and governance state |
-| Retrieval index | Cloudflare Vectorize — 384-dimensional cosine index that can be rebuilt from D1 |
-| AI | Workers AI for embeddings and grounded answer generation |
-| Identity | Personal HMAC-SHA-256 API keys plus scoped service identities |
-| Privacy | Private-by-default human capture, owner-aware reads, scoped vector metadata, and content-free operational logs |
-
-**Core invariant:** D1 is authoritative. Vectorize accelerates retrieval, but it is disposable and rebuildable. Audits and metrics store identifiers, hashes, counts, and timings—not memory bodies, raw queries, credentials, or model prompts.
-
-## Pilot scope
-
-The repository is prepared for a bounded **3–5 person internal team pilot**. The completed readiness plan covers safe capture/export, semantic retrieval, trustworthy citations, permanent erasure, human identity and key lifecycle, MCP onboarding, visibility and correction UX, privacy-safe recall feedback, observability, recovery, and launch rehearsal.
-
-- [Pilot implementation plan](docs/superpowers/plans/2026-08-01-team-pilot-readiness.md)
-- [Participant guide](docs/team-pilot/participant-guide.md)
-- [Operator runbook](docs/team-pilot/operator-runbook.md)
-- [Evaluation scorecard](docs/team-pilot/evaluation-scorecard.md)
+| [Participant guide](docs/team-pilot/participant-guide.md) | How a teammate captures, recalls, corrects, rates, exports, and leaves the pilot |
+| [Operator runbook](docs/team-pilot/operator-runbook.md) | Bootstrap, administration, staging, incidents, recovery, and offboarding |
+| [Evaluation scorecard](docs/team-pilot/evaluation-scorecard.md) | Pilot gates and metrics used to decide whether to expand, revise, or stop |
+| [Pilot implementation plan](docs/superpowers/plans/2026-08-01-team-pilot-readiness.md) | Architecture, constraints, tasks, and acceptance criteria |
+| [Agent skill](.agents/skills/shared-living-memory-mcp-knowledgebase/SKILL.md) | Operating instructions for humans and AI agents using the MCP knowledgebase |
 
 ## Project boundaries
 
-Shared Living Memory is intentionally **not** a general note-taking product, a general-purpose vector database, or an autonomous agent runtime. External agents such as Hermes use it through governed MCP/REST access; they do not bypass its identity, visibility, history, or audit rules.
+Shared Living Memory is not intended to replace the team's documents, project tracker, or communication tools. It sits behind them as the durable context layer.
+
+It is also not a general-purpose vector database or an autonomous agent runtime. External agents use it through governed MCP or REST access and do not bypass identity, visibility, history, or audit rules.
 
 ## License
 
