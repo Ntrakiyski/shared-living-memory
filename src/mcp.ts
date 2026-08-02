@@ -72,6 +72,7 @@ import { decideOperatorAction, requireAllowedDecision } from "./operator-policy"
 import { verifyServiceActor } from "./service-actor";
 import { withMandatoryAudit, MandatoryAuditError } from "./mandatory-audit";
 import { MCP_ONBOARDING_MARKDOWN, MCP_ONBOARDING_RESOURCE_URI } from "./mcp-onboarding";
+import { submitRecallFeedback } from "./recall-events";
 
 // ─── MCP Server ───────────────────────────────────────────────────────────────
 
@@ -1540,6 +1541,24 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
         const result = await executeApprovedProposal(env, { actor, proposalId: proposal_id });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }),
+    );
+
+    // ── rate_recall ───────────────────────────────────────────────────────
+    server.registerTool(
+      "rate_recall",
+      {
+        description: "Rate a recall result as helpful or not_helpful with an optional reason code. Feedback is analytics-only — it does not change future recall behavior during the pilot.",
+        inputSchema: {
+          recall_event_id: z.string().describe("Recall event ID returned by the recall tool in its response metadata"),
+          rating: z.enum(["helpful", "not_helpful"]).describe("Whether the recall result was useful"),
+          reason: z.enum(["irrelevant", "missing", "stale", "conflicting", "unsupported", "too_much", "other"]).default("other").describe("Reason code when rating is not_helpful"),
+        },
+      },
+      async ({ recall_event_id, rating, reason }) => {
+        const ok = await submitRecallFeedback(env, { recallEventId: recall_event_id, userId: userId!, rating, reason });
+        if (!ok) return { content: [{ type: "text", text: "Could not record feedback." }], isError: true };
+        return { content: [{ type: "text", text: `Feedback recorded: ${rating}` }] };
+      },
     );
   }
 

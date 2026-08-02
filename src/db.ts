@@ -1168,6 +1168,49 @@ const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_erasure_receipts_entry ON erasure_receipts(entry_id)`,
     ),
   },
+  {
+    version: 14,
+    name: "recall_feedback",
+    statements: sql(
+      `CREATE TABLE IF NOT EXISTS recall_events (
+         id TEXT PRIMARY KEY,
+         user_id TEXT NOT NULL,
+         client TEXT NOT NULL DEFAULT 'unknown',
+         query_hash TEXT NOT NULL,
+         result_entry_ids TEXT NOT NULL DEFAULT '[]',
+         result_count INTEGER NOT NULL DEFAULT 0,
+         semantic_unavailable INTEGER NOT NULL DEFAULT 0,
+         duration_ms INTEGER NOT NULL DEFAULT 0,
+         created_at INTEGER NOT NULL
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_recall_events_user ON recall_events(user_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_recall_events_created ON recall_events(created_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS recall_feedback (
+         id TEXT PRIMARY KEY,
+         recall_event_id TEXT NOT NULL,
+         user_id TEXT NOT NULL,
+         rating TEXT NOT NULL CHECK (rating IN ('helpful', 'not_helpful')),
+         reason TEXT CHECK (reason IN ('irrelevant', 'missing', 'stale', 'conflicting', 'unsupported', 'too_much', 'other')),
+         created_at INTEGER NOT NULL,
+         UNIQUE(recall_event_id, user_id)
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_recall_feedback_event ON recall_feedback(recall_event_id)`,
+    ),
+  },
+  {
+    version: 15,
+    name: "operational_job_status",
+    statements: sql(
+      `CREATE TABLE IF NOT EXISTS operational_job_status (
+         job_name TEXT PRIMARY KEY,
+         last_started_at INTEGER,
+         last_completed_at INTEGER,
+         outcome_code TEXT,
+         deployment_id TEXT,
+         updated_at INTEGER NOT NULL
+       )`,
+    ),
+  },
 ] as const;
 
 async function ensureMigrationTable(db: D1Database): Promise<void> {
@@ -1315,6 +1358,14 @@ async function validateCurrentSchema(db: D1Database): Promise<void> {
     `SELECT operation_id, entry_id, owner_user_id, actor_user_id,
       vector_count, status, created_at, updated_at, completed_at
       FROM erasure_receipts LIMIT 0`,
+    `SELECT id, user_id, client, query_hash, result_entry_ids,
+      result_count, semantic_unavailable, duration_ms, created_at
+      FROM recall_events LIMIT 0`,
+    `SELECT id, recall_event_id, user_id, rating, reason, created_at
+      FROM recall_feedback LIMIT 0`,
+    `SELECT job_name, last_started_at, last_completed_at,
+      outcome_code, deployment_id, updated_at
+      FROM operational_job_status LIMIT 0`,
   ];
 
   try {

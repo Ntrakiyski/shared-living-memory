@@ -80,6 +80,8 @@ import {
   markAwarenessEventRead,
 } from "./awareness-events";
 import { recallEntries, type RecallMatch } from "./recall";
+import { emitRecallEvent, submitRecallFeedback, hashRecallQuery } from "./recall-events";
+import { computePilotMetrics } from "./pilot-metrics";
 import { reinforceOwnedEntry } from "./reinforcement";
 import { deprecateEntry, applyStatus, compressTag } from "./lifecycle";
 import { classifyEntry, extractHashtags } from "./classification";
@@ -398,6 +400,22 @@ export const defaultHandler = {
     } catch (error) {
       console.error("Database initialization failed:", error);
       return storageUnavailableResponse();
+    }
+
+    // GET /health — liveness check (no credentials, no DB).
+    if (url.pathname === "/health" && request.method === "GET") {
+      return json({ ok: true, status: "ok" });
+    }
+
+    // GET /ready — readiness check (light DB probe, may gate on canary later).
+    if (url.pathname === "/ready" && request.method === "GET") {
+      try {
+        const row = await env.DB.prepare(`SELECT 1 AS ok`).first<{ ok: number }>();
+        if (!row) return json({ ok: false, status: "not_ready" }, 503);
+        return json({ ok: true, status: "ready" });
+      } catch {
+        return json({ ok: false, status: "not_ready" }, 503);
+      }
     }
 
     // GET /api/bootstrap-status — unauthenticated boolean used by the
@@ -1878,6 +1896,43 @@ export const defaultHandler = {
         return json({ ok: false, error: "Forbidden" }, 403);
       }
       return json({ ok: true, erasure: view });
+    }
+
+    // POST /recall-feedback — submit helpful/not_helpful rating for a recall event.
+    if (url.pathname === "/recall-feedback" && request.method === "POST") {
+      const { error: authErr, user_id } = await requireAuthAsync(request, env);
+      if (authErr) return authErr;
+
+      let body: { recall_event_id?: string; rating?: string; reason?: string };
+      try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
+      if (!body.recall_event_id?.trim()) return json({ ok: false, error: "recall_event_id is required" }, 400);
+      if (body.rating !== "helpful" && body.rating !== "not_helpful") return json({ ok: false, error: "rating must be helpful or not_helpful" }, 400);
+      const reason = body.reason ?? "other";
+      if (!["irrelevant", "missing", "stale", "conflicting", "unsupported", "too_much", "other"].includes(reason)) {
+        return json({ ok: false, error: "Invalid reason code" }, 400);
+      }
+
+      const ok = await submitRecallFeedback(env, {
+        recallEventId: body.recall_event_id.trim(),
+        userId: user_id!,
+        rating: body.rating as "helpful" | "not_helpful",
+        reason: reason as any,
+      });
+      if (!ok) return json({ ok: false, error: "Could not record feedback" }, 409);
+      return json({ ok: true });
+    }
+
+    // GET /pilot-metrics — admin-only aggregated pilot metrics.
+    if (url.pathname === "/pilot-metrics" && request.method === "GET") {
+      const { error: authErr, user_id } = await requireAuthAsync(request, env);
+      if (authErr) return authErr;
+      if (!await isActiveAdmin(user_id, env)) {
+        return json({ ok: false, error: "Administrator role required" }, 403);
+      }
+      const days = Math.min(Math.max(Number(url.searchParams.get("days") || "14"), 1), 90);
+      const since = Date.now() - days * 24 * 60 * 60 * 1000;
+      const metrics = await computePilotMetrics(env, since);
+      return json({ ok: true, metrics });
     }
 
     // POST /restore — restore an entry from a snapshot, creates a NEW entry

@@ -1240,6 +1240,9 @@ export class D1Mock {
           if (row) return { role: row.role ?? "member" };
           return userId === TEST_USER_ID ? { role: "admin" } : null;
         }
+        if (s === "SELECT 1 AS ok" || s.startsWith("SELECT 1 AS ok")) {
+          return { ok: 1 };
+        }
         if (s.includes("SELECT username FROM users WHERE id")) {
           const userId = args[0] as string;
           const row = db.users.find((u: any) => u.id === userId);

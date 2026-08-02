@@ -610,6 +610,40 @@ CREATE TABLE IF NOT EXISTS erasure_receipts (
 CREATE INDEX IF NOT EXISTS idx_erasure_receipts_status ON erasure_receipts(status);
 CREATE INDEX IF NOT EXISTS idx_erasure_receipts_entry ON erasure_receipts(entry_id);
 
+CREATE TABLE IF NOT EXISTS recall_events (
+  id                  TEXT PRIMARY KEY,
+  user_id             TEXT NOT NULL,
+  client              TEXT NOT NULL DEFAULT 'unknown',
+  query_hash          TEXT NOT NULL,
+  result_entry_ids    TEXT NOT NULL DEFAULT '[]',
+  result_count        INTEGER NOT NULL DEFAULT 0,
+  semantic_unavailable INTEGER NOT NULL DEFAULT 0,
+  duration_ms         INTEGER NOT NULL DEFAULT 0,
+  created_at          INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recall_events_user ON recall_events(user_id);
+CREATE INDEX IF NOT EXISTS idx_recall_events_created ON recall_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS recall_feedback (
+  id              TEXT PRIMARY KEY,
+  recall_event_id TEXT NOT NULL,
+  user_id         TEXT NOT NULL,
+  rating          TEXT NOT NULL CHECK (rating IN ('helpful', 'not_helpful')),
+  reason          TEXT CHECK (reason IN ('irrelevant', 'missing', 'stale', 'conflicting', 'unsupported', 'too_much', 'other')),
+  created_at      INTEGER NOT NULL,
+  UNIQUE(recall_event_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recall_feedback_event ON recall_feedback(recall_event_id);
+
+CREATE TABLE IF NOT EXISTS operational_job_status (
+  job_name          TEXT PRIMARY KEY,
+  last_started_at   INTEGER,
+  last_completed_at INTEGER,
+  outcome_code      TEXT,
+  deployment_id     TEXT,
+  updated_at        INTEGER NOT NULL
+);
+
 -- Do not insert schema_migrations rows here. CREATE TABLE IF NOT EXISTS cannot
 -- prove that an existing legacy table has the current columns. src/db.ts records
 -- a version only after its ordered migration batch succeeds.

@@ -1,0 +1,83 @@
+name: Pilot Canary
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check readiness
+        if: env.SLM_READINESS_URL != ''
+        env:
+          SLM_READINESS_URL: ${{ secrets.SLM_READINESS_URL }}
+          SLM_READINESS_TOKEN: ${{ secrets.SLM_READINESS_TOKEN }}
+        run: |
+          status=$(curl -sf -o /dev/null -w "%{http_code}" "$SLM_READINESS_URL/ready")
+          if [ "$status" != "200" ]; then
+            echo "Readiness check failed with HTTP $status"
+            exit 1
+          fi
+          echo "Readiness: OK"
+
+      - name: Report failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ["pilot-incident"],
+              state: "open",
+            });
+            const title = `[Pilot Canary] Failure at ${new Date().toISOString()}`;
+            const body = `Canary check failed.\n\nWorkflow: ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const existing = issues.data.find((i) => i.title.startsWith("[Pilot Canary]"));
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `${existing.body}\n\n---\n${body}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["pilot-incident"],
+              });
+            }
+
+  close-on-recovery:
+    runs-on: ubuntu-latest
+    if: success()
+    steps:
+      - uses: actions/checkout@v4
+      - name: Close incident
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ["pilot-incident"],
+              state: "open",
+            });
+            for (const issue of issues.data) {
+              if (issue.title.startsWith("[Pilot Canary]")) {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  state: "closed",
+                });
+              }
+            }

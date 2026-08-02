@@ -1237,6 +1237,49 @@
         color: var(--accent-ink);
       }
 
+      .tag-chip--epistemic {
+        background: var(--accent-soft);
+        color: var(--accent-ink);
+        font-size: 10px;
+        padding: 2px 8px;
+      }
+
+      .experimental-badge {
+        font-size: 9px;
+        background: var(--surface-2);
+        color: var(--text-tertiary);
+        padding: 1px 6px;
+        border-radius: 3px;
+        margin-left: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .source-label {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        margin-left: 4px;
+      }
+
+      .sb-footer-btn {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 8px 12px;
+        border: 0;
+        border-radius: var(--radius-sm);
+        font-size: 13px;
+        color: var(--text-secondary);
+        background: none;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      .sb-footer-btn:hover { background: var(--surface-2); }
+
       .card-actions {
         display: flex;
         gap: 4px;
@@ -3029,7 +3072,7 @@
           <button class="sb-tab active" id="sb-tab-recall" onclick="switchTab('recall')"><i class="ti ti-search"></i><span>Recall</span></button>
           <button class="sb-tab" id="sb-tab-recent" onclick="switchTab('recent')"><i class="ti ti-clock"></i><span>Recent</span></button>
           <button class="sb-tab" id="sb-tab-remember" onclick="switchTab('remember')"><i class="ti ti-plus"></i><span>Remember</span></button>
-          <button class="sb-tab" id="sb-tab-graph" onclick="switchTab('graph')"><i class="ti ti-affiliate"></i><span>Graph</span></button>
+          <button class="sb-tab" id="sb-tab-graph" onclick="switchTab('graph')"><i class="ti ti-affiliate"></i><span>Graph</span><span class="experimental-badge">Experimental</span></button>
         </nav>
         <div id="admin-people-panel" class="sb-section" style="display:none">
           <div class="sb-section-title">People</div>
@@ -3041,6 +3084,7 @@
         </div>
         <div class="sb-footer">
           <button class="sb-footer-btn" onclick="openMenu()"><i class="ti ti-settings"></i><span>Settings</span></button>
+          <a class="sb-footer-btn" href="https://github.com/Ntrakiyski/shared-living-memory" target="_blank" rel="noopener noreferrer"><i class="ti ti-help"></i><span>Help</span></a>
         </div>
       </div>
 
@@ -3203,8 +3247,8 @@
 
     <div id="confirm-dialog">
       <div class="confirm-sheet">
-        <h3>Forget this memory?</h3>
-        <p>This can't be undone. The memory will be removed from your brain.</p>
+        <h3>Permanently delete this memory?</h3>
+        <p>This is a compliance / erasure operation. All content, versions, and vector data will be removed and cannot be recovered. Prefer "Mark outdated" for ordinary corrections.</p>
         <div class="confirm-actions">
           <button class="btn-cancel" onclick="closeConfirm()">Cancel</button>
           <button class="btn-delete" onclick="confirmForget()">Forget</button>
@@ -4209,6 +4253,10 @@
               return `<div class="card-citation"><i class="ti ti-quote"></i> ${label}${escHtml(offsets)}</div>`
             }).join('')}</div>`
           : ''
+        const isOwned = entry.is_owned
+        const forgetHtml = isOwned
+          ? `<button class="card-action-btn forget-btn" type="button"><i class="ti ti-x"></i> Forget</button>`
+          : ''
         card.innerHTML = `
     <div class="match-line">
       <span class="match-pct">${entry.score}%</span>
@@ -4221,7 +4269,7 @@
       <div class="card-tags">${entry.tags.map((t) => `<span class="tag-chip${t === 'synthesized' ? ' tag-chip--synthesized' : ''}">${escHtml(t)}</span>`).join('')}</div>
       <div class="card-actions">
         ${
-          entry.id && entry.is_owned
+          entry.id && isOwned
             ? `<button class="card-action-btn append-btn" type="button"><i class="ti ti-writing"></i> Append</button>
              <button class="card-action-btn forget-btn" type="button"><i class="ti ti-x"></i> Forget</button>`
             : !entry.id ? `<button class="card-action-btn append-btn" type="button"><i class="ti ti-writing"></i> Append</button>` : ''
@@ -4365,13 +4413,15 @@
         card.className = 'memory-card' + (isSynthesized ? ' card--synthesized' : '') + (isRolledUp ? ' card--rolled-up' : '')
         card.dataset.id = entry.id
 
-        const privacyIcon = entry.is_private ? '<i class="ti ti-lock privacy-icon" title="Private"></i>' : ''
+        const privacyIcon = entry.is_private ? '<i class="ti ti-lock privacy-icon" title="Private"></i>' : '<i class="ti ti-world privacy-icon" title="Team public"></i>'
         const ownerBadge = entry.owner_username ? `<span class="owner-badge"><i class="ti ti-user"></i>${escHtml(entry.owner_username)}</span>` : ''
+        const epiStatus = entry.epistemic_status && entry.epistemic_status !== 'canonical' ? `<span class="tag-chip tag-chip--epistemic">${escHtml(entry.epistemic_status)}</span>` : ''
+        const sourceLabel = entry.source && entry.source !== 'api' ? `<span class="source-label"><i class="ti ti-link"></i>${escHtml(entry.source)}</span>` : ''
 
         card.innerHTML = `
 <div class="card-content" style="cursor: pointer;">${escHtml(entry.content)}</div>
 <div class="card-footer">
-  <div class="card-tags">${tags.map((t) => `<span class="tag-chip${t === 'synthesized' ? ' tag-chip--synthesized' : ''}">${escHtml(t)}</span>`).join('')}${vecChip}</div>
+  <div class="card-tags">${tags.map((t) => `<span class="tag-chip${t === 'synthesized' ? ' tag-chip--synthesized' : ''}">${escHtml(t)}</span>`).join('')}${vecChip}${epiStatus}${sourceLabel}</div>
   <div class="card-meta-row">${privacyIcon}${ownerBadge}</div>
   <div class="card-actions">${entry.is_owned ? `
     <button class="card-action-btn append-btn" type="button"><i class="ti ti-writing"></i> Append</button>
