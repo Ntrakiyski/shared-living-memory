@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="420" viewBox="0 0 1200 420"
+     role="img" aria-labelledby="title desc">
+  <title id="title">Shared Living Memory</title>
+  <desc id="desc">A governed team knowledge layer where people and AI agents capture knowledge once and recall it later with ownership, privacy, history, and citations.</desc>
+
+  <defs>
+    <pattern id="paper-lines" width="1200" height="42" patternUnits="userSpaceOnUse">
+      <path d="M0 41.5H1200" stroke="#26241F" stroke-opacity=".035"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#B26641"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="420" rx="28" fill="#F4F1EA"/>
+  <rect width="1200" height="420" rx="28" fill="url(#paper-lines)"/>
+  <rect x="1" y="1" width="1198" height="418" rx="27" fill="none" stroke="#26241F" stroke-opacity=".10"/>
+
+  <g transform="translate(64 52)">
+    <text x="0" y="0" dominant-baseline="hanging"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="16" font-weight="700" letter-spacing="2.4" fill="#8A4E2F">
+      GOVERNED TEAM KNOWLEDGE · MCP + REST
+    </text>
+
+    <text x="0" y="69"
+          font-family="Georgia, 'Times New Roman', serif"
+          font-size="61" font-weight="600" letter-spacing="-1.9" fill="#26241F">
+      Shared Living
+    </text>
+    <text x="0" y="125"
+          font-family="Georgia, 'Times New Roman', serif"
+          font-size="61" font-weight="600" letter-spacing="-1.9" fill="#26241F">
+      Memory
+    </text>
+
+    <text x="0" y="176"
+          font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="23" font-weight="650" fill="#26241F">
+      One memory layer for your team and its AI agents.
+    </text>
+
+    <text x="0" y="218"
+          font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="19" fill="#6E6B62">
+      Capture knowledge once. Recall it anywhere with owners,
+    </text>
+    <text x="0" y="246"
+          font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="19" fill="#6E6B62">
+      private-by-default scope, version history, and citations.
+    </text>
+
+    <g transform="translate(0 294)">
+      <rect x="0" y="0" width="171" height="38" rx="19" fill="#FCFBF7" stroke="#D8D1C4"/>
+      <circle cx="21" cy="19" r="6" fill="#5B8A6B"/>
+      <text x="37" y="25" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="15" font-weight="650" fill="#26241F">private by default</text>
+
+      <rect x="184" y="0" width="165" height="38" rx="19" fill="#FCFBF7" stroke="#D8D1C4"/>
+      <path d="M204 19h14M211 12v14" stroke="#B26641" stroke-width="2" stroke-linecap="round"/>
+      <text x="229" y="25" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="15" font-weight="650" fill="#26241F">versioned history</text>
+
+      <rect x="362" y="0" width="170" height="38" rx="19" fill="#FCFBF7" stroke="#D8D1C4"/>
+      <path d="M383 14h12v10h-12zM388 11h12v10" fill="none" stroke="#B26641" stroke-width="1.8"/>
+      <text x="407" y="25" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="15" font-weight="650" fill="#26241F">citation-backed</text>
+    </g>
+  </g>
+
+  <g transform="translate(680 42)">
+    <text x="4" y="18"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="15" font-weight="700" letter-spacing="1.6" fill="#6E6B62">
+      CAPTURE ONCE
+    </text>
+
+    <g transform="translate(0 42)">
+      <rect width="180" height="72" rx="14" fill="#FCFBF7" stroke="#D8D1C4"/>
+      <circle cx="29" cy="27" r="11" fill="#EAD9CE"/>
+      <circle cx="29" cy="24" r="4" fill="#B26641"/>
+      <path d="M21 39c2-7 14-7 16 0" fill="none" stroke="#B26641" stroke-width="2" stroke-linecap="round"/>
+      <text x="50" y="27" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="17" font-weight="700" fill="#26241F">Person</text>
+      <text x="50" y="50" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="14" fill="#6E6B62">decision · private</text>
+    </g>
+
+    <g transform="translate(0 126)">
+      <rect width="180" height="72" rx="14" fill="#FCFBF7" stroke="#D8D1C4"/>
+      <rect x="18" y="16" width="22" height="22" rx="6" fill="#E5EBE2"/>
+      <path d="M24 22h10M24 28h10M24 34h6" stroke="#5B8A6B" stroke-width="2" stroke-linecap="round"/>
+      <text x="50" y="27" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="17" font-weight="700" fill="#26241F">AI agent</text>
+      <text x="50" y="50" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="14" fill="#6E6B62">finding · proposed</text>
+    </g>
+
+    <g transform="translate(0 210)">
+      <rect width="180" height="72" rx="14" fill="#FCFBF7" stroke="#D8D1C4"/>
+      <path d="M19 21h22v18H19zM24 17h12" fill="none" stroke="#8A4E2F" stroke-width="2" stroke-linecap="round"/>
+      <text x="50" y="27" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="17" font-weight="700" fill="#26241F">MCP / REST</text>
+      <text x="50" y="50" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="14" fill="#6E6B62">source · public</text>
+    </g>
+
+    <g transform="translate(244 70)">
+      <rect width="220" height="218" rx="20" fill="#26241F"/>
+      <rect x="17" y="17" width="186" height="184" rx="14" fill="#FCFBF7"/>
+      <text x="32" y="49" font-family="Georgia, 'Times New Roman', serif"
+            font-size="22" font-weight="600" fill="#26241F">Memory ledger</text>
+      <text x="32" y="73" font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+            font-size="12.5" font-weight="700" letter-spacing="1.2" fill="#8A4E2F">OWNER · SCOPE · SOURCE</text>
+      <path d="M32 92h154" stroke="#D8D1C4"/>
+
+      <circle cx="40" cy="118" r="5" fill="#B26641"/>
+      <text x="55" y="124" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="15" font-weight="650" fill="#26241F">immutable episode</text>
+
+      <circle cx="40" cy="149" r="5" fill="#5B8A6B"/>
+      <text x="55" y="155" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="15" font-weight="650" fill="#26241F">current projection</text>
+
+      <circle cx="40" cy="180" r="5" fill="#6E6B62"/>
+      <text x="55" y="186" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="15" font-weight="650" fill="#26241F">history + links</text>
+    </g>
+
+    <path d="M180 78C214 78 214 122 244 122" fill="none" stroke="#B26641" stroke-width="2" marker-end="url(#arrow)"/>
+    <path d="M180 162H244" fill="none" stroke="#B26641" stroke-width="2" marker-end="url(#arrow)"/>
+    <path d="M180 246C214 246 214 228 244 228" fill="none" stroke="#B26641" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <g transform="translate(258 308)">
+      <rect width="206" height="58" rx="14" fill="#EAD9CE" stroke="#C99F86"/>
+      <text x="17" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="16" font-weight="750" fill="#26241F">Recall → answer + evidence</text>
+      <text x="17" y="44" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+            font-size="13.5" fill="#6E6B62">author · scope · matched passage</text>
+    </g>
+    <path d="M354 288V308" stroke="#B26641" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <text x="4" y="364"
+          font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+          font-size="15" font-weight="700" letter-spacing="1.6" fill="#6E6B62">
+      RECALL WITH EVIDENCE
+    </text>
+  </g>
+</svg>
