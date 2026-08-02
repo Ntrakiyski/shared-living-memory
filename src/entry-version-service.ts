@@ -11,6 +11,8 @@
 import { chunkText, embed } from "./helpers";
 import {
   ENTRY_MUTATION_KINDS,
+  DOCUMENT_TITLE_ORIGINS,
+  type DocumentTitleOrigin,
   type EntryMutationKind,
   type EntryVisibility,
   type Env,
@@ -29,8 +31,10 @@ export interface CommitEntryVersionInput {
   tags?: string[];
   source?: string;
   sourceUrl?: string | null;
+  visibility?: EntryVisibility;
   contentType?: string;
   title?: string;
+  titleOrigin?: DocumentTitleOrigin;
   restoredFromSnapshotId?: string;
   forceCreate?: boolean;
   validFrom?: number | null;
@@ -163,7 +167,9 @@ interface CurrentEntryRow {
   visibility: EntryVisibility;
   current_content_type: string | null;
   current_source_url: string | null;
+  current_materialized_content: string | null;
   current_document_title: string | null;
+  current_document_title_origin: DocumentTitleOrigin | null;
   current_page: number | null;
   current_page_end: number | null;
 }
@@ -175,20 +181,37 @@ interface RestoreSnapshotRow {
   owner_user_id: string;
 }
 
+export interface OwnedRestoreSnapshot {
+  id: string;
+  entry_id: string;
+  episode_id: string | null;
+  content: string;
+  tags: string;
+  source: string;
+  created_at: number;
+  valid_from: number | null;
+  valid_to: number | null;
+  epistemic_status: EpistemicStatus | null;
+  source_title: string | null;
+  source_title_origin: DocumentTitleOrigin | null;
+  source_url: string | null;
+  content_type: string | null;
+}
+
 interface Header {
   level: number;
   title: string;
   offset: number;
 }
 
-interface PlannedSection extends Header {
+export interface PlannedSection extends Header {
   id: string;
   parentId: string | null;
   orderIndex: number;
   endOffset: number;
 }
 
-interface PlannedPassage {
+export interface PlannedPassage {
   id: string;
   content: string;
   section: string | null;
@@ -209,6 +232,13 @@ const PASSAGE_OVERLAP_CHARS = 400;
 const VERSIONED_MUTATION_KINDS = new Set<EntryMutationKind>(
   ENTRY_MUTATION_KINDS.filter((kind) => kind !== "legacy"),
 );
+const CONTENT_REPLACING_MUTATION_KINDS = new Set<VersionedMutationKind>([
+  "capture",
+  "update",
+  "merge",
+  "replace",
+  "restore",
+]);
 
 function uuid(): string {
   return crypto.randomUUID();
@@ -250,6 +280,12 @@ function findHeaders(content: string): Header[] {
     });
   }
   return headers;
+}
+
+function deriveDocumentTitle(content: string, sourceUrl: string | null): string {
+  return findHeaders(content)[0]?.title
+    || sourceUrl
+    || "Untitled Document";
 }
 
 function planSections(headers: Header[], contentLength: number): PlannedSection[] {
@@ -327,6 +363,14 @@ function planPassages(
   return passages;
 }
 
+export function planVersionPassages(
+  content: string,
+  episodeId: string,
+): { sections: PlannedSection[]; passages: PlannedPassage[] } {
+  const sections = planSections(findHeaders(content), content.length);
+  return { sections, passages: planPassages(content, episodeId, sections) };
+}
+
 function isDocumentVersion(
   contentType: string,
   sourceUrl: string | null,
@@ -349,20 +393,23 @@ async function cleanupStagedVectors(env: Env, vectorIds: string[]): Promise<unkn
   }
 }
 
-async function stageVectors(
+export interface StageVersionVectorsInput {
+  entryId: string;
+  episodeId: string;
+  mutationId: string;
+  content: string;
+  tags: string[];
+  source: string;
+  ownerUserId: string;
+  visibility: EntryVisibility;
+  now: number;
+  passages: PlannedPassage[];
+  cleanupOnFailure?: boolean;
+}
+
+export async function stageVersionVectors(
   env: Env,
-  details: {
-    entryId: string;
-    episodeId: string;
-    mutationId: string;
-    content: string;
-    tags: string[];
-    source: string;
-    ownerUserId: string;
-    visibility: EntryVisibility;
-    now: number;
-    passages: PlannedPassage[];
-  },
+  details: StageVersionVectorsInput,
 ): Promise<{ entryVectorIds: string[]; allVectorIds: string[] }> {
   const entryChunks = chunkText(details.content);
   // Vectorize IDs are capped at 64 bytes. The immutable episode UUID is enough
@@ -420,7 +467,7 @@ async function stageVectors(
     await env.VECTORIZE.upsert([...entryVectors, ...passageVectors]);
     return { entryVectorIds, allVectorIds };
   } catch (cause) {
-    const cleanupError = writeAttempted
+    const cleanupError = writeAttempted && details.cleanupOnFailure !== false
       ? await cleanupStagedVectors(env, allVectorIds)
       : undefined;
     throw new EntryVersionVectorStageError(cause, cleanupError);
@@ -435,11 +482,17 @@ async function loadCurrentEntry(env: Env, entryId: string): Promise<CurrentEntry
        e.visibility,
        ep.content_type AS current_content_type,
        ep.source_url AS current_source_url,
+       ep.materialized_content AS current_materialized_content,
        (
          SELECT d.title FROM documents d
          WHERE d.episode_id = e.current_episode_id
          ORDER BY d.created_at DESC, d.id ASC LIMIT 1
        ) AS current_document_title,
+       (
+         SELECT d.title_origin FROM documents d
+         WHERE d.episode_id = e.current_episode_id
+         ORDER BY d.created_at DESC, d.id ASC LIMIT 1
+       ) AS current_document_title_origin,
        (
          SELECT p.page FROM passages p
          WHERE p.episode_id = e.current_episode_id AND p.page IS NOT NULL
@@ -454,6 +507,48 @@ async function loadCurrentEntry(env: Env, entryId: string): Promise<CurrentEntry
      LEFT JOIN episodes ep ON ep.id = e.current_episode_id
      WHERE e.id = ?`,
   ).bind(entryId).first<CurrentEntryRow>();
+}
+
+/**
+ * Load one historical state and its immutable source envelope without allowing
+ * a caller to infer whether another owner's entry or snapshot exists.
+ */
+export async function loadOwnedRestoreSnapshot(
+  env: Env,
+  ownerUserId: string,
+  entryId: string,
+  snapshotId?: string,
+): Promise<OwnedRestoreSnapshot | null> {
+  const requestedSnapshotId = snapshotId ?? null;
+  const snapshot = await env.DB.prepare(
+    `SELECT s.id, s.entry_id, s.episode_id, s.content, s.tags, s.source,
+            s.created_at, s.valid_from, s.valid_to, s.epistemic_status,
+            d.title AS source_title,
+            d.title_origin AS source_title_origin,
+            COALESCE(d.source_url, ep.source_url) AS source_url,
+            COALESCE(d.content_type, ep.content_type) AS content_type
+     FROM entry_snapshots s
+     JOIN entries parent
+       ON parent.id = s.entry_id AND parent.owner_user_id = ?
+     LEFT JOIN episodes ep
+       ON ep.id = s.episode_id
+      AND ep.entry_id = s.entry_id
+      AND ep.owner_user_id = parent.owner_user_id
+     LEFT JOIN documents d
+       ON d.episode_id = ep.id
+      AND (d.owner_user_id = parent.owner_user_id OR d.owner_user_id = '')
+     WHERE s.entry_id = ? AND (? IS NULL OR s.id = ?)
+     ORDER BY s.created_at DESC, s.id DESC LIMIT 1`,
+  ).bind(ownerUserId, entryId, requestedSnapshotId, requestedSnapshotId)
+    .first<OwnedRestoreSnapshot>();
+  if (snapshot && !snapshot.source_title?.trim()) {
+    return {
+      ...snapshot,
+      source_title: null,
+      source_title_origin: null,
+    };
+  }
+  return snapshot;
 }
 
 async function loadRestoreSnapshot(
@@ -473,6 +568,13 @@ function validateInput(input: CommitEntryVersionInput): void {
     throw new EntryVersionValidationError(`Unsupported mutation kind: ${String(input.kind)}`);
   }
   if (!input.actorUserId) throw new EntryVersionValidationError("actorUserId is required");
+  if (input.titleOrigin !== undefined
+      && !(DOCUMENT_TITLE_ORIGINS as readonly string[]).includes(input.titleOrigin)) {
+    throw new EntryVersionValidationError("titleOrigin must be explicit or generated");
+  }
+  if (input.titleOrigin !== undefined && !input.title?.trim()) {
+    throw new EntryVersionValidationError("titleOrigin requires a title");
+  }
   if (typeof input.rawContent !== "string") {
     throw new EntryVersionValidationError("rawContent must be a string");
   }
@@ -561,10 +663,11 @@ export async function commitEntryVersion(
   const contentType = input.contentType
     ?? current?.current_content_type
     ?? (sourceUrl ? "research" : "text");
-  // Visibility is its own governed field. Tags only establish the initial
-  // value; ordinary version writes cannot silently publish or privatize data.
+  // Existing versions retain visibility. New captures are private unless the
+  // caller explicitly publishes them.
   const visibility: EntryVisibility = current?.visibility
-    ?? (tags.includes("private") ? "private" : "public");
+    ?? input.visibility
+    ?? "private";
   const validFrom = input.validFrom === undefined
     ? (current?.valid_from ?? now)
     : input.validFrom;
@@ -575,7 +678,10 @@ export async function commitEntryVersion(
   const episodeContentHash = await sha256Hex(input.rawContent);
   const documentContentHash = await sha256Hex(input.materializedContent);
   const baselineHash = baselineEpisodeId ? await sha256Hex(current!.content) : null;
-  const sections = planSections(findHeaders(input.materializedContent), input.materializedContent.length);
+  const { sections, passages: plannedPassages } = planVersionPassages(
+    input.materializedContent,
+    episodeId,
+  );
   // Every immutable episode has exactly one document envelope. Conversational
   // notes may have no passage/section children, but the 1:1 envelope keeps
   // provenance and future enrichment unambiguous.
@@ -584,19 +690,27 @@ export async function commitEntryVersion(
   // Conversational notes cite their immutable episode. Passage-level evidence
   // is reserved for document-like material where offsets and hierarchy add
   // information beyond the episode itself.
-  const passages = hasPassageEvidence
-    ? planPassages(input.materializedContent, episodeId, sections)
-    : [];
+  const passages = hasPassageEvidence ? plannedPassages : [];
   const page = input.page === undefined
     ? (current?.current_page ?? null)
     : input.page;
   const pageEnd = input.pageEnd === undefined
     ? (current?.current_page_end ?? page)
     : input.pageEnd;
-  const title = input.title?.trim()
-    || current?.current_document_title
-    || sections[0]?.title
-    || (sourceUrl ? sourceUrl : "Untitled Document");
+  const incomingTitle = input.title?.trim() || null;
+  const inheritedTitle = current
+    && (!CONTENT_REPLACING_MUTATION_KINDS.has(input.kind)
+      || current.current_document_title_origin === "explicit")
+    ? current.current_document_title
+    : null;
+  const title = incomingTitle
+    || inheritedTitle
+    || deriveDocumentTitle(input.materializedContent, sourceUrl);
+  const titleOrigin: DocumentTitleOrigin = incomingTitle
+    ? (input.titleOrigin ?? "explicit")
+    : inheritedTitle
+      ? (current?.current_document_title_origin ?? "generated")
+      : "generated";
 
   // Historical passage vectors are immutable episode evidence used by knownAt
   // recall. Only the mutable entry projection vectors become stale here.
@@ -604,7 +718,7 @@ export async function commitEntryVersion(
     ? [...new Set(parseJsonArray(current.vector_ids))]
     : [];
 
-  const staged = await stageVectors(env, {
+  const staged = await stageVersionVectors(env, {
     entryId: targetEntryId,
     episodeId,
     mutationId,
@@ -693,10 +807,10 @@ export async function commitEntryVersion(
       statements.push(env.DB.prepare(
         `INSERT INTO documents (
            id, title, source_url, content_type, created_at, episode_id,
-           owner_user_id, content_hash, version
+           owner_user_id, content_hash, version, title_origin
          )
          SELECT ?, COALESCE(NULLIF(?, ''), 'Untitled Memory'), ?, ?,
-                COALESCE(recorded_at, created_at), ?, owner_user_id, ?, ?
+                COALESCE(recorded_at, created_at), ?, owner_user_id, ?, ?, 'generated'
          FROM entries
          WHERE id = ? AND owner_user_id = ? AND revision = ?
            AND current_episode_id IS NULL`,
@@ -769,22 +883,23 @@ export async function commitEntryVersion(
       input.actorUserId,
       documentContentHash,
       String(newRevision),
+      titleOrigin,
     ] as const;
     if (current) {
       statements.push(env.DB.prepare(
         `INSERT INTO documents (
            id, title, source_url, content_type, created_at, episode_id,
-           owner_user_id, content_hash, version
+           owner_user_id, content_hash, version, title_origin
          )
-         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? FROM entries
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM entries
          WHERE id = ? AND owner_user_id = ? AND revision = ?`,
       ).bind(...documentBindings, targetEntryId, input.actorUserId, guardedRevision));
     } else {
       statements.push(env.DB.prepare(
         `INSERT INTO documents (
            id, title, source_url, content_type, created_at, episode_id,
-           owner_user_id, content_hash, version
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           owner_user_id, content_hash, version, title_origin
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(...documentBindings));
     }
 

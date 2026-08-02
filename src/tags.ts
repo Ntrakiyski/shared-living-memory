@@ -35,6 +35,17 @@ export function getKind(tags: string[]): MemoryKind | null {
   return (KIND_VALUES as readonly string[]).includes(value) ? value : null;
 }
 
+// ─── Recall eligibility ────────────────────────────────────────────────────────
+// Entries whose lifecycle status is 'deprecated' (tag) or whose epistemic status
+// is 'superseded' / 'retracted' (replaced or withdrawn) are no longer trustworthy
+// enough to surface in recall or graph traversal. Shared gate so every recall
+// surface — hybrid search, tag path, and graph expansion — excludes the same set.
+export function isRecallEligible(tags: string[], epistemicStatus?: string | null): boolean {
+  if (getStatus(tags) === "deprecated") return false;
+  const status = epistemicStatus ?? "canonical";
+  return status !== "superseded" && status !== "retracted";
+}
+
 export function withKind(tags: string[], kind: MemoryKind): string[] {
   const cleaned = tags.filter(t => !t.startsWith(KIND_PREFIX));
   return [...cleaned, `${KIND_PREFIX}${kind}`];

@@ -149,7 +149,6 @@ export type {
 export {
   reindexAllVectors,
   captureEntry,
-  createPassagesForEntry,
   createSnapshot,
 } from "./ingest";
 

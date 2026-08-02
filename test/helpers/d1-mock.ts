@@ -93,13 +93,29 @@ function guardedEntry(
   ownerUserId: unknown,
   revision: unknown,
   requireMissingEpisode = false,
+  expectedCurrentEpisode: unknown = undefined,
 ): any | null {
   const row = entries.find((entry: any) => entry.id === id);
   if (!row) return null;
   normalizeEntry(row);
   if (row.owner_user_id !== ownerUserId || Number(row.revision) !== Number(revision)) return null;
   if (requireMissingEpisode && row.current_episode_id !== null) return null;
+  if (expectedCurrentEpisode !== undefined && row.current_episode_id !== expectedCurrentEpisode) return null;
   return row;
+}
+
+function passageGuardPasses(
+  db: { passages: any[] },
+  entryId: unknown,
+  episodeId: unknown,
+  expectedCount: unknown,
+  sql: string,
+): boolean {
+  if (!sql.includes("FROM passages p")) return true;
+  const count = db.passages.filter(
+    (passage: any) => passage.entry_id === entryId && passage.episode_id === episodeId,
+  ).length;
+  return count === Number(expectedCount);
 }
 
 export class D1Mock {
@@ -122,6 +138,7 @@ export class D1Mock {
   security_events: any[] = [];
   action_proposals: any[] = [];
   proposal_events: any[] = [];
+  erasure_receipts: any[] = [];
 
   prepare(sql: string) {
     const s = sql.replace(/\s+/g, " ").trim();
@@ -186,6 +203,46 @@ export class D1Mock {
           }
           return { meta: { changes: count } };
         }
+        if (s.startsWith("UPDATE entries SET vector_sync_pending = 1, updated_at = ?")) {
+          const [updatedAt, id, ownerUserId] = args;
+          const row = db.entries.find((entry: any) => entry.id === id);
+          if (!row) return { meta: { changes: 0 } };
+          normalizeEntry(row);
+          const expectedVisibility = s.includes("visibility = 'private'")
+            ? "private"
+            : s.includes("visibility = ?") ? args[3] : null;
+          const expectedRevision = s.includes("revision = ?") ? args[4] : null;
+          if (row.owner_user_id !== ownerUserId
+              || expectedVisibility && row.visibility !== expectedVisibility
+              || expectedRevision != null && Number(row.revision) !== Number(expectedRevision)) {
+            return { meta: { changes: 0 } };
+          }
+          row.vector_sync_pending = 1;
+          row.updated_at = updatedAt;
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("UPDATE entries SET visibility = ?, tags = ?, vector_sync_pending = 0")) {
+          const [
+            visibility, tags, revisionIncrement, shouldRecord, recordedAt,
+            updatedAt, id, ownerUserId, expectedVisibility, expectedRevision,
+          ] = args;
+          const row = db.entries.find((entry: any) => entry.id === id);
+          if (!row) return { meta: { changes: 0 } };
+          normalizeEntry(row);
+          if (row.owner_user_id !== ownerUserId
+              || row.visibility !== expectedVisibility
+              || Number(row.revision) !== Number(expectedRevision)
+              || Number(row.vector_sync_pending) !== 1) {
+            return { meta: { changes: 0 } };
+          }
+          row.visibility = visibility;
+          row.tags = tags;
+          row.vector_sync_pending = 0;
+          row.revision = Number(row.revision) + Number(revisionIncrement);
+          if (Number(shouldRecord) === 1) row.recorded_at = recordedAt;
+          row.updated_at = updatedAt;
+          return { meta: { changes: 1 } };
+        }
         if (
           s.startsWith("UPDATE entries SET content = ?, tags = ?, source = ?, vector_ids = ?") &&
           s.includes("revision = revision + 1")
@@ -241,8 +298,38 @@ export class D1Mock {
           return { meta: { changes: row ? 1 : 0 } };
         }
         if (s.startsWith("UPDATE entries SET vector_ids")) {
-          const [vector_ids, id] = args;
-          const row = db.entries.find((e: any) => e.id === id);
+          const [
+            vector_ids, id, ownerUserId, revision, currentEpisodeId,
+            guardEntryId, guardEpisodeId, expectedPassageCount,
+          ] = args;
+          const row = s.includes("owner_user_id = ?")
+            ? guardedEntry(db.entries, id, ownerUserId, revision, false, currentEpisodeId)
+            : db.entries.find((e: any) => e.id === id);
+          const projectionIntact = passageGuardPasses(
+            db, guardEntryId, guardEpisodeId, expectedPassageCount, s,
+          );
+          if (row && projectionIntact) row.vector_ids = vector_ids;
+          return { meta: { changes: row && projectionIntact ? 1 : 0 } };
+        }
+        if (s.startsWith("UPDATE passages SET vector_ids")) {
+          const [
+            vector_ids, id, entryId, episodeId,
+            guardEntryId, ownerUserId, revision, currentEpisodeId,
+            guardPassageEntryId, guardEpisodeId, expectedPassageCount,
+          ] = args;
+          const entryGuardPassed = !s.includes("AND EXISTS")
+            || guardedEntry(
+              db.entries, guardEntryId, ownerUserId, revision, false, currentEpisodeId,
+            ) !== null;
+          const projectionIntact = passageGuardPasses(
+            db, guardPassageEntryId, guardEpisodeId, expectedPassageCount, s,
+          );
+          const row = entryGuardPassed && projectionIntact
+            ? db.passages.find((passage: any) =>
+              passage.id === id
+              && (entryId === undefined || passage.entry_id === entryId)
+              && (episodeId === undefined || passage.episode_id === episodeId))
+            : undefined;
           if (row) row.vector_ids = vector_ids;
           return { meta: { changes: row ? 1 : 0 } };
         }
@@ -372,16 +459,59 @@ export class D1Mock {
           db.agentRuns.push({ id, user_id: userId, started_at: startedAt, completed_at: null, tool_count: 0 });
           return { meta: { changes: 1 } };
         }
+        if (s.startsWith("INSERT INTO erasure_receipts")) {
+          const [operation_id, entry_id, owner_user_id, actor_user_id, vector_count, status, created_at, updated_at, completed_at] = args;
+          db.erasure_receipts.push({
+            operation_id, entry_id, owner_user_id, actor_user_id,
+            vector_count, status, created_at, updated_at, completed_at,
+          });
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("INSERT INTO audit_completion_reconciliation")) {
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("UPDATE audit_completion_reconciliation")) {
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("UPDATE erasure_receipts")) {
+          const [completedAt, updatedAt, operationId] = args;
+          const row = db.erasure_receipts.find(
+            (r: any) => r.operation_id === operationId && r.status === "pending_cleanup",
+          );
+          if (!row) return { meta: { changes: 0 } };
+          row.status = "complete";
+          row.completed_at = completedAt;
+          row.updated_at = updatedAt;
+          return { meta: { changes: 1 } };
+        }
         if (s.startsWith("INSERT INTO agent_events")) {
           const [id, runId, toolName, inputSummary, outputSummary, durationMs, error, createdAt] = args;
           db.agentEvents.push({ id, run_id: runId, tool_name: toolName, input_summary: inputSummary, output_summary: outputSummary, duration_ms: durationMs, error, created_at: createdAt });
           return { meta: { changes: 1 } };
         }
-        if (s.startsWith("UPDATE agent_runs SET completed_at")) {
-          const [completedAt, toolCount, id] = args;
-          const row = db.agentRuns.find((r: any) => r.id === id);
-          if (row) { row.completed_at = completedAt; row.tool_count = toolCount; }
-          return { meta: { changes: row ? 1 : 0 } };
+        if (s.startsWith("UPDATE agent_runs")) {
+          const runId = args[args.length - 1];
+          const row = db.agentRuns.find((r: any) => r.id === runId);
+          if (!row) return { meta: { changes: 0 } };
+          if (s.startsWith("UPDATE agent_runs SET completed_at = ?, tool_count")) {
+            row.completed_at = args[0];
+            row.tool_count = args[1];
+          } else if (s.startsWith("UPDATE agent_runs SET status = ?")) {
+            row.status = args[0];
+            row.completed_at = args[1];
+            row.redacted_result_summary = args[2];
+            row.result_hash = args[3];
+            row.error_code = args[4];
+          } else if (s.startsWith("UPDATE agent_runs SET completed_at = ?, status = ?")) {
+            row.completed_at = args[0];
+            row.status = args[1];
+            row.redacted_result_summary = args[2];
+            row.result_hash = args[3];
+            row.error_code = args[4];
+          } else {
+            return { meta: { changes: 0 } };
+          }
+          return { meta: { changes: 1 } };
         }
         if (s.startsWith("DELETE FROM edge_proposals WHERE source_id")) {
           const [sourceId, targetId] = args;
@@ -601,15 +731,46 @@ export class D1Mock {
         }
         if (s.startsWith("INSERT INTO documents")) {
           if (s.includes("episode_id") && s.includes("content_hash")) {
-            const values = args.slice(0, 9);
-            const [id, title, source_url, content_type, created_at, episode_id, owner_user_id, content_hash, version] = values;
+            if (s.includes("COALESCE(recorded_at, created_at)")) {
+              const [
+                id, title, source_url, content_type, episode_id, content_hash,
+                version, guardId, guardOwner, revision,
+              ] = args;
+              const entry = guardedEntry(db.entries, guardId, guardOwner, revision, true);
+              if (!entry) return { meta: { changes: 0 } };
+              db.documents.push({
+                id,
+                title,
+                source_url,
+                content_type,
+                created_at: entry.recorded_at ?? entry.created_at,
+                episode_id,
+                owner_user_id: entry.owner_user_id,
+                content_hash,
+                version,
+                title_origin: "generated",
+              });
+              return { meta: { changes: 1 } };
+            }
+
+            const hasBoundTitleOrigin = s.includes("title_origin");
+            const valueCount = hasBoundTitleOrigin ? 10 : 9;
+            const values = args.slice(0, valueCount);
+            const [
+              id, title, source_url, content_type, created_at, episode_id,
+              owner_user_id, content_hash, version,
+            ] = values;
+            const title_origin = hasBoundTitleOrigin ? values[9] : "generated";
             if (s.includes("SELECT")) {
-              const [guardId, guardOwner, revision] = args.slice(9);
+              const [guardId, guardOwner, revision] = args.slice(valueCount);
               if (!guardedEntry(db.entries, guardId, guardOwner, revision)) {
                 return { meta: { changes: 0 } };
               }
             }
-            db.documents.push({ id, title, source_url, content_type, created_at, episode_id, owner_user_id, content_hash, version });
+            db.documents.push({
+              id, title, source_url, content_type, created_at, episode_id,
+              owner_user_id, content_hash, version, title_origin,
+            });
             return { meta: { changes: 1 } };
           }
 
@@ -646,6 +807,29 @@ export class D1Mock {
           return { meta: { changes: 1 } };
         }
         if (s.startsWith("INSERT INTO entry_snapshots")) {
+          if (s.includes("'visibility'") && s.includes("SELECT")) {
+            const [id, createdAt, mutationId, entryId, ownerUserId, revision, visibility] = args;
+            const entry = guardedEntry(db.entries, entryId, ownerUserId, revision);
+            if (!entry || entry.visibility !== visibility) return { meta: { changes: 0 } };
+            db.entry_snapshots.push({
+              id,
+              entry_id: entry.id,
+              content: entry.content,
+              tags: entry.tags,
+              source: entry.source,
+              created_at: createdAt,
+              episode_id: entry.current_episode_id,
+              mutation_id: mutationId,
+              mutation_kind: "visibility",
+              recorded_at: entry.recorded_at,
+              valid_from: entry.valid_from,
+              valid_to: entry.valid_to,
+              epistemic_status: entry.epistemic_status,
+              revision: entry.revision,
+              visibility: entry.visibility,
+            });
+            return { meta: { changes: 1 } };
+          }
           if (s.includes("episode_id") && s.includes("SELECT")) {
             const [
               id, created_at, baselineEpisodeId, mutation_id, mutation_kind,
@@ -682,9 +866,20 @@ export class D1Mock {
           return { meta: { changes: 1 } };
         }
         if (s.startsWith("INSERT INTO vector_cleanup_queue")) {
-          const [id, vector_ids, reason, created_at, updated_at, entryId, ownerUserId, revision] = args;
-          const entry = guardedEntry(db.entries, entryId, ownerUserId, revision);
-          if (!entry) return { meta: { changes: 0 } };
+          const [
+            id, vector_ids, reason, created_at, updated_at,
+            entryId, ownerUserId, revision, currentEpisodeId,
+            guardEntryId, guardEpisodeId, expectedPassageCount,
+          ] = args;
+          if (s.includes("SELECT")) {
+            const entry = guardedEntry(
+              db.entries, entryId, ownerUserId, revision, false, currentEpisodeId,
+            );
+            const projectionIntact = passageGuardPasses(
+              db, guardEntryId, guardEpisodeId, expectedPassageCount, s,
+            );
+            if (!entry || !projectionIntact) return { meta: { changes: 0 } };
+          }
           db.vector_cleanup_queue.push({
             id, vector_ids, reason, attempts: 0, last_error: null,
             created_at, updated_at,
@@ -934,9 +1129,42 @@ export class D1Mock {
             ...entry,
             current_content_type: episode?.content_type ?? null,
             current_source_url: episode?.source_url ?? null,
+            current_materialized_content: episode?.materialized_content ?? null,
             current_document_title: document?.title ?? null,
+            current_document_title_origin: document?.title_origin ?? "generated",
             current_page: currentPassages.find((row: any) => row.page != null)?.page ?? null,
             current_page_end: currentPassages.find((row: any) => row.page_end != null)?.page_end ?? null,
+          };
+        }
+        if (s.includes("FROM entry_snapshots s JOIN entries parent") && s.includes("source_title")) {
+          const [ownerUserId, entryId, requestedSnapshotId] = args;
+          const entry = db.entries.find((row: any) => row.id === entryId);
+          if (!entry || normalizeEntry(entry).owner_user_id !== ownerUserId) return null;
+          const snapshot = db.entry_snapshots
+            .filter((row: any) => row.entry_id === entryId
+              && (requestedSnapshotId == null || row.id === requestedSnapshotId))
+            .sort((a: any, b: any) =>
+              (Number(b.created_at) - Number(a.created_at))
+              || String(b.id).localeCompare(String(a.id)))[0];
+          if (!snapshot) return null;
+          const episode = db.episodes.find((row: any) =>
+            row.id === snapshot.episode_id
+            && row.entry_id === entryId
+            && row.owner_user_id === ownerUserId);
+          const document = episode
+            ? db.documents.find((row: any) =>
+                row.episode_id === episode.id
+                && (row.owner_user_id === ownerUserId || row.owner_user_id === ""))
+            : undefined;
+          const sourceTitle = typeof document?.title === "string" && document.title.trim()
+            ? document.title
+            : null;
+          return {
+            ...snapshot,
+            source_title: sourceTitle,
+            source_title_origin: sourceTitle ? document?.title_origin ?? null : null,
+            source_url: document?.source_url ?? episode?.source_url ?? null,
+            content_type: document?.content_type ?? episode?.content_type ?? null,
           };
         }
         if (
@@ -971,7 +1199,9 @@ export class D1Mock {
           };
         }
         if (s.includes("FROM documents WHERE episode_id = ?") && s.includes("owner_user_id = ?")) {
-          return db.documents.find((row: any) => row.episode_id === args[0] && row.owner_user_id === args[1]) ?? null;
+          return db.documents.find((row: any) => row.episode_id === args[0]
+            && (row.owner_user_id === args[1]
+              || s.includes("owner_user_id = ''") && row.owner_user_id === "")) ?? null;
         }
         if (s.includes("FROM vector_cleanup_queue") && s.includes("WHERE id")) {
           return db.vector_cleanup_queue.find((row: any) => row.id === args[0]) ?? null;
@@ -1003,6 +1233,15 @@ export class D1Mock {
           const userId = args[0] as string;
           const row = db.users.find((u: any) => u.id === userId);
           return row ? { id: row.id, username: row.username, status: row.status } : null;
+        }
+        if (s.includes("SELECT role FROM users WHERE id")) {
+          const userId = args[0] as string;
+          const row = db.users.find((u: any) => u.id === userId && u.status === "active");
+          if (row) return { role: row.role ?? "member" };
+          return userId === TEST_USER_ID ? { role: "admin" } : null;
+        }
+        if (s === "SELECT 1 AS ok" || s.startsWith("SELECT 1 AS ok")) {
+          return { ok: 1 };
         }
         if (s.includes("SELECT username FROM users WHERE id")) {
           const userId = args[0] as string;
@@ -1067,6 +1306,20 @@ export class D1Mock {
         if (s.includes("COUNT(*) as count") && s.includes("FROM entries") && s.includes("epistemic_status = 'stale'")) {
           return { count: db.entries.filter((e: any) => e.epistemic_status === "stale").length };
         }
+        // ─── Erasure receipts (first) — metadata-only status lookup ─────
+        if (s.includes("FROM erasure_receipts") && s.includes("WHERE operation_id = ?")) {
+          const row = db.erasure_receipts.find((r: any) => r.operation_id === args[0]);
+          if (!row) return null;
+          return {
+            operation_id: row.operation_id,
+            entry_id: row.entry_id,
+            owner_user_id: row.owner_user_id,
+            status: row.status,
+            vector_count: row.vector_count,
+            created_at: row.created_at,
+            completed_at: row.completed_at,
+          };
+        }
         // ─── Agent runs/events first() — must precede generic COUNT ──
         if (s.includes("FROM agent_runs") && s.includes("COUNT(*) as count") && s.includes("started_at >= ?")) {
           const cutoff = args[0] as number;
@@ -1113,6 +1366,18 @@ export class D1Mock {
           const [sourceId, targetId] = args;
           return db.edgeProposals.find((pp: any) => pp.source_id === sourceId && pp.target_id === targetId && pp.type === typeValue && pp.status === "pending") ?? null;
         }
+        if (
+          s.startsWith("SELECT current_episode_id, revision, recorded_at FROM entries")
+          && s.includes("WHERE id = ? AND owner_user_id = ?")
+        ) {
+          const row = db.entries.find((entry: any) => entry.id === args[0]);
+          if (!row || normalizeEntry(row).owner_user_id !== args[1]) return null;
+          return {
+            current_episode_id: row.current_episode_id,
+            revision: row.revision,
+            recorded_at: row.recorded_at,
+          };
+        }
         if (s.includes("WHERE id") && !s.includes("json_each")) {
           const row = db.entries.find((e: any) => e.id === args[0]);
           if (!row) return null;
@@ -1152,6 +1417,93 @@ export class D1Mock {
         return null;
       },
       async all() {
+        if (s.includes("FROM episodes ep LEFT JOIN documents d") && s.includes("COUNT(*) OVER() AS total_count")) {
+          const [entryId, ownerUserId] = args;
+          const owned = db.episodes
+            .filter((row: any) => row.entry_id === entryId && row.owner_user_id === ownerUserId)
+            .sort((a: any, b: any) =>
+              (Number(b.created_at) - Number(a.created_at))
+              || String(b.id).localeCompare(String(a.id)));
+          const totalCount = owned.length;
+          return { results: owned.slice(0, 50).map((row: any) => {
+            const document = db.documents.find((candidate: any) =>
+              candidate.episode_id === row.id
+              && (candidate.owner_user_id === ownerUserId || candidate.owner_user_id === ""));
+            return {
+              id: row.id,
+              mutation_kind: row.mutation_kind ?? null,
+              parent_episode_id: row.parent_episode_id ?? null,
+              restored_from_snapshot_id: row.restored_from_snapshot_id ?? null,
+              content_hash: row.content_hash ?? null,
+              source: row.source ?? null,
+              content_type: row.content_type ?? null,
+              source_title: document?.title ?? null,
+              source_url: document?.source_url ?? row.source_url ?? null,
+              created_at: row.created_at,
+              total_count: totalCount,
+            };
+          }) };
+        }
+        if (s.includes("FROM entry_snapshots s JOIN entries parent") && s.includes("COUNT(*) OVER() AS total_count")) {
+          const [ownerUserId, entryId] = args;
+          const entry = db.entries.find((row: any) => row.id === entryId);
+          if (!entry || normalizeEntry(entry).owner_user_id !== ownerUserId) return { results: [] };
+          const owned = db.entry_snapshots
+            .filter((row: any) => row.entry_id === entryId)
+            .sort((a: any, b: any) =>
+              (Number(b.created_at) - Number(a.created_at))
+              || String(b.id).localeCompare(String(a.id)));
+          const totalCount = owned.length;
+          return { results: owned.slice(0, 50).map((row: any) => ({
+            id: row.id,
+            episode_id: row.episode_id ?? null,
+            mutation_kind: row.mutation_kind ?? null,
+            recorded_at: row.recorded_at ?? null,
+            revision: row.revision ?? null,
+            created_at: row.created_at,
+            total_count: totalCount,
+          })) };
+        }
+        if (s.includes("SELECT * FROM episodes WHERE entry_id IN")) {
+          const entryIds = new Set(args.map(String));
+          return { results: db.episodes.filter((row: any) => entryIds.has(String(row.entry_id))).map((row: any) => ({ ...row })) };
+        }
+        if (s.includes("SELECT * FROM episodes WHERE id IN")) {
+          const episodeIds = new Set(args.map(String));
+          return { results: db.episodes.filter((row: any) => episodeIds.has(String(row.id))).map((row: any) => ({ ...row })) };
+        }
+        if (s.includes("SELECT * FROM entry_snapshots WHERE entry_id IN") && !s.includes("recorded_at IS NOT NULL")) {
+          const entryIds = new Set(args.map(String));
+          return { results: db.entry_snapshots.filter((row: any) => entryIds.has(String(row.entry_id))).map((row: any) => ({ ...row })) };
+        }
+        if (s.includes("SELECT * FROM documents WHERE episode_id IN")) {
+          const ownerBound = s.includes("owner_user_id = ?");
+          const ownerlessAllowed = s.includes("owner_user_id = ''");
+          const ownerUserId = ownerBound ? String(args[args.length - 1]) : undefined;
+          const episodeIds = new Set((ownerBound ? args.slice(0, -1) : args).map(String));
+          return { results: db.documents
+            .filter((row: any) => episodeIds.has(String(row.episode_id))
+              && (!ownerBound || row.owner_user_id === ownerUserId
+                || ownerlessAllowed && row.owner_user_id === ""))
+            .map((row: any) => ({ ...row })) };
+        }
+        if (s.includes("SELECT * FROM documents WHERE id IN")) {
+          const ownerBound = s.includes("owner_user_id = ?");
+          const ownerlessAllowed = s.includes("owner_user_id = ''");
+          const ownerUserId = ownerBound ? String(args[args.length - 1]) : undefined;
+          const documentIds = new Set((ownerBound ? args.slice(0, -1) : args).map(String));
+          return { results: db.documents
+            .filter((row: any) => documentIds.has(String(row.id))
+              && (!ownerBound || row.owner_user_id === ownerUserId
+                || ownerlessAllowed && row.owner_user_id === ""))
+            .map((row: any) => ({ ...row })) };
+        }
+        if (s.includes("SELECT * FROM document_sections WHERE document_id IN")) {
+          const documentIds = new Set(args.map(String));
+          return { results: db.document_sections
+            .filter((row: any) => documentIds.has(String(row.document_id)))
+            .map((row: any) => ({ ...row })) };
+        }
         if (s.includes("FROM edge_versions WHERE edge_id = ?") && s.includes("ORDER BY revision DESC")) {
           const edgeId = args[0];
           const results = db.edge_versions
@@ -1380,6 +1732,16 @@ export class D1Mock {
             });
           return { results };
         }
+        if (s.includes("SELECT entry_id, episode_id")
+            && s.includes("FROM entry_snapshots")
+            && s.includes("episode_id IS NOT NULL")) {
+          const entryIds = new Set(args.map(String));
+          const results = db.entry_snapshots
+            .filter((row: any) => entryIds.has(String(row.entry_id))
+              && typeof row.episode_id === "string" && row.episode_id.length > 0)
+            .map((row: any) => ({ entry_id: row.entry_id, episode_id: row.episode_id }));
+          return { results };
+        }
         if (
           s.includes("SELECT id, content, tags, source, created_at, owner_user_id") &&
           s.includes("current_episode_id, valid_from, valid_to, recorded_at") &&
@@ -1481,7 +1843,7 @@ export class D1Mock {
           return { results };
         }
         if (s.includes("FROM passages") && s.includes("(? IS NULL OR episode_id = ?)")) {
-          const [ownerUserId, _documentOwner, entryId, nullableEpisodeId, episodeId] = args;
+          const [ownerUserId, _documentOwner, entryId, nullableEpisodeId, episodeId, , priorityPassageId] = args;
           const selectedEpisodeId = nullableEpisodeId == null ? null : episodeId;
           const results = db.passages
             .filter((row: any) => row.entry_id === entryId && (!selectedEpisodeId || row.episode_id === selectedEpisodeId))
@@ -1495,6 +1857,7 @@ export class D1Mock {
             .filter((row: any) => !row.section_id || db.document_sections.some((section: any) =>
               section.id === row.section_id && section.document_id === row.document_id))
             .sort((a: any, b: any) =>
+              ((a.id === priorityPassageId ? 0 : 1) - (b.id === priorityPassageId ? 0 : 1)) ||
               (b.created_at - a.created_at) ||
               ((a.start_offset ?? 0) - (b.start_offset ?? 0)) ||
               String(a.id).localeCompare(String(b.id)))
@@ -1522,8 +1885,19 @@ export class D1Mock {
             .map((row: any) => ({ ...row }));
           return { results };
         }
+        if (s.includes("FROM passages") && s.includes("WHERE entry_id = ? AND episode_id IS NULL")) {
+          const results = db.passages
+            .filter((row: any) => row.entry_id === args[0] && row.episode_id == null)
+            .sort((a: any, b: any) => ((a.start_offset ?? 0) - (b.start_offset ?? 0)) || String(a.id).localeCompare(String(b.id)))
+            .map((row: any) => ({ ...row }));
+          return { results };
+        }
         if (s.includes("FROM vector_cleanup_queue")) {
-          return { results: db.vector_cleanup_queue.map((row: any) => ({ ...row })) };
+          const rows = s.includes("substr(reason, 1, ?) = ?")
+            ? db.vector_cleanup_queue.filter((row: any) =>
+              String(row.reason).slice(0, Number(args[0])) === String(args[1]))
+            : db.vector_cleanup_queue;
+          return { results: rows.map((row: any) => ({ ...row })) };
         }
         if (s.includes("SELECT id, username, status, role FROM users WHERE status")) {
           const activeUsers = db.users.filter((u: any) => u.status === "active");
@@ -1600,17 +1974,31 @@ export class D1Mock {
             }));
           return { results };
         }
-        if (s.includes("FROM entries WHERE vector_ids != '[]'")) {
-          // reindexAllVectors query — entries with existing vectors.
+        if (s.includes("ep.mutation_id AS current_mutation_id") && s.includes("FROM entries e")) {
+          let bindingIndex = 0;
+          const ownerUserId = s.includes("e.owner_user_id = ?") ? args[bindingIndex++] : undefined;
+          const pendingBefore = s.includes("e.created_at < ?") ? Number(args[bindingIndex++]) : undefined;
+          const limit = Number(s.match(/LIMIT (\d+)/)?.[1] ?? Number.MAX_SAFE_INTEGER);
           const results = db.entries
             .map((entry: any) => normalizeEntry(entry))
-            .filter((entry: any) => entry.vector_ids && entry.vector_ids !== "[]")
-            .filter((entry: any) => !s.includes("AND owner_user_id = ?") || entry.owner_user_id === args[0])
+            .filter((entry: any) => ownerUserId === undefined || entry.owner_user_id === ownerUserId)
+            .filter((entry: any) => pendingBefore === undefined
+              || (entry.vector_ids === "[]" && entry.created_at < pendingBefore))
+            .sort((a: any, b: any) => (b.created_at - a.created_at) || String(a.id).localeCompare(String(b.id)))
+            .slice(0, limit)
             .map((entry: any) => ({
-              id: entry.id, content: entry.content, tags: entry.tags, source: entry.source,
-              created_at: entry.created_at, vector_ids: entry.vector_ids,
+              id: entry.id,
+              content: entry.content,
+              tags: entry.tags,
+              source: entry.source,
+              created_at: entry.created_at,
+              vector_ids: entry.vector_ids,
               owner_user_id: entry.owner_user_id,
               visibility: entry.visibility,
+              current_episode_id: entry.current_episode_id,
+              revision: entry.revision,
+              current_mutation_id: db.episodes.find((episode: any) =>
+                episode.id === entry.current_episode_id && episode.entry_id === entry.id)?.mutation_id ?? null,
             }));
           return { results };
         }
@@ -1831,11 +2219,11 @@ export class D1Mock {
             .map((e: any) => ({ id: e.id, vector_ids: e.vector_ids ?? "[]" }));
           return { results };
         }
-        if (s.includes("SELECT id, tags FROM entries WHERE id IN")) {
-          // expandGraph deprecation check.
+        if (s.includes("SELECT id, tags FROM entries WHERE id IN") || s.includes("SELECT id, tags, epistemic_status FROM entries WHERE id IN")) {
+          // expandGraph eligibility check.
           const results = db.entries
             .filter((e: any) => args.includes(e.id))
-            .map((e: any) => ({ id: e.id, tags: e.tags }));
+            .map((e: any) => ({ id: e.id, tags: e.tags, epistemic_status: normalizeEntry(e).epistemic_status }));
           return { results };
         }
         if (s.includes("FROM entries e LEFT JOIN users u ON e.owner_user_id = u.id")) {
@@ -2050,7 +2438,7 @@ export class D1Mock {
           const results = db.passages
             .filter((p: any) => entryIds.includes(p.entry_id))
             .sort((a: any, b: any) => (a.start_offset ?? 0) - (b.start_offset ?? 0))
-            .map((p: any) => ({ id: p.id, entry_id: p.entry_id, content: p.content, section: p.section ?? null, start_offset: p.start_offset ?? null, end_offset: p.end_offset ?? null, vector_ids: p.vector_ids ?? "[]" }));
+            .map((p: any) => ({ ...p, section: p.section ?? null, start_offset: p.start_offset ?? null, end_offset: p.end_offset ?? null, vector_ids: p.vector_ids ?? "[]" }));
           return { results };
         }
         if (s.includes("FROM document_sections ds") && s.includes("JOIN documents d")) {
@@ -2286,6 +2674,7 @@ export class D1Mock {
       "security_events",
       "action_proposals",
       "proposal_events",
+      "erasure_receipts",
     ] as const;
     const snapshot = new Map<string, any[]>();
     for (const table of tableNames) snapshot.set(table, structuredClone(this[table]));
@@ -2320,5 +2709,6 @@ export class D1Mock {
     this.security_events = [];
     this.action_proposals = [];
     this.proposal_events = [];
+    this.erasure_receipts = [];
   }
 }

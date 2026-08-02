@@ -327,4 +327,148 @@ describe("Remember message rendering", () => {
     expect(sendRemember).toContain("appendHashtagText(userRow, raw)");
     expect(sendRemember).not.toMatch(/userRow\s*\.\s*innerHTML\s*=/);
   });
+
+  it("defaults capture to My private and warns before Team public capture", () => {
+    expect(indexHtml).toContain('id="remember-visibility-private"');
+    expect(indexHtml).toMatch(/id="remember-visibility-private"[^>]*checked/);
+    expect(indexHtml).toContain("My private");
+    expect(indexHtml).toContain("Team public");
+    expect(extractInlineFunction("sendRemember")).toContain("confirm(");
+  });
+
+  it("apiCapture returns typed duplicates and throws every other failed response", async () => {
+    const responses = [
+      { ok: false, status: 409, body: { ok: false, error: "duplicate", action: "blocked_duplicate", match_id: "existing", match_score: 0.98, warnings: [] } },
+      { ok: false, status: 401, body: { ok: false, error: "Unauthorized" } },
+      { ok: false, status: 422, body: { ok: false, error: "secret_detected" } },
+      { ok: false, status: 500, body: { ok: false, error: "Internal error" } },
+      { ok: true, status: 200, body: { ok: false, error: "application_error" } },
+    ];
+    const fetch = vi.fn(async () => {
+      const next = responses.shift()!;
+      return { ok: next.ok, status: next.status, json: async () => next.body };
+    });
+    const apiCapture = new Function(
+      "fetch",
+      "authHeaders",
+      `"use strict"; const WORKER_URL = "https://example.test"; return (${extractInlineFunction("apiCapture")});`,
+    )(fetch, (headers: Record<string, string>) => headers) as (...args: any[]) => Promise<any>;
+
+    await expect(apiCapture("note", [], "web-ui", "private")).resolves.toMatchObject({ action: "blocked_duplicate" });
+    await expect(apiCapture("note", [], "web-ui", "private")).rejects.toThrow("Unauthorized");
+    await expect(apiCapture("note", [], "web-ui", "private")).rejects.toThrow("secret_detected");
+    await expect(apiCapture("note", [], "web-ui", "private")).rejects.toThrow("Internal error");
+    await expect(apiCapture("note", [], "web-ui", "private")).rejects.toThrow("application_error");
+  });
+
+  it("apiCapture sends private visibility when its caller omits visibility", async () => {
+    const fetch = vi.fn(async (_url: string, _init: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, id: "stored-id", action: "stored", visibility: "private", warnings: [] }),
+    }));
+    const apiCapture = new Function(
+      "fetch",
+      "authHeaders",
+      `"use strict"; const WORKER_URL = "https://example.test"; return (${extractInlineFunction("apiCapture")});`,
+    )(fetch, (headers: Record<string, string>) => headers) as (...args: any[]) => Promise<any>;
+
+    await apiCapture("note", [], "web-ui");
+
+    expect(JSON.parse(fetch.mock.calls[0]![1].body as string)).toMatchObject({ visibility: "private" });
+  });
+
+  it.each([401, 422, 500])("keeps input and never says Kept after a %i capture failure", async (status) => {
+    const input = { value: "Keep this text", disabled: false };
+    const msgs = { appendChild: vi.fn(), scrollTop: 0, scrollHeight: 0 };
+    const elements: Record<string, any> = {
+      "remember-input": input,
+      "remember-messages": msgs,
+      "remember-intro": null,
+      "remember-clear-btn": { style: {} },
+      "remember-visibility-private": { checked: true },
+      "remember-visibility-public": { checked: false },
+    };
+    const bubbles: string[] = [];
+    const sendRemember = new Function(
+      "document", "apiCapture", "appendHashtagText", "autoResize", "appendLoading",
+      "appendBrainBubble", "updateStatus", "confirm", "escHtml",
+      `"use strict"; return (${extractInlineFunction("sendRemember")});`,
+    )(
+      {
+        getElementById: (id: string) => elements[id],
+        createElement: () => ({ className: "", innerHTML: "" }),
+      },
+      vi.fn().mockRejectedValue(new Error(`Server error: ${status}`)),
+      vi.fn(),
+      vi.fn(),
+      () => ({ remove: vi.fn() }),
+      (_container: unknown, message: string) => bubbles.push(message),
+      vi.fn(),
+      vi.fn(() => true),
+      (value: string) => value,
+    ) as () => Promise<void>;
+
+    await sendRemember();
+
+    expect(input.value).toBe("Keep this text");
+    expect(bubbles.join(" ")).not.toContain("Kept");
+  });
+
+  it("retains duplicate input and names the matched entry without inventing an id", async () => {
+    const input = { value: "Duplicate note", disabled: false };
+    const msgs = { appendChild: vi.fn(), scrollTop: 0, scrollHeight: 0 };
+    const elements: Record<string, any> = {
+      "remember-input": input,
+      "remember-messages": msgs,
+      "remember-intro": null,
+      "remember-clear-btn": { style: {} },
+      "remember-visibility-private": { checked: true },
+      "remember-visibility-public": { checked: false },
+    };
+    const bubbles: string[] = [];
+    const sendRemember = new Function(
+      "document", "apiCapture", "appendHashtagText", "autoResize", "appendLoading",
+      "appendBrainBubble", "updateStatus", "confirm", "escHtml",
+      `"use strict"; return (${extractInlineFunction("sendRemember")});`,
+    )(
+      {
+        getElementById: (id: string) => elements[id],
+        createElement: () => ({ className: "", innerHTML: "" }),
+      },
+      vi.fn().mockResolvedValue({
+        ok: false,
+        error: "duplicate",
+        action: "blocked_duplicate",
+        match_id: "existing-entry",
+        match_score: 0.98,
+        warnings: [],
+      }),
+      vi.fn(),
+      vi.fn(),
+      () => ({ remove: vi.fn() }),
+      (_container: unknown, message: string) => bubbles.push(message),
+      vi.fn(),
+      vi.fn(() => true),
+      (value: string) => value,
+    ) as () => Promise<void>;
+
+    await sendRemember();
+
+    expect(input.value).toBe("Duplicate note");
+    expect(bubbles).toContain("Not stored—already matches existing-entry.");
+    expect(bubbles.join(" ")).not.toContain("Kept");
+    expect(bubbles.join(" ")).not.toMatch(/[0-9a-f-]{36}/);
+  });
+
+  it("labels export choices by privacy scope and sends the selected required mode", () => {
+    expect(indexHtml).toContain('id="export-mode"');
+    expect(indexHtml).toContain('value="my_data"');
+    expect(indexHtml).toContain('value="team_public"');
+    expect(indexHtml).toContain("includes private entries and complete history");
+    expect(indexHtml).toContain("current public entries only; no history");
+    expect(extractInlineFunction("exportMemories")).toContain("mode=");
+    expect(extractInlineFunction("exportMemories")).toContain("Complete history");
+    expect(extractInlineFunction("exportMemories")).toContain("data.episodes");
+  });
 });

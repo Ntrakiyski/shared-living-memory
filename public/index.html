@@ -1047,6 +1047,20 @@
         opacity: 0.4;
       }
 
+      .capture-visibility {
+        display: flex;
+        gap: 16px;
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+
+      .capture-visibility label {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        cursor: pointer;
+      }
+
       /* sources toggle */
       .sources-toggle {
         display: flex;
@@ -1222,6 +1236,49 @@
         background: var(--accent-soft);
         color: var(--accent-ink);
       }
+
+      .tag-chip--epistemic {
+        background: var(--accent-soft);
+        color: var(--accent-ink);
+        font-size: 10px;
+        padding: 2px 8px;
+      }
+
+      .experimental-badge {
+        font-size: 9px;
+        background: var(--surface-2);
+        color: var(--text-tertiary);
+        padding: 1px 6px;
+        border-radius: 3px;
+        margin-left: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .source-label {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        margin-left: 4px;
+      }
+
+      .sb-footer-btn {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 8px 12px;
+        border: 0;
+        border-radius: var(--radius-sm);
+        font-size: 13px;
+        color: var(--text-secondary);
+        background: none;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      .sb-footer-btn:hover { background: var(--surface-2); }
 
       .card-actions {
         display: flex;
@@ -2938,7 +2995,25 @@
           <i class="ti ti-brain"></i>
         </div>
         <h1>Shared Living Memory</h1>
-        <!-- Step 1: Connect to server -->
+        <!-- Bootstrap: workspace key + create first admin -->
+        <div id="auth-bootstrap-step" class="field-group" style="display:none">
+          <label class="sr-only" for="auth-bootstrap-token">Workspace key</label>
+          <input type="password" id="auth-bootstrap-token" placeholder="Workspace key" autocomplete="current-password" />
+          <button id="auth-bootstrap-btn" type="button" onclick="bootstrapConnect()">Continue</button>
+        </div>
+        <div id="auth-bootstrap-user" class="field-group" style="display:none">
+          <p style="color:var(--text-secondary);font-size:12px;margin:-4px 0 8px 0">This workspace has no active users yet. Create the first administrator.</p>
+          <label class="sr-only" for="auth-bootstrap-username">Administrator username</label>
+          <input type="text" id="auth-bootstrap-username" placeholder="Administrator username" autocomplete="off" maxlength="32" />
+          <button id="auth-bootstrap-create-btn" type="button" onclick="bootstrapCreateAdmin()">Create Administrator</button>
+        </div>
+        <!-- Personal-key sign-in (non-bootstrap) -->
+        <div id="auth-signin-step" class="field-group" style="display:none">
+          <label class="sr-only" for="auth-signin-key">Personal API key</label>
+          <input type="password" id="auth-signin-key" placeholder="Personal API key" autocomplete="current-password" />
+          <button id="auth-signin-btn" type="button" onclick="signInWithKey()">Sign In</button>
+        </div>
+        <!-- Legacy connect + login — shown when bootstrap check cannot reach the server -->
         <form id="auth-connect-step" class="field-group" onsubmit="connect(); return false">
           <input type="text" name="username" value="workspace" autocomplete="username" hidden />
           <label class="sr-only" for="auth-url">Shared Living Memory server URL</label>
@@ -2997,13 +3072,19 @@
           <button class="sb-tab active" id="sb-tab-recall" onclick="switchTab('recall')"><i class="ti ti-search"></i><span>Recall</span></button>
           <button class="sb-tab" id="sb-tab-recent" onclick="switchTab('recent')"><i class="ti ti-clock"></i><span>Recent</span></button>
           <button class="sb-tab" id="sb-tab-remember" onclick="switchTab('remember')"><i class="ti ti-plus"></i><span>Remember</span></button>
-          <button class="sb-tab" id="sb-tab-graph" onclick="switchTab('graph')"><i class="ti ti-affiliate"></i><span>Graph</span></button>
+          <button class="sb-tab" id="sb-tab-graph" onclick="switchTab('graph')"><i class="ti ti-affiliate"></i><span>Graph</span><span class="experimental-badge">Experimental</span></button>
         </nav>
+        <div id="admin-people-panel" class="sb-section" style="display:none">
+          <div class="sb-section-title">People</div>
+          <div id="admin-people-list"></div>
+          <button class="sb-section-btn" onclick="showAdminCreateRow()">+ Invite</button>
+        </div>
         <div class="sb-user" id="sb-user-display">
           <i class="ti ti-user-circle"></i><span id="sb-username-text"></span>
         </div>
         <div class="sb-footer">
           <button class="sb-footer-btn" onclick="openMenu()"><i class="ti ti-settings"></i><span>Settings</span></button>
+          <a class="sb-footer-btn" href="https://github.com/Ntrakiyski/shared-living-memory" target="_blank" rel="noopener noreferrer"><i class="ti ti-help"></i><span>Help</span></a>
         </div>
       </div>
 
@@ -3113,7 +3194,12 @@
               </div>
             </div>
             <div class="input-bar">
-              <div class="input-hint">Tip: add <span class="hint-tags">#tags</span> anywhere in your message</div>
+              <div class="input-hint">
+                <div class="capture-visibility" aria-label="Memory visibility">
+                  <label><input type="radio" name="remember-visibility" id="remember-visibility-private" value="private" checked /> My private</label>
+                  <label><input type="radio" name="remember-visibility" id="remember-visibility-public" value="public" /> Team public</label>
+                </div>
+              </div>
               <div class="input-inner">
                 <button id="remember-clear-btn" class="refresh-btn" onclick="clearRemember()" style="display: none" title="Clear Chat">
                   <i class="ti ti-trash"></i>
@@ -3161,8 +3247,8 @@
 
     <div id="confirm-dialog">
       <div class="confirm-sheet">
-        <h3>Forget this memory?</h3>
-        <p>This can't be undone. The memory will be removed from your brain.</p>
+        <h3>Permanently delete this memory?</h3>
+        <p>This is a compliance / erasure operation. All content, versions, and vector data will be removed and cannot be recovered. Prefer "Mark outdated" for ordinary corrections.</p>
         <div class="confirm-actions">
           <button class="btn-cancel" onclick="closeConfirm()">Cancel</button>
           <button class="btn-delete" onclick="confirmForget()">Forget</button>
@@ -3398,8 +3484,13 @@
         <button class="menu-item" id="service-identities-menu-item" onclick="openServiceIdentities()" style="display: none">
           <i class="ti ti-robot"></i> Service identities
         </button>
-        <button class="menu-item" onclick="exportMemories('json')"><i class="ti ti-download"></i> Export as JSON</button>
-        <button class="menu-item" onclick="exportMemories('markdown')"><i class="ti ti-markdown"></i> Export as Markdown</button>
+        <label class="digest-note" for="export-mode">Export contents</label>
+        <select class="filter-field" id="export-mode">
+          <option value="my_data">My data — includes private entries and complete history</option>
+          <option value="team_public">Team public — current public entries only; no history</option>
+        </select>
+        <button class="menu-item" onclick="exportMemories('json')"><i class="ti ti-download"></i> Export selected contents as JSON</button>
+        <button class="menu-item" onclick="exportMemories('markdown')"><i class="ti ti-markdown"></i> Export selected contents as Markdown</button>
         <button class="menu-item danger" onclick="logout()"><i class="ti ti-logout"></i> Disconnect</button>
       </div>
     </div>
@@ -3526,7 +3617,135 @@
         // page reload requires authentication again.
         ;['slm_token', 'slm_key', 'slm_auth_mode'].forEach((key) => localStorage.removeItem(key))
         document.getElementById('auth-url').value = localStorage.getItem('slm_url') || origin
+
+        if (typeof bootstrapCheck === 'function') bootstrapCheck()
       }
+
+      // ── Bootstrap / personal-key sign-in ────────────────────────────────
+
+      async function bootstrapCheck() {
+        const url = document.getElementById('auth-url').value.trim().replace(/\/$/, '')
+        try {
+          const res = await fetch(`${url}/api/bootstrap-status`)
+          if (!res.ok) throw new Error('unreachable')
+          const data = await res.json()
+          if (data.needs_bootstrap) {
+            document.getElementById('auth-signin-step').style.display = 'none'
+            document.getElementById('auth-bootstrap-step').style.display = ''
+            document.getElementById('auth-bootstrap-user').style.display = 'none'
+            document.getElementById('auth-connect-step').style.display = 'none'
+            document.getElementById('auth-user-step').style.display = 'none'
+          } else {
+            document.getElementById('auth-bootstrap-step').style.display = 'none'
+            document.getElementById('auth-bootstrap-user').style.display = 'none'
+            document.getElementById('auth-connect-step').style.display = 'none'
+            document.getElementById('auth-user-step').style.display = 'none'
+            document.getElementById('auth-signin-step').style.display = ''
+          }
+        } catch {
+          // Offline / unreachable — the old connect flow stays visible.
+        }
+      }
+
+      async function bootstrapConnect() {
+        const url = document.getElementById('auth-url').value.trim().replace(/\/$/, '')
+        const workspaceKey = document.getElementById('auth-bootstrap-token').value.trim()
+        const err = document.getElementById('auth-error')
+        const btn = document.getElementById('auth-bootstrap-btn')
+        if (!url || !workspaceKey) { err.textContent = 'URL and workspace key are required.'; return }
+        btn.disabled = true; btn.textContent = 'Checking...'; err.textContent = ''
+        try {
+          const res = await fetch(`${url}/api/bootstrap-status`)
+          if (!res.ok) throw new Error('Could not reach the server.')
+          const data = await res.json()
+          if (!data.needs_bootstrap) { bootstrapCheck(); return }
+          WORKER_URL = url; AUTH_TOKEN = workspaceKey
+          localStorage.setItem('slm_url', url)
+          document.getElementById('auth-bootstrap-step').style.display = 'none'
+          document.getElementById('auth-bootstrap-user').style.display = ''
+          err.textContent = ''
+        } catch (e) {
+          err.textContent = e.message || 'Could not connect.'
+        } finally {
+          btn.disabled = false; btn.textContent = 'Continue'
+        }
+      }
+
+      async function bootstrapCreateAdmin() {
+        const username = document.getElementById('auth-bootstrap-username').value.trim()
+        const err = document.getElementById('auth-error')
+        const btn = document.getElementById('auth-bootstrap-create-btn')
+        if (!username) { err.textContent = 'Enter a username for the first administrator.'; return }
+        btn.disabled = true; btn.textContent = 'Creating...'; err.textContent = ''
+        try {
+          const res = await fetch(`${WORKER_URL}/api/bootstrap`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH_TOKEN}` },
+            body: JSON.stringify({ username }),
+          })
+          const data = await res.json()
+          if (!res.ok) throw new Error(data.error || 'Bootstrap failed.')
+          document.getElementById('auth-bootstrap-user').style.display = 'none'
+          document.getElementById('key-reveal').style.display = ''
+          document.getElementById('key-reveal-value').textContent = data.key
+          CURRENT_USERNAME = data.username; USER_API_KEY = data.key
+          localStorage.setItem('slm_username', data.username)
+          AUTH_TOKEN = ''
+        } catch (e) {
+          err.textContent = e.message || 'Could not create administrator.'
+        } finally {
+          btn.disabled = false; btn.textContent = 'Create Administrator'
+        }
+      }
+
+      async function signInWithKey() {
+        const url = document.getElementById('auth-url').value.trim().replace(/\/$/, '')
+        const key = document.getElementById('auth-signin-key').value.trim()
+        const err = document.getElementById('auth-error')
+        const btn = document.getElementById('auth-signin-btn')
+        if (!url || !key) { err.textContent = 'URL and personal API key are required.'; return }
+        btn.disabled = true; btn.textContent = 'Signing in...'; err.textContent = ''
+        WORKER_URL = url
+        try {
+          const res = await fetch(`${url}/api/me`, {
+            headers: { Authorization: `Bearer ${key}` },
+          })
+          if (res.status === 401) throw new Error('Invalid personal API key.')
+          if (!res.ok) throw new Error(`Server error: ${res.status}`)
+          const data = await res.json()
+          if (!data.ok || !data.user) throw new Error('Could not resolve identity.')
+          CURRENT_USERNAME = data.user.username; USER_API_KEY = key
+          localStorage.setItem('slm_url', url)
+          localStorage.setItem('slm_username', data.user.username)
+          showApp()
+          if (data.user.role === 'admin') showAdminPanel()
+        } catch (e) {
+          err.textContent = e.message || 'Could not sign in.'
+        } finally {
+          btn.disabled = false; btn.textContent = 'Sign In'
+        }
+      }
+
+      function showAdminPanel() {
+        const panel = document.getElementById('admin-people-panel')
+        if (panel) panel.style.display = ''
+        loadAdminUsers()
+      }
+
+      async function loadAdminUsers() {
+        try {
+          const res = await fetch(`${WORKER_URL}/api/users`, { headers: authHeaders() })
+          if (!res.ok) return
+          const data = await res.json()
+          const list = document.getElementById('admin-people-list')
+          if (!list || !data.users) return
+          list.innerHTML = data.users.map((u) =>
+            '<div class="admin-user-row"><span><strong>' + escHtml(u.username) + '</strong> &mdash; ' + u.role + (u.status !== 'active' ? ' (' + u.status + ')' : '') + '</span></div>'
+          ).join('')
+        } catch {}
+      }
+
+      function escHtml(s) { return String(s).replace(/[&<>"']/g, function(c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c] || c }) }
 
       function authHeaders(extra) {
         const headers = Object.assign({}, extra || {})
@@ -3853,13 +4072,16 @@
         return json.result?.content?.[0]?.text ?? ''
       }
 
-      async function apiCapture(content, tags, source) {
+      async function apiCapture(content, tags, source, visibility = 'private') {
         const res = await fetch(`${WORKER_URL}/capture`, {
           method: 'POST',
           headers: authHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ content, tags, source: source || 'web-ui' }),
+          body: JSON.stringify({ content, tags, source: source || 'web-ui', visibility }),
         })
-        return res.json()
+        const data = await res.json().catch(() => ({}))
+        if (res.status === 409 && data.error === 'duplicate' && data.action === 'blocked_duplicate') return data
+        if (!res.ok || data.ok !== true) throw new Error(data.error || `Server error: ${res.status}`)
+        return data
       }
 
       async function apiList(n = 50, params = {}) {
@@ -3894,20 +4116,6 @@
           e.preventDefault()
           sendRecall()
         }
-      }
-
-      function formatRecallPassageForContext(passage) {
-        const citation = [
-          passage.documentTitle ? `title="${passage.documentTitle}"` : null,
-          passage.sourceUrl ? `url=${passage.sourceUrl}` : null,
-          passage.page != null ? `page=${passage.page}` : null,
-          passage.pageEnd != null ? `pageEnd=${passage.pageEnd}` : null,
-          passage.section ? `section="${passage.section}"` : null,
-          passage.startOffset != null ? `startOffset=${passage.startOffset}` : null,
-          passage.endOffset != null ? `endOffset=${passage.endOffset}` : null,
-        ].filter(Boolean)
-        const prefix = citation.length ? `[${citation.join('; ')}] ` : ''
-        return `- ${prefix}"${passage.content || ''}"`
       }
 
       async function sendRecall() {
@@ -3960,26 +4168,13 @@
             answerBubble.appendChild(answerEl)
             msgs.appendChild(answerBubble)
 
-            // Serialize results for the /chat LLM context, mirroring the MCP tool's
-            // format — dates/tags/source are needed for temporal questions
-            const memories =
-              (data.insight ? `Insight: ${data.insight}\n\n` : '') +
-              data.results
-                .map((m, i) => {
-                  const date = new Date(m.created_at).toLocaleDateString()
-                  const tagList = m.tags && m.tags.length ? ` [${m.tags.join(', ')}]` : ''
-                  const src = m.source ? ` · ${m.source}` : ''
-                  const related = m.hop > 0 ? ` [related, ${m.hop} hop${m.hop > 1 ? 's' : ''}]` : ''
-                  const evidence = Array.isArray(m.passages) && m.passages.length
-                    ? `\nEVIDENCE:\n${m.passages.map(formatRecallPassageForContext).join('\n')}`
-                    : ''
-                  return `${i + 1}. [${date}${src}${tagList}] (${Math.min(100, Math.round(m.score))}% match)${m.updated ? ' [updated]' : ''}${related}\n${m.content}${evidence}`
-                })
-                .join('\n\n')
+            // Chat is grounded server-side on the same recall the user just saw —
+            // the client never sends memory text, so answers can't be gamed with
+            // planted context that isn't in the user's actual store.
             const res = await fetch(`${WORKER_URL}/chat`, {
               method: 'POST',
               headers: authHeaders({ 'Content-Type': 'application/json' }),
-              body: JSON.stringify({ query, memories }),
+              body: JSON.stringify({ query }),
             })
 
             const reader = res.body.getReader()
@@ -4058,6 +4253,10 @@
               return `<div class="card-citation"><i class="ti ti-quote"></i> ${label}${escHtml(offsets)}</div>`
             }).join('')}</div>`
           : ''
+        const isOwned = entry.is_owned
+        const forgetHtml = isOwned
+          ? `<button class="card-action-btn forget-btn" type="button"><i class="ti ti-x"></i> Forget</button>`
+          : ''
         card.innerHTML = `
     <div class="match-line">
       <span class="match-pct">${entry.score}%</span>
@@ -4070,7 +4269,7 @@
       <div class="card-tags">${entry.tags.map((t) => `<span class="tag-chip${t === 'synthesized' ? ' tag-chip--synthesized' : ''}">${escHtml(t)}</span>`).join('')}</div>
       <div class="card-actions">
         ${
-          entry.id && entry.is_owned
+          entry.id && isOwned
             ? `<button class="card-action-btn append-btn" type="button"><i class="ti ti-writing"></i> Append</button>
              <button class="card-action-btn forget-btn" type="button"><i class="ti ti-x"></i> Forget</button>`
             : !entry.id ? `<button class="card-action-btn append-btn" type="button"><i class="ti ti-writing"></i> Append</button>` : ''
@@ -4214,13 +4413,15 @@
         card.className = 'memory-card' + (isSynthesized ? ' card--synthesized' : '') + (isRolledUp ? ' card--rolled-up' : '')
         card.dataset.id = entry.id
 
-        const privacyIcon = entry.is_private ? '<i class="ti ti-lock privacy-icon" title="Private"></i>' : ''
+        const privacyIcon = entry.is_private ? '<i class="ti ti-lock privacy-icon" title="Private"></i>' : '<i class="ti ti-world privacy-icon" title="Team public"></i>'
         const ownerBadge = entry.owner_username ? `<span class="owner-badge"><i class="ti ti-user"></i>${escHtml(entry.owner_username)}</span>` : ''
+        const epiStatus = entry.epistemic_status && entry.epistemic_status !== 'canonical' ? `<span class="tag-chip tag-chip--epistemic">${escHtml(entry.epistemic_status)}</span>` : ''
+        const sourceLabel = entry.source && entry.source !== 'api' ? `<span class="source-label"><i class="ti ti-link"></i>${escHtml(entry.source)}</span>` : ''
 
         card.innerHTML = `
 <div class="card-content" style="cursor: pointer;">${escHtml(entry.content)}</div>
 <div class="card-footer">
-  <div class="card-tags">${tags.map((t) => `<span class="tag-chip${t === 'synthesized' ? ' tag-chip--synthesized' : ''}">${escHtml(t)}</span>`).join('')}${vecChip}</div>
+  <div class="card-tags">${tags.map((t) => `<span class="tag-chip${t === 'synthesized' ? ' tag-chip--synthesized' : ''}">${escHtml(t)}</span>`).join('')}${vecChip}${epiStatus}${sourceLabel}</div>
   <div class="card-meta-row">${privacyIcon}${ownerBadge}</div>
   <div class="card-actions">${entry.is_owned ? `
     <button class="card-action-btn append-btn" type="button"><i class="ti ti-writing"></i> Append</button>
@@ -4255,6 +4456,8 @@
         const input = document.getElementById('remember-input')
         const raw = input.value.trim()
         if (!raw) return
+        const visibility = document.getElementById('remember-visibility-public').checked ? 'public' : 'private'
+        if (visibility === 'public' && !confirm('Team public makes this memory visible to everyone in the workspace. Continue?')) return
         const msgs = document.getElementById('remember-messages')
         const tags = [],
           tagRe = /#([a-zA-Z0-9_-]+)/g
@@ -4267,18 +4470,19 @@
         if (introEl) introEl.remove()
         appendHashtagText(userRow, raw)
         msgs.appendChild(userRow)
-        input.value = ''
-        autoResize(input)
         msgs.scrollTop = msgs.scrollHeight
         const loadingEl = appendLoading(msgs)
         msgs.scrollTop = msgs.scrollHeight
         try {
-          const result = await apiCapture(content || raw, tags, 'web-ui')
+          const result = await apiCapture(content || raw, tags, 'web-ui', visibility)
           loadingEl.remove()
-          if (result.duplicate) {
-            appendBrainBubble(msgs, 'Already kept \u2014 I have something very similar, so I skipped the duplicate.', 'sys-note')
+          if (result.action === 'blocked_duplicate') {
+            appendBrainBubble(msgs, `Not stored—already matches ${result.match_id}.`, 'sys-note')
           } else {
-            appendBrainBubble(msgs, "Kept. I'll remember that.", 'sys-note')
+            const warningText = result.warnings.length ? ` Warnings: ${result.warnings.join('; ')}` : ''
+            appendBrainBubble(msgs, `Stored — action: ${result.action}; ID: ${result.id}; visibility: ${result.visibility}.${warningText}`, 'sys-note')
+            input.value = ''
+            autoResize(input)
             if (tags.length) {
               const confirmEl = document.createElement('div')
               confirmEl.className = 'confirm-block'
@@ -4288,9 +4492,9 @@
             updateStatus()
           }
           document.getElementById('remember-clear-btn').style.display = 'flex'
-        } catch {
+        } catch (error) {
           loadingEl.remove()
-          appendBrainBubble(msgs, 'Something went wrong. Try again.', 'sys-note')
+          appendBrainBubble(msgs, `Not stored. ${error.message || 'Try again.'}`, 'sys-note')
         }
         msgs.scrollTop = msgs.scrollHeight
       }
@@ -4408,7 +4612,7 @@
           const res = await fetch(`${WORKER_URL}/forget`, {
             method: 'POST',
             headers: authHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ id: idToForget }),
+            body: JSON.stringify({ id: idToForget, confirm_entry_id: idToForget }),
           })
           const data = await res.json()
           if (!res.ok) throw new Error(data.error || 'Server error')
@@ -5329,9 +5533,8 @@
       async function exportMemories(format) {
         closeMenu()
         try {
-          // /export returns everything — entries AND edges — in one shot; /list caps
-          // at 100 rows, which used to silently truncate bigger brains
-          const res = await fetch(`${WORKER_URL}/export`, { headers: authHeaders() })
+          const mode = document.getElementById('export-mode').value
+          const res = await fetch(`${WORKER_URL}/export?mode=${encodeURIComponent(mode)}`, { headers: authHeaders() })
           if (!res.ok) throw new Error(`Server error: ${res.status}`)
           const data = await res.json()
           const entries = data.entries || []
@@ -5370,8 +5573,22 @@
               })
               lines.push('')
             }
+            if (mode === 'my_data') {
+              lines.push('## Complete history')
+              lines.push('')
+              lines.push('```json')
+              lines.push(JSON.stringify({
+                episodes: data.episodes || [],
+                snapshots: data.snapshots || [],
+                passages: data.passages || [],
+                documents: data.documents || [],
+                document_sections: data.document_sections || [],
+              }, null, 2))
+              lines.push('```')
+              lines.push('')
+            }
             content = lines.join('\n')
-            filename = `shared-living-memory-export-${ts}.md`
+            filename = `shared-living-memory-${mode}-${ts}.md`
             mime = 'text/markdown'
           }
 

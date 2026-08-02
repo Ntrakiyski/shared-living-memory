@@ -13,6 +13,14 @@ function makeCtx() {
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
+function currentEntry<T extends { id: string }>(entry: T): T & { current_episode_id: string } {
+  return { ...entry, current_episode_id: `episode-${entry.id}` };
+}
+
+function currentMatch(id: string, score: number, metadata: Record<string, unknown> = {}) {
+  return { id, score, metadata: { parentId: id, episodeId: `episode-${id}`, ...metadata } };
+}
+
 describe("runGraphPass", () => {
   let db: D1Mock;
 
@@ -22,12 +30,12 @@ describe("runGraphPass", () => {
 
   it("backfills a relates_to edge for an unlinked entry to its nearest neighbor", async () => {
     db.entries.push(
-      { id: "lonely", content: "Unlinked memory", tags: "[]", source: "api", created_at: 2, vector_ids: "[]", owner_user_id: "u1", visibility: "public" },
-      { id: "neighbor", content: "Similar memory", tags: "[]", source: "api", created_at: 1, vector_ids: "[]", owner_user_id: "u1", visibility: "public" },
+      currentEntry({ id: "lonely", content: "Unlinked memory", tags: "[]", source: "api", created_at: 2, vector_ids: "[]", owner_user_id: "u1", visibility: "public" }),
+      currentEntry({ id: "neighbor", content: "Similar memory", tags: "[]", source: "api", created_at: 1, vector_ids: "[]", owner_user_id: "u1", visibility: "public" }),
     );
     const query = vi.fn().mockResolvedValue({ matches: [
-      { id: "lonely", score: 1.0, metadata: { parentId: "lonely" } },
-      { id: "neighbor", score: 0.8, metadata: { parentId: "neighbor" } },
+      currentMatch("lonely", 1.0),
+      currentMatch("neighbor", 0.8),
     ] });
     const env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
@@ -88,14 +96,14 @@ describe("runGraphPass", () => {
 
   it("creates cross-user edges only between public entries", async () => {
     db.entries.push(
-      { id: "pub-a", content: "User1 public", tags: "[]", source: "api", created_at: 2, vector_ids: "[]", owner_user_id: "u1", visibility: "public" },
-      { id: "pub-b", content: "User2 public", tags: "[]", source: "api", created_at: 1, vector_ids: "[]", owner_user_id: "u2", visibility: "public" },
+      currentEntry({ id: "pub-a", content: "User1 public", tags: "[]", source: "api", created_at: 2, vector_ids: "[]", owner_user_id: "u1", visibility: "public" }),
+      currentEntry({ id: "pub-b", content: "User2 public", tags: "[]", source: "api", created_at: 1, vector_ids: "[]", owner_user_id: "u2", visibility: "public" }),
     );
     const env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({ matches: [
-          { id: "pub-a", score: 1.0, metadata: { parentId: "pub-a" } },
-          { id: "pub-b", score: 0.85, metadata: { parentId: "pub-b" } },
+          currentMatch("pub-a", 1.0),
+          currentMatch("pub-b", 0.85),
         ] }),
       }),
     });
@@ -129,11 +137,11 @@ describe("runGraphPass", () => {
 
   it("links a private source only to same-owner private entries", async () => {
     db.entries.push(
-      { id: "source-private", content: "Private source", tags: '["private"]', source: "api", created_at: 10, vector_ids: "[]", owner_user_id: "u1", visibility: "private" },
-      { id: "own-private", content: "Own private", tags: '["private"]', source: "api", created_at: 9, vector_ids: "[]", owner_user_id: "u1", visibility: "private" },
-      { id: "own-public", content: "Own public", tags: "[]", source: "api", created_at: 8, vector_ids: "[]", owner_user_id: "u1", visibility: "public" },
-      { id: "other-private", content: "Other private", tags: '["private"]', source: "api", created_at: 7, vector_ids: "[]", owner_user_id: "u2", visibility: "private" },
-      { id: "other-public", content: "Other public", tags: "[]", source: "api", created_at: 6, vector_ids: "[]", owner_user_id: "u2", visibility: "public" },
+      currentEntry({ id: "source-private", content: "Private source", tags: '["private"]', source: "api", created_at: 10, vector_ids: "[]", owner_user_id: "u1", visibility: "private" }),
+      currentEntry({ id: "own-private", content: "Own private", tags: '["private"]', source: "api", created_at: 9, vector_ids: "[]", owner_user_id: "u1", visibility: "private" }),
+      currentEntry({ id: "own-public", content: "Own public", tags: "[]", source: "api", created_at: 8, vector_ids: "[]", owner_user_id: "u1", visibility: "public" }),
+      currentEntry({ id: "other-private", content: "Other private", tags: '["private"]', source: "api", created_at: 7, vector_ids: "[]", owner_user_id: "u2", visibility: "private" }),
+      currentEntry({ id: "other-public", content: "Other public", tags: "[]", source: "api", created_at: 6, vector_ids: "[]", owner_user_id: "u2", visibility: "public" }),
     );
     // Keep every candidate out of the source backfill batch so this assertion
     // isolates the partition applied to source-private.
@@ -141,11 +149,11 @@ describe("runGraphPass", () => {
       db.edges.push({ id: `existing-${id}`, source_id: id, target_id: `sentinel-${id}`, type: "relates_to", weight: 1, provenance: "explicit", metadata: "{}", created_at: 1, updated_at: 1 });
     }
     const query = vi.fn().mockResolvedValue({ matches: [
-      { id: "source-private", score: 1, metadata: { parentId: "source-private", is_private: false } },
-      { id: "own-private", score: 0.95, metadata: { parentId: "own-private", owner_user_id: "attacker" } },
-      { id: "own-public", score: 0.94, metadata: { parentId: "own-public", is_private: true } },
-      { id: "other-private", score: 0.93, metadata: { parentId: "other-private", is_private: false } },
-      { id: "other-public", score: 0.92, metadata: { parentId: "other-public", owner_user_id: "u1" } },
+      currentMatch("source-private", 1, { is_private: false }),
+      currentMatch("own-private", 0.95, { owner_user_id: "attacker" }),
+      currentMatch("own-public", 0.94, { is_private: true }),
+      currentMatch("other-private", 0.93, { is_private: false }),
+      currentMatch("other-public", 0.92, { owner_user_id: "u1" }),
     ] });
     const env = makeTestEnv(db, { VECTORIZE: makeVectorizeMock({ query }) });
 
@@ -185,14 +193,14 @@ describe("scheduled handler", () => {
   it("runs the graph pass alongside nightly compression (wired, same cron)", async () => {
     const db = makeTestDb();
     db.entries.push(
-      { id: "lonely", content: "x", tags: "[]", source: "api", created_at: 2, vector_ids: "[]", owner_user_id: "u1", visibility: "public" },
-      { id: "neighbor", content: "y", tags: "[]", source: "api", created_at: 1, vector_ids: "[]", owner_user_id: "u1", visibility: "public" },
+      currentEntry({ id: "lonely", content: "x", tags: "[]", source: "api", created_at: 2, vector_ids: "[]", owner_user_id: "u1", visibility: "public" }),
+      currentEntry({ id: "neighbor", content: "y", tags: "[]", source: "api", created_at: 1, vector_ids: "[]", owner_user_id: "u1", visibility: "public" }),
     );
     const env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({ matches: [
-          { id: "lonely", score: 1.0, metadata: { parentId: "lonely" } },
-          { id: "neighbor", score: 0.8, metadata: { parentId: "neighbor" } },
+          currentMatch("lonely", 1.0),
+          currentMatch("neighbor", 0.8),
         ] }),
       }),
     });

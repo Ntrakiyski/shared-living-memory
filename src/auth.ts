@@ -39,6 +39,47 @@ export function generateApiKey(): { publicId: string; secret: string; fullKey: s
   return { publicId, secret, fullKey: `slm_${publicId}.${secret}` };
 }
 
+/**
+ * Generate a fresh key, hash it, update the user row, record the rotation as a
+ * security event, and return the one-time plaintext. The old key is rejected
+ * immediately because the hash column is updated in the same atomic write.
+ * Returns null when the user does not exist or is not active.
+ */
+export async function rotateUserKey(
+  actorUserId: string,
+  operatorUserId: string,
+  env: Env,
+): Promise<{ username: string; key: string } | null> {
+  const user = await env.DB.prepare(
+    `SELECT id, username FROM users WHERE id = ? AND status IN ('active', 'deactivating')`,
+  ).bind(operatorUserId).first<{ id: string; username: string }>();
+  if (!user) return null;
+
+  const { publicId, fullKey } = generateApiKey();
+  const keyHash = await hmacKey(publicId + "." + fullKey.slice(fullKey.indexOf(".") + 1), AUTH_PEPPER);
+  const prefix = fullKey.slice(0, 15);
+  const now = Date.now();
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE users SET auth_key_hash = ?, auth_key_prefix = ?, last_used_at = ? WHERE id = ?`,
+    ).bind(keyHash, prefix, now, operatorUserId),
+    env.DB.prepare(
+      `INSERT INTO security_events (
+         id, event_type, actor_kind, actor_id, reason, created_at
+       ) VALUES (?, ?, 'human', ?, ?, ?)`,
+    ).bind(
+      crypto.randomUUID(),
+      actorUserId === operatorUserId ? "self_key_rotation" : "admin_key_rotation",
+      actorUserId,
+      `Key rotated for user ${operatorUserId}`,
+      now,
+    ),
+  ]);
+
+  return { username: user.username, key: fullKey };
+}
+
 // ─── Credential parsing / resolution ──────────────────────────────────────────
 
 function parseUserCredentials(request: Request): { username: string | null; key: string | null } {
@@ -270,7 +311,12 @@ export function isAuthorized(request: Request, env: Env): boolean {
 export function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data, null, 2), {
     status,
-    headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+    headers: {
+      "Content-Type": "application/json",
+      ...CORS_HEADERS,
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+    },
   });
 }
 

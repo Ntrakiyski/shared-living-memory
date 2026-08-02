@@ -182,7 +182,7 @@ describe("commitEntryVersion", () => {
     expect(entry.current_episode_id).toBe(result.episodeId);
     expect(entry.revision).toBe(1);
     expect(entry.created_by_user_id).toBe(actorUserId);
-    expect(entry.visibility).toBe("public");
+    expect(entry.visibility).toBe("private");
     expect(entry.vector_sync_pending).toBe(0);
     expect(entry.updated_at).toBe(1_234);
     expect(JSON.parse(entry.vector_ids)).toEqual(result.vectorIds);
@@ -207,6 +207,18 @@ describe("commitEntryVersion", () => {
     expect(harness.db.count("passages")).toBe(0);
     expect([...harness.vectors.keys()].every((id) => id.startsWith(`ev:${result.episodeId}:`))).toBe(true);
     expect([...harness.vectors.keys()].every((id) => new TextEncoder().encode(id).length <= 64)).toBe(true);
+  });
+
+  it("defaults new captures to private without using tags as the security decision", async () => {
+    const omitted = await capture(harness, { tags: ["work"] });
+    const explicitPublic = await capture(harness, {
+      entryId: "entry-public",
+      tags: ["private"],
+      visibility: "public",
+    });
+
+    expect(row<any>(harness.db, "SELECT visibility FROM entries WHERE id = ?", omitted.entryId).visibility).toBe("private");
+    expect(row<any>(harness.db, "SELECT visibility FROM entries WHERE id = ?", explicitPublic.entryId).visibility).toBe("public");
   });
 
   it("snapshots the complete prior visible state before a guarded update", async () => {
@@ -557,5 +569,166 @@ describe("commitEntryVersion", () => {
     expect(passages.every((passage) => passage.document_id === status.documentId)).toBe(true);
     expect(passages.every((passage) => passage.section_id !== null)).toBe(true);
     expect(passages.every((passage) => passage.page === 8 && passage.page_end === 9)).toBe(true);
+  });
+
+  it("refreshes a derived title on full replacement but preserves explicit provenance on append", async () => {
+    const initialContent = "# Alice confidential planning title\n\nPrivate draft";
+    const initial = await capture(harness, {
+      rawContent: initialContent,
+      materializedContent: initialContent,
+      contentType: "research",
+    });
+    expect(row<any>(
+      harness.db,
+      "SELECT title FROM documents WHERE episode_id = ?",
+      initial.episodeId,
+    ).title).toBe("Alice confidential planning title");
+
+    const replacementContent = "# Harmless team note\n\nSafe current text";
+    const updated = await commitEntryVersion({
+      kind: "update",
+      actorUserId,
+      entryId: initial.entryId,
+      expectedRevision: 1,
+      rawContent: replacementContent,
+      materializedContent: replacementContent,
+      now: 2_000,
+    }, harness.env);
+    expect(row<any>(
+      harness.db,
+      "SELECT title FROM documents WHERE episode_id = ?",
+      updated.episodeId,
+    ).title).toBe("Harmless team note");
+
+    const explicitlyTitled = await commitEntryVersion({
+      kind: "replace",
+      actorUserId,
+      entryId: initial.entryId,
+      expectedRevision: 2,
+      rawContent: "Replacement without a heading",
+      materializedContent: "Replacement without a heading",
+      title: "Approved source title",
+      now: 3_000,
+    }, harness.env);
+    expect(row<any>(
+      harness.db,
+      "SELECT title FROM documents WHERE episode_id = ?",
+      explicitlyTitled.episodeId,
+    ).title).toBe("Approved source title");
+
+    const appended = await commitEntryVersion({
+      kind: "append",
+      actorUserId,
+      entryId: initial.entryId,
+      expectedRevision: 3,
+      rawContent: "# Incidental append heading\nExtra detail",
+      materializedContent: "Replacement without a heading\n\n# Incidental append heading\nExtra detail",
+      now: 4_000,
+    }, harness.env);
+    expect(row<any>(
+      harness.db,
+      "SELECT title FROM documents WHERE episode_id = ?",
+      appended.episodeId,
+    ).title).toBe("Approved source title");
+  });
+
+  it("preserves an explicit title across titleless update, merge, and replace mutations", async () => {
+    for (const [index, kind] of (["update", "merge", "replace"] as const).entries()) {
+      const initialContent = `# Generated heading ${kind}\n\nOriginal body`;
+      const initial = await capture(harness, {
+        entryId: `explicit-${kind}`,
+        rawContent: initialContent,
+        materializedContent: initialContent,
+        contentType: "research",
+        title: `Explicit provenance title ${kind}`,
+        now: 10_000 + index * 100,
+      });
+      const replacementContent = `# Replacement heading ${kind}\n\nNew body`;
+      const replacement = await commitEntryVersion({
+        kind,
+        actorUserId,
+        entryId: initial.entryId,
+        expectedRevision: 1,
+        rawContent: replacementContent,
+        materializedContent: replacementContent,
+        now: 10_050 + index * 100,
+      }, harness.env);
+
+      expect(row<any>(
+        harness.db,
+        "SELECT title, title_origin FROM documents WHERE episode_id = ?",
+        replacement.episodeId,
+      )).toMatchObject({
+        title: `Explicit provenance title ${kind}`,
+        title_origin: "explicit",
+      });
+    }
+  });
+
+  it("does not infer title provenance when an explicit title equals the generated heading", async () => {
+    const initial = await capture(harness, {
+      entryId: "explicit-heading-equality",
+      rawContent: "# Exact heading\n\nOriginal body",
+      materializedContent: "# Exact heading\n\nOriginal body",
+      contentType: "research",
+      title: "Exact heading",
+    });
+
+    expect(row<any>(
+      harness.db,
+      "SELECT title, title_origin, version FROM documents WHERE episode_id = ?",
+      initial.episodeId,
+    )).toEqual({ title: "Exact heading", title_origin: "explicit", version: "1" });
+
+    const replacement = await commitEntryVersion({
+      kind: "replace",
+      actorUserId,
+      entryId: initial.entryId,
+      expectedRevision: 1,
+      rawContent: "# Replacement heading\n\nNew body",
+      materializedContent: "# Replacement heading\n\nNew body",
+      now: 2_000,
+    }, harness.env);
+
+    expect(row<any>(
+      harness.db,
+      "SELECT title, title_origin, version FROM documents WHERE episode_id = ?",
+      replacement.episodeId,
+    )).toEqual({ title: "Exact heading", title_origin: "explicit", version: "2" });
+  });
+
+  it("does not infer title provenance when an explicit title equals the source URL", async () => {
+    const originalUrl = "https://example.test/original";
+    const replacementUrl = "https://example.test/replacement";
+    const initial = await capture(harness, {
+      entryId: "explicit-url-equality",
+      rawContent: "Original body without a heading",
+      materializedContent: "Original body without a heading",
+      contentType: "research",
+      sourceUrl: originalUrl,
+      title: originalUrl,
+    });
+
+    const replacement = await commitEntryVersion({
+      kind: "update",
+      actorUserId,
+      entryId: initial.entryId,
+      expectedRevision: 1,
+      rawContent: "Replacement body without a heading",
+      materializedContent: "Replacement body without a heading",
+      sourceUrl: replacementUrl,
+      now: 2_000,
+    }, harness.env);
+
+    expect(row<any>(
+      harness.db,
+      "SELECT title, title_origin, source_url, version FROM documents WHERE episode_id = ?",
+      replacement.episodeId,
+    )).toEqual({
+      title: originalUrl,
+      title_origin: "explicit",
+      source_url: replacementUrl,
+      version: "2",
+    });
   });
 });

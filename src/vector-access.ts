@@ -32,6 +32,7 @@ export interface VisibleVectorQueryResult {
 export interface VisibleVectorQueryOptions {
   topK: number;
   userId?: string;
+  includeHistoricalEpisodes?: boolean;
 }
 
 function parentIdFor(match: ScopedVectorMatch): string | null {
@@ -54,10 +55,19 @@ function isVisible(row: VectorEntryScope, userId: string | undefined): boolean {
   return row.visibility === "public";
 }
 
-function matchesCurrentEpisode(match: ScopedVectorMatch, row: VectorEntryScope): boolean {
+function vectorEpisodeId(match: ScopedVectorMatch): string | null {
   const value = match.metadata?.episodeId ?? match.metadata?.episode_id;
-  const vectorEpisodeId = typeof value === "string" && value.length > 0 ? value : null;
-  return !row.currentEpisodeId || !vectorEpisodeId || vectorEpisodeId === row.currentEpisodeId;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function matchesAuthorizedEpisode(
+  match: ScopedVectorMatch,
+  row: VectorEntryScope,
+  historicalEpisodeIds?: Set<string>,
+): boolean {
+  const episodeId = vectorEpisodeId(match);
+  if (!episodeId) return false;
+  return episodeId === row.currentEpisodeId || historicalEpisodeIds?.has(episodeId) === true;
 }
 
 /**
@@ -137,11 +147,34 @@ export async function queryVisibleVectors(
     if (isVisible(scoped, userId)) entriesById.set(scoped.id, scoped);
   }
 
+  const historicalEpisodesByEntry = new Map<string, Set<string>>();
+  if (options.includeHistoricalEpisodes && entriesById.size) {
+    const authorizedEntryIds = [...entriesById.keys()];
+    const historicalPlaceholders = authorizedEntryIds.map(() => "?").join(", ");
+    const { results: snapshots } = await env.DB.prepare(
+      `SELECT entry_id, episode_id
+       FROM entry_snapshots
+       WHERE entry_id IN (${historicalPlaceholders}) AND episode_id IS NOT NULL`,
+    ).bind(...authorizedEntryIds).all<{ entry_id: string; episode_id: string }>();
+    for (const snapshot of snapshots) {
+      if (!entriesById.has(snapshot.entry_id)
+          || typeof snapshot.episode_id !== "string"
+          || !snapshot.episode_id) continue;
+      const allowed = historicalEpisodesByEntry.get(snapshot.entry_id) ?? new Set<string>();
+      allowed.add(snapshot.episode_id);
+      historicalEpisodesByEntry.set(snapshot.entry_id, allowed);
+    }
+  }
+
   const matches = merged
     .filter(match => {
       const parentId = parentIdFor(match);
       const entry = parentId === null ? undefined : entriesById.get(parentId);
-      return entry !== undefined && matchesCurrentEpisode(match, entry);
+      return entry !== undefined && matchesAuthorizedEpisode(
+        match,
+        entry,
+        historicalEpisodesByEntry.get(entry.id),
+      );
     })
     .slice(0, topK);
 

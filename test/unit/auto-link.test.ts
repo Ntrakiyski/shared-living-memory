@@ -31,7 +31,11 @@ function makeAI(verdict: string) {
 }
 
 function match(id: string, score: number) {
-  return { id, score, metadata: { parentId: id, isUpdate: false } };
+  return {
+    id,
+    score,
+    metadata: { parentId: id, episodeId: `episode-${id}`, isUpdate: false },
+  };
 }
 
 function seedExisting(db: D1Mock, tags: string[] = []) {
@@ -44,6 +48,7 @@ function seedExisting(db: D1Mock, tags: string[] = []) {
     vector_ids: "[]",
     owner_user_id: TEST_USER_ID,
     visibility: "public",
+    current_episode_id: "episode-existing",
   });
 }
 
@@ -62,7 +67,7 @@ describe("auto-link on write (issue #16)", () => {
     });
     const { ctx, drain } = makeCtx();
 
-    const result = await captureEntry("A related new memory", [], "api", env, ctx, TEST_USER_ID);
+    const result = await captureEntry("A related new memory", [], "api", env, ctx, TEST_USER_ID, { visibility: "public" });
     await drain();
 
     expect(result.status).toBe("stored");
@@ -83,7 +88,7 @@ describe("auto-link on write (issue #16)", () => {
     });
     const { ctx, drain } = makeCtx();
 
-    const result = await captureEntry("Near-identical memory", [], "api", env, ctx, TEST_USER_ID);
+    const result = await captureEntry("Near-identical memory", [], "api", env, ctx, TEST_USER_ID, { visibility: "public" });
     await drain();
 
     expect(result.status).toBe("blocked");
@@ -98,7 +103,7 @@ describe("auto-link on write (issue #16)", () => {
     });
     const { ctx, drain } = makeCtx();
 
-    const result = await captureEntry("Updated version", [], "api", env, ctx, TEST_USER_ID);
+    const result = await captureEntry("Updated version", [], "api", env, ctx, TEST_USER_ID, { visibility: "public" });
     await drain();
 
     expect(result.status).toBe("replaced");
@@ -113,7 +118,7 @@ describe("auto-link on write (issue #16)", () => {
     });
     const { ctx, drain } = makeCtx();
 
-    const result = await captureEntry("Conflicting claim", [], "api", env, ctx, TEST_USER_ID);
+    const result = await captureEntry("Conflicting claim", [], "api", env, ctx, TEST_USER_ID, { visibility: "public" });
     await drain();
 
     expect(result.status).toBe("contradiction_protected");
@@ -140,7 +145,7 @@ describe("auto-link on write (issue #16)", () => {
     });
     const { ctx, drain } = makeCtx();
 
-    const result = await captureEntry("The corrected fact", [], "api", env, ctx, TEST_USER_ID);
+    const result = await captureEntry("The corrected fact", [], "api", env, ctx, TEST_USER_ID, { visibility: "public" });
     await drain();
 
     expect(result.status).toBe("contradiction");

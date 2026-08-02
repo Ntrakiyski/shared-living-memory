@@ -78,6 +78,7 @@ describe("Auth", () => {
   });
 
   it("issues browser OAuth grants for the personal key's real users.id", async () => {
+    (env as any).MCP_OAUTH_ENABLED = "true";
     const createRes = await worker.fetch(
       req("POST", "/api/users", { body: { username: "alice" } }), env, ctx,
     );
@@ -111,6 +112,7 @@ describe("Auth", () => {
   });
 
   it("does not turn the workspace key into a browser OAuth principal", async () => {
+    (env as any).MCP_OAUTH_ENABLED = "true";
     const completeAuthorization = vi.fn();
     (env as any).OAUTH_PROVIDER = {
       parseAuthRequest: vi.fn().mockResolvedValue({ scope: ["memory"] }),

@@ -70,7 +70,7 @@ function seedEntry(
     importance_score: 3,
     owner_user_id: TEST_USER_ID,
     revision: 0,
-    current_episode_id: null,
+    current_episode_id: `episode-${id}`,
     recorded_at: createdAt,
     valid_from: createdAt,
     valid_to: null,
@@ -80,6 +80,10 @@ function seedEntry(
   };
   db.entries.push(entry);
   return entry;
+}
+
+function currentMatch(id: string, score: number) {
+  return { id, score, metadata: { parentId: id, episodeId: `episode-${id}` } };
 }
 
 describe("POST /capture — governed smart merge", () => {
@@ -96,14 +100,14 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
       }),
       AI: makeMergeAI('{"action":"replace","target_id":"existing-id"}'),
     });
 
     const res = await worker.fetch(
-      req("POST", "/capture", { body: { content: "I switched to Cursor IDE" } }),
+      req("POST", "/capture", { body: { content: "I switched to Cursor IDE", visibility: "public" } }),
       env,
       ctx,
     );
@@ -120,7 +124,7 @@ describe("POST /capture — governed smart merge", () => {
       revision: 0,
       mutation_kind: "replace",
     });
-    expect(db.episodes).toHaveLength(2);
+    expect(db.episodes).toHaveLength(1);
     const episode = db.episodes.find((candidate: any) => candidate.id === entry.current_episode_id);
     expect(episode).toMatchObject({
       content: "I switched to Cursor IDE",
@@ -135,7 +139,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
       }),
       AI: makeMergeAI(
@@ -144,7 +148,7 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     const raw = "I like dark mode especially at night";
-    const res = await worker.fetch(req("POST", "/capture", { body: { content: raw } }), env, ctx);
+    const res = await worker.fetch(req("POST", "/capture", { body: { content: raw, visibility: "public" } }), env, ctx);
 
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, action: "merged", id: "existing-id" });
@@ -161,6 +165,78 @@ describe("POST /capture — governed smart merge", () => {
   });
 
   it.each([
+    ["replace", '{"action":"replace","target_id":"existing-id"}', "Incoming replacement"],
+    ["merge", '{"action":"merge","target_id":"existing-id","merged_content":"Merged current state"}', "Incoming merge detail"],
+  ])("%s keeps the valid incoming source title on the current document envelope", async (_kind, aiResponse, content) => {
+    seedEntry(db, "existing-id", "Previous current state", "[]", { importance_score: 2 });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [currentMatch("existing-id", 0.88)],
+        }),
+      }),
+      AI: makeMergeAI(aiResponse),
+    });
+
+    const res = await worker.fetch(req("POST", "/capture", {
+      body: {
+        content,
+        visibility: "public",
+        source_title: "Incoming safe source title",
+      },
+    }), env, ctx);
+    const data = await res.json() as any;
+    const entry = db.entries.find((candidate: any) => candidate.id === "existing-id") as any;
+    const currentDocument = db.documents.find((document: any) => document.episode_id === entry.current_episode_id);
+
+    expect(res.status).toBe(200);
+    expect(data.action).toBe(_kind === "merge" ? "merged" : "replaced");
+    expect(currentDocument).toMatchObject({ title: "Incoming safe source title" });
+  });
+
+  it("stores explicit public input separately from a same-owner private target without changing either scope", async () => {
+    seedEntry(db, "private-target", "Private existing preference", "[]", {
+      visibility: "private",
+      tags: '["private"]',
+      importance_score: 2,
+    });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [currentMatch("private-target", 0.88)],
+        }),
+      }),
+      AI: makeMergeAI('{"action":"replace","target_id":"private-target"}'),
+    });
+
+    const res = await worker.fetch(
+      req("POST", "/capture", { body: { content: "Explicit public statement", visibility: "public" } }),
+      env,
+      ctx,
+    );
+    const data = await res.json() as any;
+
+    expect(res.status).toBe(200);
+    expect(data).toMatchObject({
+      ok: true,
+      action: "stored_separately",
+      visibility: "public",
+      warnings: expect.arrayContaining(["Merge skipped: visibility_mismatch"]),
+    });
+    expect(data.id).not.toBe("private-target");
+    expect(db.entries.find((entry: any) => entry.id === "private-target")).toMatchObject({
+      content: "Private existing preference",
+      visibility: "private",
+      revision: 0,
+    });
+    expect(db.entries.find((entry: any) => entry.id === data.id)).toMatchObject({
+      content: "Explicit public statement",
+      visibility: "public",
+      revision: 1,
+    });
+  });
+
+  it.each([
     ["replace", '{"action":"replace","target_id":"existing-id"}', "I switched to Cursor"],
     ["merge", '{"action":"merge","target_id":"existing-id","merged_content":"Combined"}', "New detail"],
   ])("%s stages ev: vectors with upsert and deletes the whole prior projection", async (_kind, response, content) => {
@@ -171,7 +247,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
         upsert: upsertMock,
         insert: insertMock,
@@ -180,7 +256,7 @@ describe("POST /capture — governed smart merge", () => {
       AI: makeMergeAI(response),
     });
 
-    const res = await worker.fetch(req("POST", "/capture", { body: { content } }), env, ctx);
+    const res = await worker.fetch(req("POST", "/capture", { body: { content, visibility: "public" } }), env, ctx);
 
     expect(res.status).toBe(200);
     expect(upsertMock).toHaveBeenCalledOnce();
@@ -197,7 +273,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
         upsert: upsertMock,
       }),
@@ -207,7 +283,7 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     await worker.fetch(
-      req("POST", "/capture", { body: { content: "I like dark mode at night" } }),
+      req("POST", "/capture", { body: { content: "I like dark mode at night", visibility: "public" } }),
       env,
       ctx,
     );
@@ -222,7 +298,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
         upsert: vi.fn().mockImplementation(async () => {
           callOrder.push("upsert");
@@ -236,7 +312,7 @@ describe("POST /capture — governed smart merge", () => {
       AI: makeMergeAI('{"action":"replace","target_id":"existing-id"}'),
     });
 
-    await worker.fetch(req("POST", "/capture", { body: { content: "Cursor IDE" } }), env, ctx);
+    await worker.fetch(req("POST", "/capture", { body: { content: "Cursor IDE", visibility: "public" } }), env, ctx);
 
     expect(callOrder).toEqual(["upsert", "delete"]);
   });
@@ -247,7 +323,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
         upsert: vi.fn().mockRejectedValue(new Error("Vectorize down")),
         deleteByIds: deleteByIdsMock,
@@ -258,13 +334,13 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     await expect(
-      captureEntry("I like dark mode at night", [], "api", env, ctx, TEST_USER_ID),
+      captureEntry("I like dark mode at night", [], "api", env, ctx, TEST_USER_ID, { visibility: "public" }),
     ).rejects.toMatchObject({ code: "vector_stage_failed" });
     expect(db.entries[0]).toMatchObject({
       content: "I prefer dark mode",
       vector_ids: '["last-known-good"]',
       revision: 0,
-      current_episode_id: null,
+      current_episode_id: "episode-existing-id",
     });
     expect(db.entry_snapshots).toHaveLength(0);
     expect(db.episodes).toHaveLength(0);
@@ -276,7 +352,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
         deleteByIds: vi.fn().mockRejectedValue(new Error("delete failed")),
       }),
@@ -286,7 +362,7 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     const res = await worker.fetch(
-      req("POST", "/capture", { body: { content: "I like dark mode at night" } }),
+      req("POST", "/capture", { body: { content: "I like dark mode at night", visibility: "public" } }),
       env,
       ctx,
     );
@@ -303,19 +379,24 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "near-id", score: 0.88, metadata: { parentId: "near-id" } }],
+          matches: [currentMatch("near-id", 0.88)],
         }),
       }),
       AI: makeMergeAI('{"action":"keep_both"}'),
     });
 
     const res = await worker.fetch(
-      req("POST", "/capture", { body: { content: "I like dark themes generally" } }),
+      req("POST", "/capture", { body: { content: "I like dark themes generally", visibility: "public" } }),
       env,
       ctx,
     );
 
-    expect(await res.json()).toMatchObject({ ok: true, warning: "similar" });
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      action: "stored_separately",
+      visibility: "public",
+      warnings: ["Similar entry exists: near-id"],
+    });
     expect(db.entries).toHaveLength(2);
     const stored = db.entries.find((entry: any) => entry.id !== "near-id") as any;
     expect(JSON.parse(stored.tags)).toContain("duplicate-candidate");
@@ -332,7 +413,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "old-id", score: 0.88, metadata: { parentId: "old-id" } }],
+          matches: [currentMatch("old-id", 0.88)],
         }),
         deleteByIds: deleteByIdsMock,
       }),
@@ -342,13 +423,18 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     const res = await worker.fetch(
-      req("POST", "/capture", { body: { content: "I moved to LA" } }),
+      req("POST", "/capture", { body: { content: "I moved to LA", visibility: "public" } }),
       env,
       ctx,
     );
 
     const data = await res.json() as any;
-    expect(data).toMatchObject({ ok: true, resolved_conflict: "old-id", reason: "different city" });
+    expect(data).toMatchObject({
+      ok: true,
+      action: "stored_separately",
+      visibility: "public",
+      warnings: ["Conflicts with entry old-id: different city"],
+    });
     expect(db.entries).toHaveLength(2);
 
     const incumbent = db.entries.find((entry: any) => entry.id === "old-id") as any;
@@ -377,7 +463,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "research-id", score: 0.88, metadata: { parentId: "research-id" } }],
+          matches: [currentMatch("research-id", 0.88)],
         }),
       }),
       AI: makeMergeAI('{"action":"replace","target_id":"research-id"}'),
@@ -385,13 +471,18 @@ describe("POST /capture — governed smart merge", () => {
 
     const res = await worker.fetch(
       req("POST", "/capture", {
-        body: { content: "# New paper\n\nIndependent findings", source: "research" },
+        body: { content: "# New paper\n\nIndependent findings", source: "research", visibility: "public" },
       }),
       env,
       ctx,
     );
 
-    expect(await res.json()).toMatchObject({ ok: true, warning: "similar" });
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      action: "stored_separately",
+      visibility: "public",
+      warnings: ["Similar entry exists: research-id"],
+    });
     expect(db.entries).toHaveLength(2);
     expect(db.entries.find((entry: any) => entry.id === "research-id")?.content).toBe("Earlier research summary");
     const research = db.entries.find((entry: any) => entry.id !== "research-id") as any;
@@ -407,14 +498,14 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "canonical-id", score: 0.88, metadata: { parentId: "canonical-id" } }],
+          matches: [currentMatch("canonical-id", 0.88)],
         }),
       }),
       AI: makeMergeAI('{"action":"replace","target_id":"canonical-id"}'),
     });
 
     const res = await worker.fetch(
-      req("POST", "/capture", { body: { content: "Replacement attempt" } }),
+      req("POST", "/capture", { body: { content: "Replacement attempt", visibility: "public" } }),
       env,
       ctx,
     );
@@ -422,10 +513,12 @@ describe("POST /capture — governed smart merge", () => {
     const data = await res.json() as any;
     expect(data).toMatchObject({
       ok: true,
-      warning: "similar",
       action: "stored_separately",
-      merge_skipped: "target_protected",
-      message: "Stored as a separate memory; the similar entry was not modified",
+      visibility: "public",
+      warnings: [
+        "Similar entry exists: canonical-id",
+        "Merge skipped: target_protected",
+      ],
     });
     expect(data.id).not.toBe("canonical-id");
     expect(db.entries.find((entry: any) => entry.id === "canonical-id")?.content).toBe("Canonical source of truth");
@@ -464,7 +557,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing-id", score: 0.88, metadata: { parentId: "existing-id" } }],
+          matches: [currentMatch("existing-id", 0.88)],
         }),
       }),
       AI: makePromptAwareAI(
@@ -474,7 +567,7 @@ describe("POST /capture — governed smart merge", () => {
     });
 
     const res = await worker.fetch(
-      req("POST", "/capture", { body: { content: "New incoming statement" } }),
+      req("POST", "/capture", { body: { content: "New incoming statement", visibility: "public" } }),
       env,
       testCtx,
     );
@@ -501,7 +594,7 @@ describe("POST /capture — governed smart merge", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "dup", score: 0.97, metadata: { parentId: "dup" } }],
+          matches: [currentMatch("dup", 0.97)],
         }),
       }),
       AI: { run: aiRunMock } as unknown as Ai,
@@ -513,7 +606,12 @@ describe("POST /capture — governed smart merge", () => {
       ctx,
     );
 
-    expect(await res.json()).toMatchObject({ ok: false, duplicate: true });
+    expect(await res.json()).toMatchObject({
+      ok: false,
+      error: "duplicate",
+      action: "blocked_duplicate",
+      match_id: "dup",
+    });
     expect(aiRunMock).toHaveBeenCalledOnce();
   });
 });

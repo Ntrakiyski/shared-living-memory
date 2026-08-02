@@ -23,8 +23,9 @@ import {
 import { runScheduledIntegrationSync } from "./integrations-mirror";
 import { drainVectorCleanupQueue } from "./vector-cleanup";
 import { resumePendingDeactivations } from "./deactivation";
-import { reconcilePendingOverlapAwareness } from "./awareness-events";
 import { reconcileMandatoryAuditCompletions } from "./mandatory-audit";
+import { flagPendingErasures } from "./erasure";
+import { reconcilePendingOverlapAwareness } from "./awareness-events";
 
 const oauthProvider = new OAuthProvider({
   apiRoute: "/mcp",
@@ -57,8 +58,24 @@ const oauthProvider = new OAuthProvider({
 });
 
 export default {
-  fetch: (req: Request, env: Env, ctx: ExecutionContext) =>
-    oauthProvider.fetch(req, env as any, ctx),
+  fetch: (req: Request, env: Env, ctx: ExecutionContext) => {
+    // When OAuth issuance is disabled (the pilot default), intercept OAuth
+    // discovery, authorization, dynamic registration, and token endpoints
+    // before the OAuthProvider wrapper so they never reach the issuance path.
+    // The personal-bearer resolveExternalToken path remains fully functional.
+    if ((env as any).MCP_OAUTH_ENABLED !== "true") {
+      const url = new URL(req.url);
+      if (
+        url.pathname === "/.well-known/oauth-authorization-server" ||
+        url.pathname === "/oauth/authorize" ||
+        url.pathname === "/oauth/token" ||
+        url.pathname === "/oauth/register"
+      ) {
+        return new Response("OAuth issuance is disabled for the team pilot. Use a personal API key as the Bearer token.", { status: 404 });
+      }
+    }
+    return oauthProvider.fetch(req, env as any, ctx);
+  },
   scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
     ctx.waitUntil(runNightlyCompression(env, ctx));
     ctx.waitUntil(runGraphPass(env, ctx));
@@ -90,6 +107,11 @@ export default {
       initializeDatabase(env)
         .then(() => reconcileMandatoryAuditCompletions(env))
         .catch((error) => console.error("Mandatory-audit reconciliation failed (non-fatal):", error)),
+    );
+    ctx.waitUntil(
+      initializeDatabase(env)
+        .then(() => flagPendingErasures(env))
+        .catch((error) => console.error("Erasure stale-sweep failed (non-fatal):", error)),
     );
   },
 };

@@ -108,6 +108,7 @@ function makeEnv(db: SqliteD1): Env {
       describe: vi.fn(async () => ({})),
     } as unknown as VectorizeIndex,
     AUTH_TOKEN: "test-token",
+    MCP_OAUTH_ENABLED: "false",
     OAUTH_KV: {} as KVNamespace,
   };
 }
@@ -145,9 +146,9 @@ function seedEntry(
   db.sqlite.prepare(
     `INSERT INTO entries (
        id, content, tags, source, created_at, owner_user_id,
-       created_by_user_id, visibility, updated_at
-     ) VALUES (?, ?, '[]', 'api', 200, ?, ?, ?, 200)`,
-  ).run(id, `${id} content`, ownerUserId, ownerUserId, visibility);
+       created_by_user_id, visibility, updated_at, current_episode_id
+     ) VALUES (?, ?, '[]', 'api', 200, ?, ?, ?, 200, ?)`,
+  ).run(id, `${id} content`, ownerUserId, ownerUserId, visibility, `episode-${id}`);
 }
 
 async function createPair(
@@ -319,6 +320,7 @@ describe("cross-user overlap awareness", () => {
                 score: 0.92,
                 metadata: {
                   parentId: "matched-public",
+                  episodeId: "episode-matched-public",
                   owner_user_id: "user-bob",
                   is_private: false,
                 },
@@ -331,7 +333,7 @@ describe("cross-user overlap awareness", () => {
     const response = await defaultHandler.fetch(
       req("POST", "/capture", {
         token: aliceKey,
-        body: { content: "A strongly overlapping public memory" },
+        body: { content: "A strongly overlapping public memory", visibility: "public" },
       }),
       env,
       { waitUntil: () => {} } as unknown as ExecutionContext,
@@ -339,14 +341,13 @@ describe("cross-user overlap awareness", () => {
     const body = await response.json() as any;
     expect(response.status).toBe(200);
     expect(body.ok).toBe(true);
-    expect(body.awareness).toMatchObject({
-      status: "pending_reconciliation",
-      eventCount: 0,
-    });
+    const awarenessWarning = body.warnings.find((warning: string) => warning.startsWith("Awareness pending_reconciliation:"));
+    expect(awarenessWarning).toBeDefined();
+    const reconciliationId = awarenessWarning.split(": ")[1];
     expect(db.sqlite.prepare(`SELECT id FROM entries WHERE id = ?`).get(body.id)).toBeTruthy();
     expect(db.sqlite.prepare(
       `SELECT status FROM overlap_awareness_reconciliation WHERE id = ?`,
-    ).get(body.awareness.reconciliationId)).toMatchObject({ status: "failed" });
+    ).get(reconciliationId)).toMatchObject({ status: "failed" });
 
     db.failOn = null;
     await expect(reconcilePendingOverlapAwareness(env)).resolves.toMatchObject({ ready: 1, pending: 0 });

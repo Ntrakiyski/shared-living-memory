@@ -92,6 +92,7 @@ function makeMirrorStore(
         tags: projectedTags(input.tags, visibility),
         source: record.provider,
         sourceUrl: input.sourceUrl ?? null,
+        visibility,
         contentType: "research",
         title: input.title,
         mutationId: mirrorMutationId,
@@ -189,7 +190,10 @@ function makeMirrorStore(
       if (!row) return false;
       if (row.owner_user_id !== userId) throw new Error("Mirror entry owner mismatch");
       if (row.source !== record.provider) throw new Error("Mirror entry provider mismatch");
-      return (await forgetEntry(entryId, env)).status === "deleted";
+      // Compliance purge: the D1 projection is authoritative. A queued vector
+      // cleanup still counts as erased (the repair schedule drains it).
+      const result = await forgetEntry(entryId, env);
+      return result.status === "deleted" || result.status === "pending_cleanup";
     },
   };
 }

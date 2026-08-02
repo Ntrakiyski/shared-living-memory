@@ -47,7 +47,7 @@ describe("Visibility Enforcement", () => {
     // Create entries: Alice's public, Alice's private, Bob's public, Bob's private
     const { ctx: ctx1, flush: flush1 } = makeCtx();
     await worker.fetch(
-      req("POST", "/capture", { body: { content: "Alice public" }, userCredentials: { username: "alice", key: aliceKey } }),
+      req("POST", "/capture", { body: { content: "Alice public", visibility: "public" }, userCredentials: { username: "alice", key: aliceKey } }),
       env, ctx1
     );
     await flush1();
@@ -61,7 +61,7 @@ describe("Visibility Enforcement", () => {
 
     const { ctx: ctx3, flush: flush3 } = makeCtx();
     await worker.fetch(
-      req("POST", "/capture", { body: { content: "Bob public" }, userCredentials: { username: "bob", key: bobKey } }),
+      req("POST", "/capture", { body: { content: "Bob public", visibility: "public" }, userCredentials: { username: "bob", key: bobKey } }),
       env, ctx3
     );
     await flush3();
@@ -134,17 +134,16 @@ describe("Visibility Enforcement", () => {
 
     const { ctx } = makeCtx();
     const res = await worker.fetch(
-      req("POST", "/forget", { body: { id: bobPublic.id }, userCredentials: { username: "alice", key: aliceKey } }),
+      req("POST", "/forget", { body: { id: bobPublic.id, confirm_entry_id: bobPublic.id }, userCredentials: { username: "alice", key: aliceKey } }),
       env, ctx
     );
     expect(res.status).toBe(403);
   });
 
-  it("System user's entries (legacy) are visible to all as public", async () => {
-    // The system user's entries are created by legacy auth (no user headers)
+  it("System-owned entries explicitly captured as public are visible to all", async () => {
     const { ctx, flush } = makeCtx();
     await worker.fetch(
-      req("POST", "/capture", { body: { content: "Legacy note" } }),
+      req("POST", "/capture", { body: { content: "Legacy note", visibility: "public" } }),
       env, ctx
     );
     await flush();

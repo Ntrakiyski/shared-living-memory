@@ -10,6 +10,8 @@
     "db:migrate:remote": "wrangler d1 execute shared-living-memory-db --remote --file=db/schema.sql",
     "vectors:create": "wrangler vectorize create shared-living-memory-vectors --dimensions=384 --metric=cosine",
     "vectors:indexes": "wrangler vectorize create-metadata-index shared-living-memory-vectors --property-name=owner_user_id --type=string && wrangler vectorize create-metadata-index shared-living-memory-vectors --property-name=is_private --type=boolean",
+    "vectors:indexes:assert": "node scripts/assert-vector-metadata-indexes.mjs",
+    "semantic:canary:staging": "node scripts/staging-semantic-canary.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

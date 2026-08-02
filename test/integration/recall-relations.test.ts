@@ -8,7 +8,11 @@ import { D1Mock } from "../helpers/d1-mock";
 const ctx = { waitUntil: (_: Promise<any>) => {} } as any;
 
 function makeMatch(id: string, score: number, overrides: Record<string, any> = {}) {
-  return { id, score, metadata: { parentId: id, isUpdate: false, ...overrides } };
+  return {
+    id,
+    score,
+    metadata: { parentId: id, episodeId: `episode-${id}`, isUpdate: false, ...overrides },
+  };
 }
 
 describe("Recall v2 — relations in results (Ticket 09)", () => {
@@ -35,12 +39,14 @@ describe("Recall v2 — relations in results (Ticket 09)", () => {
         created_at: now, vector_ids: "[]", recall_count: 0, importance_score: 0,
         contradiction_wins: 0, contradiction_losses: 0, owner_user_id: SYSTEM_USER_ID,
         valid_from: now, valid_to: null, recorded_at: now, epistemic_status: "canonical",
+        current_episode_id: "episode-entry-a",
       },
       {
         id: "entry-b", content: "Second fact", tags: "[]", source: "api",
         created_at: now, vector_ids: "[]", recall_count: 0, importance_score: 0,
         contradiction_wins: 0, contradiction_losses: 0, owner_user_id: SYSTEM_USER_ID,
         valid_from: now, valid_to: null, recorded_at: now, epistemic_status: "canonical",
+        current_episode_id: "episode-entry-b",
       },
     );
 
@@ -98,6 +104,7 @@ describe("Recall v2 — relations in results (Ticket 09)", () => {
       created_at: now, vector_ids: "[]", recall_count: 0, importance_score: 0,
       contradiction_wins: 0, contradiction_losses: 0, owner_user_id: SYSTEM_USER_ID,
       valid_from: now, valid_to: null, recorded_at: now, epistemic_status: "canonical",
+      current_episode_id: "episode-canonical-entry",
     });
 
     env = makeTestEnv(db, {
@@ -126,6 +133,7 @@ describe("Recall v2 — relations in results (Ticket 09)", () => {
         created_at: now, vector_ids: "[]", recall_count: 0, importance_score: 0,
         contradiction_wins: 0, contradiction_losses: 0, owner_user_id: "public-owner",
         valid_from: now, valid_to: null, recorded_at: now, epistemic_status: "canonical",
+        current_episode_id: "episode-visible",
       },
       {
         id: "secret-target", content: "Private linked fact", tags: JSON.stringify(["private"]), source: "api",

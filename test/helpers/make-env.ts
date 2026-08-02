@@ -70,6 +70,7 @@ export function makeTestEnv(db?: D1Mock, overrides: Partial<Env> = {}): Env {
     AI: makeAIMock(),
     AUTH_TOKEN: "test-token",
     OAUTH_KV: makeKVMock(),
+    MCP_OAUTH_ENABLED: "false",
     ...overrides,
   };
 }

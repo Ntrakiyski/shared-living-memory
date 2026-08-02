@@ -4,7 +4,7 @@ import { makeTestEnv, makeTestDb, makeVectorizeMock } from "../helpers/make-env"
 import { req } from "../helpers/make-request";
 import type { Env } from "../../src/testing";
 import { D1Mock } from "../helpers/d1-mock";
-import { TEST_USER_ID } from "../helpers/test-principal";
+import { TEST_USER_AUTH_HASH, TEST_USER_ID } from "../helpers/test-principal";
 
 // Returns an AI mock that always resolves a contradiction verdict (for captureEntry).
 function makeContradictionAI(response: string): Ai {
@@ -26,10 +26,11 @@ function makeContradictionAI(response: string): Ai {
 const ctx = { waitUntil: (_: Promise<any>) => {} } as any;
 
 function makeMatch(id: string, score: number, overrides: Record<string, any> = {}) {
+  const parentId = overrides.parentId ?? id;
   return {
     id,
     score,
-    metadata: { parentId: id, isUpdate: false, ...overrides },
+    metadata: { parentId, episodeId: `episode-${parentId}`, isUpdate: false, ...overrides },
   };
 }
 
@@ -37,6 +38,15 @@ function makeMatch(id: string, score: number, overrides: Record<string, any> = {
 // SIMILAR_VEC scores cosine 1.0 against it, DISSIMILAR_VEC scores ~0.
 const SIMILAR_VEC = new Array(384).fill(0.1);
 const DISSIMILAR_VEC = Array.from({ length: 384 }, (_, i) => (i % 2 === 0 ? 0.1 : -0.1));
+
+function versioned<T extends { id: string }>(entry: T) {
+  return {
+    owner_user_id: TEST_USER_ID,
+    current_episode_id: `episode-${entry.id}`,
+    revision: 1,
+    ...entry,
+  };
+}
 
 describe("GET /recall", () => {
   let env: Env;
@@ -66,6 +76,57 @@ describe("GET /recall", () => {
     expect(data.ok).toBe(true);
     expect(data.results).toEqual([]);
     expect(data.message).toBe("Nothing found matching that query.");
+  });
+
+  it("never retries an empty filtered semantic query without authorization filters", async () => {
+    const query = vi.fn().mockResolvedValue({ matches: [] });
+    env = makeTestEnv(db, { VECTORIZE: makeVectorizeMock({ query }) });
+
+    const res = await worker.fetch(req("GET", "/recall?query=known+canary"), env, ctx);
+
+    expect(res.status).toBe(200);
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls.every(([, options]) => options.filter)).toBe(true);
+  });
+
+  it("rejects a legacy entry-only vector for an entry with a current episode", async () => {
+    db.entries.push({
+      id: "versioned", content: "A meaningfully different sentence", tags: "[]", source: "api",
+      created_at: 1000, vector_ids: '["legacy-vector"]', owner_user_id: TEST_USER_ID,
+      visibility: "private", current_episode_id: "episode-current", recall_count: 0, importance_score: 0,
+    });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [{ id: "legacy-vector", score: 0.99, metadata: { parentId: "versioned" } }],
+        }),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=unrelated+paraphrase"), env, ctx);
+    const data = await res.json() as any;
+
+    expect(data.results).toEqual([]);
+  });
+
+  it("rejects a legacy tag-scoped vector that omits current episode identity", async () => {
+    db.entries.push({
+      id: "versioned-tag", content: "Tagged semantic content", tags: '["work"]', source: "api",
+      created_at: 1000, vector_ids: '["legacy-vector"]', owner_user_id: TEST_USER_ID,
+      visibility: "private", current_episode_id: "episode-current", recall_count: 0, importance_score: 0,
+    });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        getByIds: vi.fn().mockResolvedValue([
+          { id: "legacy-vector", values: SIMILAR_VEC, metadata: { parentId: "versioned-tag" } },
+        ]),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=semantic&tag=work"), env, ctx);
+    const data = await res.json() as any;
+
+    expect(data.results).toEqual([]);
   });
 
   it("returns ranked matches hydrated from D1", async () => {
@@ -114,13 +175,13 @@ describe("GET /recall", () => {
 
   it("surfaces tagged entries via getByIds even when a global query would miss them", async () => {
     db.entries.push(
-      { id: "entry-1", content: "Work memory", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["entry-1"]', owner_user_id: TEST_USER_ID, recall_count: 0, importance_score: 0 },
+      versioned({ id: "entry-1", content: "Work memory", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["entry-1"]', owner_user_id: TEST_USER_ID, recall_count: 0, importance_score: 0 }),
       { id: "entry-2", content: "Idea memory", tags: '["idea"]', source: "api", created_at: 2000, vector_ids: '["entry-2"]', recall_count: 0, importance_score: 0 },
     );
     // Global semantic query returns nothing — the old path would lose this entry entirely
     const queryMock = vi.fn().mockResolvedValue({ matches: [] });
     const getByIdsMock = vi.fn().mockResolvedValue([
-      { id: "entry-1", values: SIMILAR_VEC, metadata: { parentId: "entry-1", isUpdate: false } },
+      { id: "entry-1", values: SIMILAR_VEC, metadata: { parentId: "entry-1", episodeId: "episode-entry-1", isUpdate: false } },
     ]);
     env = makeTestEnv(db, { VECTORIZE: makeVectorizeMock({ query: queryMock, getByIds: getByIdsMock }) });
 
@@ -135,13 +196,13 @@ describe("GET /recall", () => {
 
   it("tag recall includes the caller's private entry and excludes another user's private entry", async () => {
     db.entries.push(
-      { id: "own-private", content: "Own private work", tags: '["work","private"]', source: "api", created_at: 1000, vector_ids: '["own-vector"]', owner_user_id: TEST_USER_ID, recall_count: 0, importance_score: 0 },
+      versioned({ id: "own-private", content: "Own private work", tags: '["work","private"]', source: "api", created_at: 1000, vector_ids: '["own-vector"]', owner_user_id: TEST_USER_ID, recall_count: 0, importance_score: 0 }),
       { id: "other-private", content: "Other private work", tags: '["work","private"]', source: "api", created_at: 2000, vector_ids: '["other-vector"]', owner_user_id: "other-user", recall_count: 0, importance_score: 0 },
     );
     const getByIdsMock = vi.fn().mockResolvedValue([
-      { id: "own-vector", values: SIMILAR_VEC, metadata: { parentId: "own-private", isUpdate: false } },
+      { id: "own-vector", values: SIMILAR_VEC, metadata: { parentId: "own-private", episodeId: "episode-own-private", isUpdate: false } },
       // A hostile index response must not make this visible; its ID was never requested.
-      { id: "other-vector", values: SIMILAR_VEC, metadata: { parentId: "other-private", isUpdate: false } },
+      { id: "other-vector", values: SIMILAR_VEC, metadata: { parentId: "other-private", episodeId: "episode-other-private", isUpdate: false } },
     ]);
     env = makeTestEnv(db, { VECTORIZE: makeVectorizeMock({ getByIds: getByIdsMock }) });
 
@@ -178,12 +239,12 @@ describe("GET /recall", () => {
 
   it("ranks tag-scoped results by cosine similarity to the query", async () => {
     db.entries.push(
-      { id: "entry-1", content: "Less similar", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["entry-1"]', recall_count: 0, importance_score: 0 },
-      { id: "entry-2", content: "More similar", tags: '["work"]', source: "api", created_at: 2000, vector_ids: '["entry-2"]', recall_count: 0, importance_score: 0 },
+      versioned({ id: "entry-1", content: "Less similar", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["entry-1"]', recall_count: 0, importance_score: 0 }),
+      versioned({ id: "entry-2", content: "More similar", tags: '["work"]', source: "api", created_at: 2000, vector_ids: '["entry-2"]', recall_count: 0, importance_score: 0 }),
     );
     const getByIdsMock = vi.fn().mockResolvedValue([
-      { id: "entry-1", values: DISSIMILAR_VEC, metadata: { parentId: "entry-1", isUpdate: false } },
-      { id: "entry-2", values: SIMILAR_VEC, metadata: { parentId: "entry-2", isUpdate: false } },
+      { id: "entry-1", values: DISSIMILAR_VEC, metadata: { parentId: "entry-1", episodeId: "episode-entry-1", isUpdate: false } },
+      { id: "entry-2", values: SIMILAR_VEC, metadata: { parentId: "entry-2", episodeId: "episode-entry-2", isUpdate: false } },
     ]);
     env = makeTestEnv(db, { VECTORIZE: makeVectorizeMock({ getByIds: getByIdsMock }) });
 
@@ -195,10 +256,10 @@ describe("GET /recall", () => {
 
   it("omits stale vector IDs that getByIds does not return", async () => {
     db.entries.push(
-      { id: "entry-1", content: "Live memory", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["entry-1","entry-1-stale"]', recall_count: 0, importance_score: 0 },
+      versioned({ id: "entry-1", content: "Live memory", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["entry-1","entry-1-stale"]', recall_count: 0, importance_score: 0 }),
     );
     const getByIdsMock = vi.fn().mockResolvedValue([
-      { id: "entry-1", values: SIMILAR_VEC, metadata: { parentId: "entry-1", isUpdate: false } },
+      { id: "entry-1", values: SIMILAR_VEC, metadata: { parentId: "entry-1", episodeId: "episode-entry-1", isUpdate: false } },
     ]);
     env = makeTestEnv(db, { VECTORIZE: makeVectorizeMock({ getByIds: getByIdsMock }) });
 
@@ -268,11 +329,11 @@ describe("GET /recall", () => {
   it("respects topK in tag-scoped recall", async () => {
     for (let i = 1; i <= 5; i++) {
       db.entries.push(
-        { id: `entry-${i}`, content: `Memory ${i}`, tags: '["work"]', source: "api", created_at: 1000 + i, vector_ids: `["entry-${i}"]`, recall_count: 0, importance_score: 0 },
+        versioned({ id: `entry-${i}`, content: `Memory ${i}`, tags: '["work"]', source: "api", created_at: 1000 + i, vector_ids: `["entry-${i}"]`, recall_count: 0, importance_score: 0 }),
       );
     }
     const getByIdsMock = vi.fn().mockResolvedValue(
-      Array.from({ length: 5 }, (_, i) => ({ id: `entry-${i + 1}`, values: SIMILAR_VEC, metadata: { parentId: `entry-${i + 1}`, isUpdate: false } })),
+      Array.from({ length: 5 }, (_, i) => ({ id: `entry-${i + 1}`, values: SIMILAR_VEC, metadata: { parentId: `entry-${i + 1}`, episodeId: `episode-entry-${i + 1}`, isUpdate: false } })),
     );
     env = makeTestEnv(db, { VECTORIZE: makeVectorizeMock({ getByIds: getByIdsMock }) });
 
@@ -283,11 +344,11 @@ describe("GET /recall", () => {
 
   it("dedupes tag-scoped chunk vectors that share the same parentId", async () => {
     db.entries.push(
-      { id: "entry-1", content: "Chunked memory", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["entry-1-chunk-0","entry-1-chunk-1"]', recall_count: 0, importance_score: 0 },
+      versioned({ id: "entry-1", content: "Chunked memory", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["entry-1-chunk-0","entry-1-chunk-1"]', recall_count: 0, importance_score: 0 }),
     );
     const getByIdsMock = vi.fn().mockResolvedValue([
-      { id: "entry-1-chunk-0", values: SIMILAR_VEC, metadata: { parentId: "entry-1", isUpdate: false } },
-      { id: "entry-1-chunk-1", values: SIMILAR_VEC, metadata: { parentId: "entry-1", isUpdate: false } },
+      { id: "entry-1-chunk-0", values: SIMILAR_VEC, metadata: { parentId: "entry-1", episodeId: "episode-entry-1", isUpdate: false } },
+      { id: "entry-1-chunk-1", values: SIMILAR_VEC, metadata: { parentId: "entry-1", episodeId: "episode-entry-1", isUpdate: false } },
     ]);
     env = makeTestEnv(db, { VECTORIZE: makeVectorizeMock({ getByIds: getByIdsMock }) });
 
@@ -301,11 +362,11 @@ describe("GET /recall", () => {
     const count = 150;
     for (let i = 1; i <= count; i++) {
       db.entries.push(
-        { id: `entry-${i}`, content: `Memory ${i}`, tags: '["work"]', source: "api", created_at: 1000 + i, vector_ids: `["entry-${i}"]`, recall_count: 0, importance_score: 0 },
+        versioned({ id: `entry-${i}`, content: `Memory ${i}`, tags: '["work"]', source: "api", created_at: 1000 + i, vector_ids: `["entry-${i}"]`, recall_count: 0, importance_score: 0 }),
       );
     }
     const getByIdsMock = vi.fn().mockResolvedValue(
-      Array.from({ length: count }, (_, i) => ({ id: `entry-${i + 1}`, values: SIMILAR_VEC, metadata: { parentId: `entry-${i + 1}`, isUpdate: false } })),
+      Array.from({ length: count }, (_, i) => ({ id: `entry-${i + 1}`, values: SIMILAR_VEC, metadata: { parentId: `entry-${i + 1}`, episodeId: `episode-entry-${i + 1}`, isUpdate: false } })),
     );
     env = makeTestEnv(db, { VECTORIZE: makeVectorizeMock({ getByIds: getByIdsMock }) });
     const prepareSpy = vi.spyOn(db, "prepare");
@@ -371,8 +432,8 @@ describe("GET /recall", () => {
 
   it("filters recall results to only the requested kind", async () => {
     db.entries.push(
-      { id: "entry-episodic", content: "Attended a team offsite in January", tags: '["work","kind:episodic"]', source: "api", created_at: 1000, vector_ids: '["entry-episodic"]', recall_count: 0, importance_score: 0 },
-      { id: "entry-semantic", content: "The company uses a monorepo structure", tags: '["work","kind:semantic"]', source: "api", created_at: 2000, vector_ids: '["entry-semantic"]', recall_count: 0, importance_score: 0 },
+      versioned({ id: "entry-episodic", content: "Attended a team offsite in January", tags: '["work","kind:episodic"]', source: "api", created_at: 1000, vector_ids: '["entry-episodic"]', recall_count: 0, importance_score: 0 }),
+      versioned({ id: "entry-semantic", content: "The company uses a monorepo structure", tags: '["work","kind:semantic"]', source: "api", created_at: 2000, vector_ids: '["entry-semantic"]', recall_count: 0, importance_score: 0 }),
     );
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
@@ -443,7 +504,7 @@ describe("GET /recall", () => {
 
   it("e2e: captureEntry records a contradiction without choosing a winner or deprecating either claim", async () => {
     const now = Date.now();
-    db.entries.push({
+    db.entries.push(versioned({
       id: "old-fact",
       content: "I live in Boston",
       tags: "[]",
@@ -456,14 +517,14 @@ describe("GET /recall", () => {
       contradiction_losses: 0,
       owner_user_id: "_system",
       visibility: "public",
-    });
+    }));
 
     const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "m" });
     const captureEnv = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         // captureEntry uses this query mock to find the near-match during capture
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "old-fact", score: 0.72, metadata: { parentId: "old-fact" } }],
+          matches: [{ id: "old-fact", score: 0.72, metadata: { parentId: "old-fact", episodeId: "episode-old-fact" } }],
         }),
         deleteByIds: deleteByIdsMock,
       }),
@@ -471,7 +532,7 @@ describe("GET /recall", () => {
     });
 
     const captureCtx = { waitUntil: (_: Promise<any>) => {} } as any as ExecutionContext;
-    const captureResult = await captureEntry("I moved to Seattle", [], "api", captureEnv, captureCtx);
+    const captureResult = await captureEntry("I moved to Seattle", [], "api", captureEnv, captureCtx, undefined, { visibility: "public" });
 
     expect(captureResult.status).toBe("contradiction");
     if (captureResult.status !== "contradiction") return;
@@ -498,12 +559,12 @@ describe("GET /recall", () => {
       ["v18", "Release notes for v1.8 — fixed a re-embed bug"],
       ["v19", "Release notes for v1.9 — added the memory status layer"],
     ];
-    seed.forEach(([id, content], i) => db.entries.push({
+    seed.forEach(([id, content], i) => db.entries.push(versioned({
       id, content, tags: "[]", source: "api",
       created_at: now - (seed.length - i) * 1000,
       vector_ids: `["${id}"]`, recall_count: 0, importance_score: 0,
       contradiction_wins: 0, contradiction_losses: 0,
-    }));
+    })));
 
     // Dense search returns the near-twins at high scores but misses v1.9 entirely —
     // version tokens embed near-identically, so cosine can't single it out.
@@ -533,21 +594,230 @@ describe("GET /recall", () => {
       ["v18", "Release notes for v1.8"],
       ["v19", "Release notes for v1.9"],
     ];
-    seed.forEach(([id, content], i) => db.entries.push({
+    seed.forEach(([id, content], i) => db.entries.push(versioned({
       id, content, tags: '["rel"]', source: "api",
       created_at: now - (seed.length - i) * 1000,
       vector_ids: `["${id}"]`, recall_count: 0, importance_score: 0,
       contradiction_wins: 0, contradiction_losses: 0,
-    }));
+    })));
     // All tagged vectors score equally on cosine — only keyword fusion distinguishes them.
     const getByIdsMock = vi.fn().mockResolvedValue(
-      seed.map(([id]) => ({ id, values: SIMILAR_VEC, metadata: { parentId: id, isUpdate: false } })),
+      seed.map(([id]) => ({ id, values: SIMILAR_VEC, metadata: { parentId: id, episodeId: `episode-${id}`, isUpdate: false } })),
     );
     env = makeTestEnv(db, { VECTORIZE: makeVectorizeMock({ getByIds: getByIdsMock }) });
 
     const res = await worker.fetch(req("GET", "/recall?query=release+v1.9&tag=rel"), env, ctx);
     const data = await res.json() as any;
     expect(data.results[0].id).toBe("v19");
+  });
+});
+
+describe("GET /recall — recall eligibility excludes superseded/retracted", () => {
+  let env: Env;
+  let db: D1Mock;
+
+  beforeEach(() => {
+    db = makeTestDb();
+    env = makeTestEnv(db);
+  });
+
+  it("excludes an entry with epistemic_status superseded from dense recall", async () => {
+    db.entries.push(
+      versioned({ id: "live", content: "Active deployment notes", tags: "[]", source: "api", created_at: 1000, vector_ids: '["live-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+      versioned({ id: "stale-fact", content: "Outdated deployment notes", tags: "[]", source: "api", created_at: 1000, vector_ids: '["stale-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "superseded" }),
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [makeMatch("live", 0.9), makeMatch("stale-fact", 0.85)],
+        }),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=deployment"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results.map((r: any) => r.id)).toEqual(["live"]);
+  });
+
+  it("excludes an entry with epistemic_status retracted from dense recall", async () => {
+    db.entries.push(
+      versioned({ id: "live", content: "Current pricing model", tags: "[]", source: "api", created_at: 1000, vector_ids: '["live-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+      versioned({ id: "retracted", content: "Recalled pricing claim", tags: "[]", source: "api", created_at: 1000, vector_ids: '["retracted-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "retracted" }),
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [makeMatch("live", 0.9), makeMatch("retracted", 0.95)],
+        }),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=pricing"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results.map((r: any) => r.id)).toEqual(["live"]);
+  });
+
+  it("keeps a stale (penalized) entry but drops superseded on the tag path", async () => {
+    db.entries.push(
+      versioned({ id: "canon", content: "Canonical work note", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["canon-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+      versioned({ id: "s1", content: "Stale work note", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["s1-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "stale" }),
+      versioned({ id: "sup", content: "Superseded work note", tags: '["work"]', source: "api", created_at: 1000, vector_ids: '["sup-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "superseded" }),
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        getByIds: vi.fn().mockResolvedValue([
+          { id: "canon-vec", values: SIMILAR_VEC, metadata: { parentId: "canon", episodeId: "episode-canon", isUpdate: false } },
+          { id: "s1-vec", values: SIMILAR_VEC, metadata: { parentId: "s1", episodeId: "episode-s1", isUpdate: false } },
+          { id: "sup-vec", values: SIMILAR_VEC, metadata: { parentId: "sup", episodeId: "episode-sup", isUpdate: false } },
+        ]),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=work&tag=work"), env, ctx);
+    const data = await res.json() as any;
+    const ids = data.results.map((r: any) => r.id);
+    expect(ids).toContain("canon");
+    expect(ids).toContain("s1");
+    expect(ids).not.toContain("sup");
+  });
+
+  it("excludes superseded entries surfaced via graph expansion", async () => {
+    db.entries.push(
+      versioned({ id: "seed", content: "Seed planning memory", tags: "[]", source: "api", created_at: 1000, vector_ids: '["seed-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+      versioned({ id: "rel", content: "Related planning memory", tags: "[]", source: "api", created_at: 1000, vector_ids: '["rel-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "superseded" }),
+    );
+    db.edges.push({
+      id: "edge-1", source_id: "seed", target_id: "rel", type: "relates_to",
+      weight: 0.9, confidence: 1, provenance: "inferred", metadata: "{}",
+      created_at: 1000, updated_at: 1000,
+    });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({ matches: [makeMatch("seed", 0.9)] }),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=planning&hops=1"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results.map((r: any) => r.id)).toEqual(["seed"]);
+  });
+
+  it("keyword-only recall still excludes superseded entries", async () => {
+    db.entries.push(
+      versioned({ id: "kw-live", content: "Deployment runbook", tags: "[]", source: "api", created_at: 1000, vector_ids: "[]", recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+      versioned({ id: "kw-sup", content: "Deployment runbook (superseded)", tags: "[]", source: "api", created_at: 1000, vector_ids: "[]", recall_count: 0, importance_score: 0, epistemic_status: "superseded" }),
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({ query: vi.fn().mockRejectedValue(new Error("index not found")) }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=deployment"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results.map((r: any) => r.id)).toEqual(["kw-live"]);
+  });
+});
+
+describe("GET /recall — passage-level citations", () => {
+  let env: Env;
+  let db: D1Mock;
+
+  beforeEach(() => {
+    db = makeTestDb();
+    env = makeTestEnv(db);
+  });
+
+  it("puts the vector-matched passage first in the citation list and exposes matched_passage_id", async () => {
+    const now = 2000;
+    db.entries.push(
+      versioned({ id: "entry-cites", content: "Decision log", tags: "[]", source: "api", created_at: now, vector_ids: '["ev:episode-entry-cites:0"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+    );
+    db.episodes.push({
+      id: "episode-entry-cites", entry_id: "entry-cites", mutation_id: "mutation-1",
+      materialized_content: "Decision log",
+    });
+    // Newest passage first by recency, but the vector hit the OLDER middle chunk.
+    db.passages.push(
+      { id: "passage-newest", entry_id: "entry-cites", episode_id: "episode-entry-cites", content: "Newest chunk", created_at: now + 100, start_offset: 0 },
+      { id: "passage-match", entry_id: "entry-cites", episode_id: "episode-entry-cites", content: "The chunk the vector actually matched", created_at: now, start_offset: 40 },
+      { id: "passage-old", entry_id: "entry-cites", episode_id: "episode-entry-cites", content: "Oldest chunk", created_at: now - 100, start_offset: 80 },
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [{
+            id: "pv:passage-match", score: 0.9,
+            metadata: { parentId: "entry-cites", episodeId: "episode-entry-cites", isUpdate: false, passageId: "passage-match" },
+          }],
+        }),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=decision"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results).toHaveLength(1);
+    expect(data.results[0].matched_passage_id).toBe("passage-match");
+    expect(data.results[0].passages).toHaveLength(3);
+    expect(data.results[0].passages[0].id).toBe("passage-match");
+    expect(data.results[0].passages[0].content).toBe("The chunk the vector actually matched");
+    expect(data.results[0].passages.map((p: any) => p.id)).toEqual(["passage-match", "passage-newest", "passage-old"]);
+  });
+
+  it("falls back to recency ordering when the match carries no passage id", async () => {
+    const now = 2000;
+    db.entries.push(
+      versioned({ id: "entry-plain", content: "Plain note", tags: "[]", source: "api", created_at: now, vector_ids: '["ev:episode-entry-plain:0"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical" }),
+    );
+    db.episodes.push({
+      id: "episode-entry-plain", entry_id: "entry-plain", mutation_id: "mutation-1",
+      materialized_content: "Plain note",
+    });
+    db.passages.push(
+      { id: "p-a", entry_id: "entry-plain", episode_id: "episode-entry-plain", content: "Older chunk", created_at: now - 100, start_offset: 0 },
+      { id: "p-b", entry_id: "entry-plain", episode_id: "episode-entry-plain", content: "Newer chunk", created_at: now, start_offset: 40 },
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [{
+            id: "ev:episode-entry-plain:0", score: 0.9,
+            metadata: { parentId: "entry-plain", episodeId: "episode-entry-plain", isUpdate: false },
+          }],
+        }),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=note"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results[0].matched_passage_id).toBeNull();
+    expect(data.results[0].passages.map((p: any) => p.id)).toEqual(["p-b", "p-a"]);
+  });
+
+  it("labels author and scope on every result", async () => {
+    db.users.push({
+      id: TEST_USER_ID, username: "alice", normalized_username: "alice",
+      auth_key_hash: TEST_USER_AUTH_HASH, auth_key_prefix: "", status: "active", created_at: 1000,
+    });
+    db.users.push({
+      id: "bob-id", username: "bob", normalized_username: "bob",
+      auth_key_hash: "", auth_key_prefix: "", status: "active", created_at: 1000,
+    });
+    db.entries.push(
+      versioned({ id: "mine", content: "My private note", tags: "[]", source: "api", created_at: 1000, vector_ids: '["mine-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical", visibility: "private" }),
+      versioned({ id: "team", content: "Bob's public note", tags: "[]", source: "api", created_at: 1000, vector_ids: '["team-vec"]', recall_count: 0, importance_score: 0, epistemic_status: "canonical", owner_user_id: "bob-id", visibility: "public" }),
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [makeMatch("mine", 0.9), makeMatch("team", 0.8)],
+        }),
+      }),
+    });
+
+    const res = await worker.fetch(req("GET", "/recall?query=note"), env, ctx);
+    const data = await res.json() as any;
+    expect(data.results.map((r: any) => r.id)).toEqual(["mine", "team"]);
+    expect(data.results[0]).toMatchObject({ owner_user_id: TEST_USER_ID, owner_username: "alice", scope: "private", is_owned: true });
+    expect(data.results[1]).toMatchObject({ owner_user_id: "bob-id", owner_username: "bob", scope: "public", is_owned: false });
   });
 });
 
@@ -593,10 +863,11 @@ describe("GET /recall — missing Vectorize index", () => {
     const db = makeTestDb();
     db.entries.push({
       id: "w1", content: "widen path content", tags: "[]", source: "api",
-      created_at: Date.now(), vector_ids: '["w1"]', owner_user_id: TEST_USER_ID, recall_count: 0, importance_score: 0,
+      created_at: Date.now(), vector_ids: '["w1"]', owner_user_id: TEST_USER_ID,
+      current_episode_id: "episode-w1", revision: 1, recall_count: 0, importance_score: 0,
     });
     const query = vi.fn()
-      .mockResolvedValueOnce({ matches: [{ id: "w1", score: 0.1, metadata: { parentId: "w1", content: "widen path content", created_at: Date.now(), tags: [], source: "api" } }] })
+      .mockResolvedValueOnce({ matches: [{ id: "w1", score: 0.1, metadata: { parentId: "w1", episodeId: "episode-w1", content: "widen path content", created_at: Date.now(), tags: [], source: "api" } }] })
       .mockResolvedValueOnce({ matches: [] })
       .mockRejectedValueOnce(new Error("widen failed"))
       .mockResolvedValueOnce({ matches: [] });

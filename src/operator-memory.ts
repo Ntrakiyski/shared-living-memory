@@ -178,6 +178,7 @@ export async function captureServicePrivateDraft(
           tags,
           source: effectiveSource,
           sourceUrl: input.sourceUrl,
+          visibility: "private",
           contentType: input.contentType,
           title: input.title,
           epistemicStatus: "candidate",

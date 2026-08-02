@@ -224,11 +224,20 @@ describe("POST /append", () => {
 
   it("auto-links a similar neighbor after the version commit", async () => {
     seedEntry(db, { id: "target", content: "Original note", vector_ids: "[]" });
-    seedEntry(db, { id: "neighbor", content: "Related memory", vector_ids: "[]" });
+    seedEntry(db, {
+      id: "neighbor",
+      content: "Related memory",
+      vector_ids: "[]",
+      current_episode_id: "episode-neighbor",
+    });
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "neighbor", score: 0.85, metadata: { parentId: "neighbor" } }],
+          matches: [{
+            id: "neighbor",
+            score: 0.85,
+            metadata: { parentId: "neighbor", episodeId: "episode-neighbor" },
+          }],
         }),
       }),
     });

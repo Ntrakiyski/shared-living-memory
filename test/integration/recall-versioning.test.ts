@@ -103,23 +103,26 @@ describe("versioned and bitemporal recall", () => {
     validTo?: number | null;
     tags?: string[];
     revision?: number;
+    ownerUserId?: string;
+    visibility?: "private" | "public";
   }): void {
     db.sqlite.prepare(
       `INSERT INTO entries (
          id, content, tags, source, created_at, vector_ids, owner_user_id,
          valid_from, valid_to, recorded_at, epistemic_status,
-         current_episode_id, revision
-       ) VALUES (?, ?, ?, 'api', 50, '[]', ?, ?, ?, ?, 'canonical', ?, ?)`
+         current_episode_id, revision, visibility
+       ) VALUES (?, ?, ?, 'api', 50, '[]', ?, ?, ?, ?, 'canonical', ?, ?, ?)`
     ).run(
       input.id,
       input.content,
       JSON.stringify(input.tags ?? []),
-      USER_ID,
+      input.ownerUserId ?? USER_ID,
       input.validFrom ?? 0,
       input.validTo ?? null,
       input.recordedAt,
       input.episodeId,
       input.revision ?? 2,
+      input.visibility ?? "private",
     );
   }
 
@@ -232,6 +235,73 @@ describe("versioned and bitemporal recall", () => {
     expect(result.matches).toHaveLength(1);
     expect(result.matches[0].content).toBe("Historical launch decision");
     expect(result.matches[0].passages?.map(passage => passage.id)).toEqual(["passage-old"]);
+  });
+
+  it("recalls a token-disjoint historical paraphrase while denying foreign lineage and private parents", async () => {
+    insertEntry({
+      id: "target",
+      content: "Current release approach",
+      episodeId: "episode-target-current",
+      recordedAt: 300,
+    });
+    insertSnapshot({
+      id: "target-old",
+      entryId: "target",
+      content: "Blue green deployment selected for production release",
+      episodeId: "episode-target-old",
+      recordedAt: 100,
+    });
+    insertPassage({
+      id: "target-old-passage",
+      entryId: "target",
+      episodeId: "episode-target-old",
+      content: "Historical traffic-shift evidence",
+    });
+
+    insertEntry({
+      id: "foreign-lineage",
+      content: "Different public memory",
+      episodeId: "episode-foreign-current",
+      recordedAt: 300,
+    });
+    insertSnapshot({
+      id: "foreign-old",
+      entryId: "foreign-lineage",
+      content: "Unrelated historical state",
+      episodeId: "episode-foreign-old",
+      recordedAt: 100,
+    });
+    insertEntry({
+      id: "private-parent",
+      content: "Other user's private current state",
+      episodeId: "episode-private-current",
+      recordedAt: 300,
+      ownerUserId: "other-user",
+      visibility: "private",
+    });
+    insertSnapshot({
+      id: "private-old",
+      entryId: "private-parent",
+      content: "Other user's private historical state",
+      episodeId: "episode-private-old",
+      recordedAt: 100,
+    });
+    vectorQuery.mockResolvedValue({
+      matches: [
+        // This real episode belongs to another entry and must not authorize a
+        // forged parentId even though it has the strongest score.
+        vectorMatch("wrong-entry-vector", "target", "episode-foreign-old", 0.99),
+        // Hostile Vectorize metadata cannot expose another user's private row.
+        vectorMatch("private-vector", "private-parent", "episode-private-old", 0.98),
+        vectorMatch("historical-vector", "target", "episode-target-old", 0.8),
+      ],
+    });
+
+    const result = await recall("switch traffic without downtime", { knownAt: 200 });
+
+    expect(result.matches.map(match => match.id)).toEqual(["target"]);
+    expect(result.matches[0].content).toBe("Blue green deployment selected for production release");
+    expect(result.matches[0].passages?.map(passage => passage.id)).toEqual(["target-old-passage"]);
   });
 
   it("reconstructs current, valid-time, knowledge-time, and combined bitemporal views", async () => {

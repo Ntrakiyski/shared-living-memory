@@ -1098,6 +1098,119 @@ const MIGRATIONS: readonly Migration[] = [
       return statements;
     },
   },
+  {
+    version: 11,
+    name: "document_title_origin",
+    statements: async (db) => {
+      const documents = await tableColumns(db, "documents");
+      const statements: string[] = [];
+      addColumnIfMissing(
+        statements,
+        documents,
+        "documents",
+        "title_origin",
+        "TEXT NOT NULL DEFAULT 'generated' CHECK (title_origin IN ('explicit', 'generated'))",
+      );
+      statements.push(
+        `UPDATE documents
+         SET title_origin = 'generated'
+         WHERE title_origin IS NULL
+            OR title_origin NOT IN ('explicit', 'generated')`,
+      );
+      return statements;
+    },
+  },
+  {
+    version: 12,
+    name: "strip_agent_event_content",
+    statements: async (db) => {
+      // Agent events created before the mandatory-audit envelope (migration 6)
+      // may carry raw content excerpts in input_summary / output_summary. This
+      // migration zeroes those fields and backfills the redacted columns from
+      // the original values so no query path ever reconstructs raw content from
+      // audit data. The redacted columns already exist (migration 6), but some
+      // rows may lack them.
+      const events = await tableColumns(db, "agent_events");
+      const statements: string[] = [];
+      if (events.has("redacted_input_summary")) {
+        statements.push(
+          `UPDATE agent_events
+           SET redacted_input_summary = COALESCE(redacted_input_summary, input_summary),
+               redacted_output_summary = COALESCE(redacted_output_summary, output_summary)
+           WHERE (input_summary IS NOT NULL AND input_summary != '')
+              OR (output_summary IS NOT NULL AND output_summary != '')`,
+        );
+      }
+      statements.push(
+        `UPDATE agent_events
+         SET input_summary = CASE WHEN input_summary IS NULL OR input_summary = '' THEN input_summary ELSE '[redacted-v12]' END,
+             output_summary = CASE WHEN output_summary IS NULL OR output_summary = '' THEN output_summary ELSE '[redacted-v12]' END`,
+      );
+      return statements;
+    },
+  },
+  {
+    version: 13,
+    name: "erasure_receipts",
+    statements: sql(
+      `CREATE TABLE IF NOT EXISTS erasure_receipts (
+         operation_id TEXT PRIMARY KEY,
+         entry_id TEXT NOT NULL,
+         owner_user_id TEXT NOT NULL,
+         actor_user_id TEXT NOT NULL,
+         vector_count INTEGER NOT NULL DEFAULT 0,
+         status TEXT NOT NULL CHECK (status IN ('complete', 'pending_cleanup', 'stale')),
+         created_at INTEGER NOT NULL,
+         updated_at INTEGER NOT NULL,
+         completed_at INTEGER
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_erasure_receipts_status ON erasure_receipts(status)`,
+      `CREATE INDEX IF NOT EXISTS idx_erasure_receipts_entry ON erasure_receipts(entry_id)`,
+    ),
+  },
+  {
+    version: 14,
+    name: "recall_feedback",
+    statements: sql(
+      `CREATE TABLE IF NOT EXISTS recall_events (
+         id TEXT PRIMARY KEY,
+         user_id TEXT NOT NULL,
+         client TEXT NOT NULL DEFAULT 'unknown',
+         query_hash TEXT NOT NULL,
+         result_entry_ids TEXT NOT NULL DEFAULT '[]',
+         result_count INTEGER NOT NULL DEFAULT 0,
+         semantic_unavailable INTEGER NOT NULL DEFAULT 0,
+         duration_ms INTEGER NOT NULL DEFAULT 0,
+         created_at INTEGER NOT NULL
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_recall_events_user ON recall_events(user_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_recall_events_created ON recall_events(created_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS recall_feedback (
+         id TEXT PRIMARY KEY,
+         recall_event_id TEXT NOT NULL,
+         user_id TEXT NOT NULL,
+         rating TEXT NOT NULL CHECK (rating IN ('helpful', 'not_helpful')),
+         reason TEXT CHECK (reason IN ('irrelevant', 'missing', 'stale', 'conflicting', 'unsupported', 'too_much', 'other')),
+         created_at INTEGER NOT NULL,
+         UNIQUE(recall_event_id, user_id)
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_recall_feedback_event ON recall_feedback(recall_event_id)`,
+    ),
+  },
+  {
+    version: 15,
+    name: "operational_job_status",
+    statements: sql(
+      `CREATE TABLE IF NOT EXISTS operational_job_status (
+         job_name TEXT PRIMARY KEY,
+         last_started_at INTEGER,
+         last_completed_at INTEGER,
+         outcome_code TEXT,
+         deployment_id TEXT,
+         updated_at INTEGER NOT NULL
+       )`,
+    ),
+  },
 ] as const;
 
 async function ensureMigrationTable(db: D1Database): Promise<void> {
@@ -1184,7 +1297,7 @@ async function validateCurrentSchema(db: D1Database): Promise<void> {
       section, page, page_end, start_offset, end_offset, vector_ids, created_at
       FROM passages LIMIT 0`,
     `SELECT id, title, source_url, content_type, created_at, episode_id,
-      owner_user_id, content_hash, version FROM documents LIMIT 0`,
+      owner_user_id, content_hash, version, title_origin FROM documents LIMIT 0`,
     `SELECT id, document_id, parent_section_id, title, level, order_index,
       created_at, page_start, page_end, start_offset, end_offset
       FROM document_sections LIMIT 0`,
@@ -1242,6 +1355,17 @@ async function validateCurrentSchema(db: D1Database): Promise<void> {
       completed_at FROM overlap_awareness_reconciliation LIMIT 0`,
     `SELECT id, vector_ids, reason, attempts, last_error, created_at, updated_at
       FROM vector_cleanup_queue LIMIT 0`,
+    `SELECT operation_id, entry_id, owner_user_id, actor_user_id,
+      vector_count, status, created_at, updated_at, completed_at
+      FROM erasure_receipts LIMIT 0`,
+    `SELECT id, user_id, client, query_hash, result_entry_ids,
+      result_count, semantic_unavailable, duration_ms, created_at
+      FROM recall_events LIMIT 0`,
+    `SELECT id, recall_event_id, user_id, rating, reason, created_at
+      FROM recall_feedback LIMIT 0`,
+    `SELECT job_name, last_started_at, last_completed_at,
+      outcome_code, deployment_id, updated_at
+      FROM operational_job_status LIMIT 0`,
   ];
 
   try {

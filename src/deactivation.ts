@@ -13,11 +13,11 @@ import {
   deleteIntegration,
   redactIntegrationError,
 } from "./integrations";
-import type { Env, UserDeactivation } from "./types";
+import type { Env, HumanActorContext, ServiceScope, UserDeactivation } from "./types";
+import { eraseEntryArtifacts } from "./erasure";
 
 const DEFAULT_BATCH_SIZE = 10;
 const MAX_BATCH_SIZE = 50;
-const VECTOR_DELETE_BATCH_SIZE = 1_000;
 const ERROR_LIMIT = 500;
 
 type UserRow = {
@@ -47,12 +47,6 @@ type OwnedEntry = {
   vector_ids: string;
 };
 
-type ActionProposalRow = {
-  id: string;
-  target_ids: string;
-  payload_json: string;
-};
-
 export type UserDeactivationErrorCode =
   | "INVALID_INPUT"
   | "ADMIN_REQUIRED"
@@ -62,7 +56,7 @@ export type UserDeactivationErrorCode =
   | "LAST_ACTIVE_ADMIN"
   | "DEACTIVATION_NOT_FOUND"
   | "DEACTIVATION_NOT_RESUMABLE"
-  | "CORRUPT_VECTOR_TRACKING";
+  | "EXPORT_NOT_ACKNOWLEDGED";
 
 export class UserDeactivationError extends Error {
   constructor(
@@ -78,10 +72,16 @@ export interface RequestUserDeactivationInput {
   requesterUserId: string;
   targetUserId: string;
   /**
-   * Active administrator that receives retained public memory. When an admin
-   * deactivates another user, the requester is the default custodian.
+   * Active administrator that receives retained public memory. Required —
+   * the deactivation cannot be requested without a designated custodian.
    */
-  transferToUserId?: string | null;
+  transferToUserId: string;
+  /**
+   * Fixed acknowledgement that the target has exported private data before
+   * deactivation permanently purges it. "completed" means the export
+   * succeeded; "waived" means the operator explicitly accepted data loss.
+   */
+  privateExportAcknowledgement: "completed" | "waived";
   deactivationId?: string;
   now?: number;
 }
@@ -231,10 +231,15 @@ export async function requestUserDeactivation(
      WHERE owner_user_id = ? AND visibility = 'public'`,
   ).bind(targetId).first<{ count: number }>();
 
-  const requestedTransfer = input.transferToUserId == null
-    ? null
-    : requiredId("transferToUserId", input.transferToUserId);
-  const transferToUserId = requestedTransfer ?? (requesterId === targetId ? null : requesterId);
+  const transferToUserId = requiredId("transferToUserId", input.transferToUserId);
+
+  const acknowledgement = input.privateExportAcknowledgement;
+  if (acknowledgement !== "completed" && acknowledgement !== "waived") {
+    throw new UserDeactivationError(
+      "EXPORT_NOT_ACKNOWLEDGED",
+      `privateExportAcknowledgement must be "completed" or "waived" before deactivation`,
+    );
+  }
 
   // An administrator can leave only after another administrator exists, even
   // when the account currently owns no public memory.
@@ -252,7 +257,7 @@ export async function requestUserDeactivation(
     await requireReplacementAdmin(env, transferToUserId, targetId);
   } else if (Number(publicCount?.count ?? 0) > 0) {
     await requireReplacementAdmin(env, transferToUserId, targetId);
-  } else if (transferToUserId) {
+  } else {
     await requireReplacementAdmin(env, transferToUserId, targetId);
   }
 
@@ -385,106 +390,6 @@ export async function requestUserDeactivation(
   return created;
 }
 
-function parseVectorIds(raw: string, label: string): string[] {
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    throw new UserDeactivationError(
-      "CORRUPT_VECTOR_TRACKING",
-      `${label} contains invalid vector tracking data`,
-    );
-  }
-  if (!Array.isArray(value) || !value.every((id) => typeof id === "string" && id.length > 0)) {
-    throw new UserDeactivationError(
-      "CORRUPT_VECTOR_TRACKING",
-      `${label} contains invalid vector tracking data`,
-    );
-  }
-  return value;
-}
-
-function payloadContainsArtifact(value: unknown, artifactIds: ReadonlySet<string>): boolean {
-  if (typeof value === "string") return artifactIds.has(value);
-  if (Array.isArray(value)) {
-    return value.some((item) => payloadContainsArtifact(item, artifactIds));
-  }
-  if (value && typeof value === "object") {
-    return Object.values(value as Record<string, unknown>)
-      .some((item) => payloadContainsArtifact(item, artifactIds));
-  }
-  return false;
-}
-
-function proposalTouchesArtifacts(
-  proposal: ActionProposalRow,
-  artifactIds: ReadonlySet<string>,
-): boolean {
-  for (const raw of [proposal.target_ids, proposal.payload_json]) {
-    try {
-      if (payloadContainsArtifact(JSON.parse(raw), artifactIds)) return true;
-    } catch {
-      // Malformed proposal JSON fails safely toward removal only when it
-      // contains an exact private artifact id as a serialized token.
-      for (const id of artifactIds) {
-        if (raw.includes(`\"${id}\"`)) return true;
-      }
-    }
-  }
-  return false;
-}
-
-async function artifactIdsForEntry(env: Env, entryId: string): Promise<Set<string>> {
-  const { results } = await env.DB.prepare(
-    `SELECT id FROM entries WHERE id = ?
-     UNION
-     SELECT id FROM episodes WHERE entry_id = ?
-     UNION
-     SELECT id FROM entry_snapshots WHERE entry_id = ?
-     UNION
-     SELECT id FROM passages WHERE entry_id = ?
-     UNION
-     SELECT d.id FROM documents d
-       WHERE d.episode_id IN (SELECT id FROM episodes WHERE entry_id = ?)
-          OR d.id IN (
-            SELECT document_id FROM passages
-            WHERE entry_id = ? AND document_id IS NOT NULL
-          )
-     UNION
-     SELECT s.id FROM document_sections s
-       WHERE s.document_id IN (
-         SELECT d.id FROM documents d
-         WHERE d.episode_id IN (SELECT id FROM episodes WHERE entry_id = ?)
-            OR d.id IN (
-              SELECT document_id FROM passages
-              WHERE entry_id = ? AND document_id IS NOT NULL
-            )
-       )`,
-  ).bind(
-    entryId,
-    entryId,
-    entryId,
-    entryId,
-    entryId,
-    entryId,
-    entryId,
-    entryId,
-  ).all<{ id: string }>();
-  return new Set(results.map((row) => row.id));
-}
-
-async function proposalIdsForArtifacts(
-  env: Env,
-  artifactIds: ReadonlySet<string>,
-): Promise<string[]> {
-  const { results } = await env.DB.prepare(
-    `SELECT id, target_ids, payload_json FROM action_proposals`,
-  ).all<ActionProposalRow>();
-  return results
-    .filter((proposal) => proposalTouchesArtifacts(proposal, artifactIds))
-    .map((proposal) => proposal.id);
-}
-
 function appendProposalPurgeStatements(
   statements: D1PreparedStatement[],
   env: Env,
@@ -523,41 +428,24 @@ function appendProposalPurgeStatements(
   );
 }
 
-async function trackedVectorsForEntry(
+function advanceTransferCursor(
   env: Env,
+  deactivation: UserDeactivation,
   entry: OwnedEntry,
-): Promise<{ vectorIds: string[]; cleanupQueueIds: string[] }> {
-  const vectorIds = new Set(parseVectorIds(entry.vector_ids, `entry ${entry.id}`));
-  const passages = await env.DB.prepare(
-    `SELECT id, vector_ids FROM passages WHERE entry_id = ?`,
-  ).bind(entry.id).all<{ id: string; vector_ids: string }>();
-  for (const passage of passages.results) {
-    for (const id of parseVectorIds(passage.vector_ids, `passage ${passage.id}`)) {
-      vectorIds.add(id);
-    }
-  }
-
-  const prefix = `entry-version:${entry.id}:`;
-  const cleanup = await env.DB.prepare(
-    `SELECT id, vector_ids FROM vector_cleanup_queue
-     WHERE substr(reason, 1, ?) = ?`,
-  ).bind(prefix.length, prefix).all<{ id: string; vector_ids: string }>();
-  for (const item of cleanup.results) {
-    for (const id of parseVectorIds(item.vector_ids, `cleanup queue ${item.id}`)) {
-      vectorIds.add(id);
-    }
-  }
-
-  return {
-    vectorIds: [...vectorIds],
-    cleanupQueueIds: cleanup.results.map((row) => row.id),
-  };
-}
-
-async function deleteTrackedVectors(env: Env, vectorIds: readonly string[]): Promise<void> {
-  for (let offset = 0; offset < vectorIds.length; offset += VECTOR_DELETE_BATCH_SIZE) {
-    await env.VECTORIZE.deleteByIds(vectorIds.slice(offset, offset + VECTOR_DELETE_BATCH_SIZE));
-  }
+  now: number,
+): D1PreparedStatement {
+  return env.DB.prepare(
+    `UPDATE user_deactivations
+     SET transfer_cursor = ?, processed_entries = processed_entries + 1,
+         last_error = NULL, updated_at = ?
+     WHERE id = ? AND status = 'running'
+       AND COALESCE(transfer_cursor, '') = ?`,
+  ).bind(
+    entry.id,
+    now,
+    deactivation.id,
+    deactivation.transferCursor ?? "",
+  );
 }
 
 async function purgePrivateEntry(
@@ -565,73 +453,27 @@ async function purgePrivateEntry(
   deactivation: UserDeactivation,
   entry: OwnedEntry,
   now: number,
+  actor: HumanActorContext,
 ): Promise<boolean> {
-  const { vectorIds, cleanupQueueIds } = await trackedVectorsForEntry(env, entry);
-  const artifactIds = await artifactIdsForEntry(env, entry.id);
-  const proposalIds = await proposalIdsForArtifacts(env, artifactIds);
-
-  // External deletion deliberately precedes D1 deletion. A Vectorize failure
-  // leaves the complete D1 projection in place, private, and resumable.
-  await deleteTrackedVectors(env, vectorIds);
-
-  const statements: D1PreparedStatement[] = [];
-  appendProposalPurgeStatements(statements, env, proposalIds);
-  statements.push(
-    env.DB.prepare(
-      `DELETE FROM edge_proposals WHERE source_id = ? OR target_id = ?`,
-    ).bind(entry.id, entry.id),
-    env.DB.prepare(
-      `DELETE FROM edges WHERE source_id = ? OR target_id = ?`,
-    ).bind(entry.id, entry.id),
-    env.DB.prepare(
-      `DELETE FROM document_sections
-       WHERE document_id IN (
-         SELECT d.id FROM documents d
-         WHERE d.episode_id IN (SELECT id FROM episodes WHERE entry_id = ?)
-            OR d.id IN (
-              SELECT document_id FROM passages
-              WHERE entry_id = ? AND document_id IS NOT NULL
-            )
-       )`,
-    ).bind(entry.id, entry.id),
-    env.DB.prepare(
-      `DELETE FROM documents
-       WHERE episode_id IN (SELECT id FROM episodes WHERE entry_id = ?)
-          OR id IN (
-            SELECT document_id FROM passages
-            WHERE entry_id = ? AND document_id IS NOT NULL
-          )`,
-    ).bind(entry.id, entry.id),
-    env.DB.prepare(`DELETE FROM passages WHERE entry_id = ?`).bind(entry.id),
-    env.DB.prepare(`DELETE FROM entry_snapshots WHERE entry_id = ?`).bind(entry.id),
-    env.DB.prepare(`DELETE FROM episodes WHERE entry_id = ?`).bind(entry.id),
-  );
-  for (const queueId of cleanupQueueIds) {
-    statements.push(
-      env.DB.prepare(`DELETE FROM vector_cleanup_queue WHERE id = ?`).bind(queueId),
-    );
+  // The shared erasure engine removes the whole D1 projection atomically and
+  // either deletes the tracked vectors or queues them under the erasure
+  // operation ID for the repair schedule. The transfer cursor advances in the
+  // SAME D1 batch, so a committed erasure is never left behind a stale cursor.
+  // On a genuine Vectorize failure the entry is still removed (stale vectors
+  // then fail D1 reauthorization) and cleanup continues in the background.
+  const cursorStatement = advanceTransferCursor(env, deactivation, entry, now);
+  const result = await eraseEntryArtifacts(entry.id, actor, env, {
+    now,
+    deleteEntry: { ownerUserId: deactivation.userId, excludePublic: true },
+    extraBatchStatements: () => [cursorStatement],
+  });
+  if (result.status === "not_found") {
+    // The entry is already gone (e.g., forgotten while deactivation was
+    // pending). The erasure early-returns before its batch, so advance the
+    // cursor separately to keep the resume loop moving.
+    return changes(await cursorStatement.run()) === 1;
   }
-  statements.push(
-    env.DB.prepare(
-      `DELETE FROM entries
-       WHERE id = ? AND owner_user_id = ? AND visibility <> 'public'`,
-    ).bind(entry.id, deactivation.userId),
-    env.DB.prepare(
-      `UPDATE user_deactivations
-       SET transfer_cursor = ?, processed_entries = processed_entries + 1,
-           last_error = NULL, updated_at = ?
-       WHERE id = ? AND status = 'running'
-         AND COALESCE(transfer_cursor, '') = ?`,
-    ).bind(
-      entry.id,
-      now,
-      deactivation.id,
-      deactivation.transferCursor ?? "",
-    ),
-  );
-
-  const results = await env.DB.batch(statements);
-  return changes(results.at(-1)) === 1;
+  return true;
 }
 
 async function transferPublicEntry(
@@ -809,6 +651,16 @@ export async function resumeUserDeactivation(
   const actorUserId = requiredId("actorUserId", input.actorUserId);
   requireActiveAdmin(await loadUser(env, actorUserId));
 
+  // The erasure receipt records the administrator who drives the purge.
+  const actor: HumanActorContext = {
+    kind: "human",
+    actorId: actorUserId,
+    userId: actorUserId,
+    role: "admin",
+    authMethod: "personal_api_key",
+    scopes: new Set<ServiceScope>(),
+  };
+
   let deactivation = await loadDeactivation(env, deactivationId);
   if (!deactivation) {
     throw new UserDeactivationError(
@@ -889,7 +741,7 @@ export async function resumeUserDeactivation(
       const operationTime = input.now ?? Date.now();
       const advanced = entry.visibility === "public"
         ? await transferPublicEntry(env, deactivation, entry, operationTime)
-        : await purgePrivateEntry(env, deactivation, entry, operationTime);
+        : await purgePrivateEntry(env, deactivation, entry, operationTime, actor);
       deactivation = await loadDeactivation(env, deactivation.id) ?? deactivation;
       if (advanced) processedThisRun++;
       else if (deactivation.transferCursor !== entry.id) continue;

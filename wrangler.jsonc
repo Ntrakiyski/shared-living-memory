@@ -27,7 +27,8 @@
 		}
 	],
 	"vars": {
-		"VECTORIZE_GRACE_MS": "300000"
+		"VECTORIZE_GRACE_MS": "300000",
+		"MCP_OAUTH_ENABLED": "false"
 	},
 	"secrets": {
 		"required": ["AUTH_TOKEN"]

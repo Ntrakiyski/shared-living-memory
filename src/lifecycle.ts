@@ -30,6 +30,7 @@ import {
   type EpistemicStatus,
   type ServiceScope,
   type SystemActorContext,
+  type ActorContext,
 } from "./types";
 import { withStatus } from "./tags";
 import { initializeDatabase } from "./db";
@@ -41,6 +42,18 @@ import { classifyStrictContradiction } from "./duplicates";
 import { createActionProposal } from "./action-proposals";
 import { sha256Hex } from "./governance-utils";
 import { NIGHTLY_CONTRADICTION_SYSTEM_ID } from "./operator-policy";
+import { eraseEntryArtifacts } from "./erasure";
+
+// System actor used when a compliance path (integration purge) drives a
+// permanent erasure without a live user session. Direct human forgets always
+// pass the authenticated actor so the receipt records the requester.
+const SYSTEM_ERASURE_ACTOR: SystemActorContext = {
+  kind: "system",
+  actorId: "_system-erasure",
+  systemId: "_system-erasure",
+  authMethod: "internal",
+  scopes: new Set<ServiceScope>(),
+};
 
 // ─── Synthesize insight from retrieved memories ───────────────────────────────
 
@@ -314,12 +327,15 @@ export async function compressTag(
   const content = `[Synthesized from ${rows.length} entries tagged "${tag}"]\n\n${text}`;
   // A digest that incorporates any private source must itself remain private.
   // Public-only source sets remain public, matching their source visibility.
+  const digestVisibility = rows.some(row => row.visibility === "private") ? "private" : "public";
   const digestTags = [
     "synthesized",
     tag,
-    ...(rows.some(row => row.visibility === "private") ? ["private"] : []),
+    ...(digestVisibility === "private" ? ["private"] : []),
   ];
-  const result = await captureEntry(content, digestTags, "system", env, ctx, userId);
+  const result = await captureEntry(content, digestTags, "system", env, ctx, userId, {
+    visibility: digestVisibility,
+  });
 
   if (result.status !== "stored") {
     return { synthesizedId: null, entriesUsed: 0, text };
@@ -550,85 +566,26 @@ export async function runGraphPass(env: Env, ctx: ExecutionContext): Promise<voi
 
 // ─── Shared delete path ───────────────────────────────────────────────────────
 // Used by both the `forget` MCP tool and POST /forget so the cleanup logic
-// (D1 row + tracked Vectorize IDs) lives in exactly one place.
+// (D1 row + tracked Vectorize IDs) lives in exactly one place. The heavy
+// lifting now lives in src/erasure.ts; this wrapper keeps legacy callers on a
+// stable signature while routing every path through the one erasure engine.
 
 export type ForgetResult =
   | { status: "not_found" }
-  | { status: "deleted"; vectorCount: number };
+  | { status: "deleted"; vectorCount: number }
+  | { status: "pending_cleanup"; vectorCount: number; operationId: string };
 
-function parseTrackedVectorIds(raw: unknown, scope: string): string[] {
-  if (raw == null) return [];
-
-  let parsed: unknown;
-  try {
-    parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-  } catch {
-    throw new Error(`Cannot forget entry: malformed vector_ids for ${scope}`);
+export async function forgetEntry(
+  id: string,
+  env: Env,
+  actor?: ActorContext,
+): Promise<ForgetResult> {
+  const result = await eraseEntryArtifacts(id, actor ?? SYSTEM_ERASURE_ACTOR, env);
+  if (result.status === "not_found") return { status: "not_found" };
+  if (result.status === "pending_cleanup") {
+    return { status: "pending_cleanup", vectorCount: result.vectorCount, operationId: result.operationId };
   }
-
-  if (
-    !Array.isArray(parsed) ||
-    !parsed.every((vectorId) => typeof vectorId === "string" && vectorId.length > 0)
-  ) {
-    throw new Error(`Cannot forget entry: malformed vector_ids for ${scope}`);
-  }
-
-  return parsed;
-}
-
-export async function forgetEntry(id: string, env: Env): Promise<ForgetResult> {
-  const row = await env.DB.prepare(
-    `SELECT vector_ids FROM entries WHERE id = ?`
-  ).bind(id).first() as Record<string, any> | null;
-
-  if (!row) return { status: "not_found" };
-
-  const { results: passages } = await env.DB.prepare(
-    `SELECT id, vector_ids FROM passages WHERE entry_id = ?`
-  ).bind(id).all<{ id: string; vector_ids: string }>();
-
-  // Validate every tracking record before mutating either store. Continuing with
-  // malformed metadata could orphan vectors whose IDs can no longer be recovered.
-  const vectorIds = [...new Set([
-    ...parseTrackedVectorIds(row.vector_ids, `entry ${id}`),
-    ...passages.flatMap((passage) =>
-      parseTrackedVectorIds(passage.vector_ids, `passage ${passage.id}`)
-    ),
-  ])];
-
-  // Vectorize has no shared transaction with D1. Delete vectors first and fail
-  // closed so a Vectorize outage never leaves searchable data after D1 is gone.
-  // A later retry is safe because deleting the same Vectorize IDs is idempotent.
-  if (vectorIds.length) await env.VECTORIZE.deleteByIds(vectorIds);
-
-  // D1 batch execution is transactional. Delete every entry-owned artifact in a
-  // single batch so no dangling graph, provenance, passage, episode, or snapshot
-  // records survive a successful permanent forget.
-  await env.DB.batch([
-    env.DB.prepare(
-      `DELETE FROM edge_proposals WHERE source_id = ? OR target_id = ?`
-    ).bind(id, id),
-    env.DB.prepare(
-      `DELETE FROM edges WHERE source_id = ? OR target_id = ?`
-    ).bind(id, id),
-    env.DB.prepare(
-      `DELETE FROM document_sections
-       WHERE document_id IN (
-         SELECT id FROM documents
-         WHERE episode_id IN (SELECT id FROM episodes WHERE entry_id = ?)
-       )`
-    ).bind(id),
-    env.DB.prepare(
-      `DELETE FROM documents
-       WHERE episode_id IN (SELECT id FROM episodes WHERE entry_id = ?)`
-    ).bind(id),
-    env.DB.prepare(`DELETE FROM passages WHERE entry_id = ?`).bind(id),
-    env.DB.prepare(`DELETE FROM episodes WHERE entry_id = ?`).bind(id),
-    env.DB.prepare(`DELETE FROM entry_snapshots WHERE entry_id = ?`).bind(id),
-    env.DB.prepare(`DELETE FROM entries WHERE id = ?`).bind(id),
-  ]);
-
-  return { status: "deleted", vectorCount: vectorIds.length };
+  return { status: "deleted", vectorCount: result.vectorCount };
 }
 
 // Deprecate (issue #119): keep the D1 row for audit but make the entry

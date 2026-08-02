@@ -49,11 +49,17 @@ import {
   CHUNK_OVERLAP_CHARS,
   STALENESS_RECALL_PENALTY,
 } from "./config";
-import { buildVisibilityClause } from "./tags";
+import { buildVisibilityClause, isRecallEligible } from "./tags";
 import { expandGraph } from "./graph";
 import { inferQueryTags, extractHashtags } from "./classification";
 import { synthesizeInsight } from "./lifecycle";
 import { queryVisibleVectors, vectorMatchParentId } from "./vector-access";
+import {
+  SOURCE_LABEL_MAX_CODE_POINTS,
+  sanitizeBoundedMetadataForOutput,
+  sanitizeSourceMetadataForOutput,
+  type SourceMetadataOutputContext,
+} from "./source-metadata";
 
 // ─── Time-decay reranking ─────────────────────────────────────────────────────
 
@@ -201,7 +207,12 @@ export interface RecallMatch {
   relations?: { type: string; confidence: number; targetId: string; targetContent?: string }[];
   epistemicStatus?: string;
   ownerUserId?: string;
+  ownerUsername?: string;
   visibility?: "private" | "public";
+  // The passage id of the vector that produced this match (passage-vector hits).
+  // Kept so citations can point at the exact passage that matched, not the first
+  // passage by recency order.
+  passageId?: string | null;
 }
 
 export interface RecallSearchResult {
@@ -218,33 +229,64 @@ export interface RecallSearchResult {
 // ID so an LLM can act on a result (link, connections, append, update, forget) without
 // a second list_recent round-trip — recall used to drop the ID, which left tools unable
 // to reference the memories they just found.
-export function renderRecallText(matches: RecallMatch[], insight: string): string {
+export function renderRecallText(
+  matches: RecallMatch[],
+  insight: string,
+  viewerUserId?: string,
+): string {
   const text = matches.map((m, i) => {
+    const citationContext: SourceMetadataOutputContext = viewerUserId && m.ownerUserId === viewerUserId
+      ? "owner_mcp"
+      : "team_public";
+    const { source: safeSource } = sanitizeSourceMetadataForOutput(
+      { source: m.source },
+      citationContext,
+    );
     const date = new Date(m.createdAt).toLocaleDateString();
     const tagList = m.tags.length ? ` [${m.tags.join(", ")}]` : "";
-    const src = m.source ? ` · ${m.source}` : "";
+    const src = safeSource ? ` · ${safeSource}` : "";
     const score = (m.score * 100).toFixed(0);
     const updateLabel = m.isUpdate ? " [updated]" : "";
     const hopLabel = m.hop > 0 ? ` [related · ${m.hop} hop${m.hop > 1 ? "s" : ""}]` : "";
-    const crossUserLabel = m.crossUserMention ? ` · also by ${m.crossUserMention.ownerUsername}` : "";
+    const isOwned = !!viewerUserId && m.ownerUserId === viewerUserId;
+    const authorLabel = isOwned
+      ? "yours"
+      : m.ownerUsername
+        ? `by ${m.ownerUsername}`
+        : "";
+    const scopeLabel = m.visibility === "private" ? "private" : m.visibility === "public" ? "public" : "";
+    const attribution = [authorLabel, scopeLabel].filter(Boolean).join(" · ");
+    const attributionLabel = attribution ? ` [${attribution}]` : "";
     const epistemicLabel = m.epistemicStatus && m.epistemicStatus !== "canonical" ? ` [${m.epistemicStatus}]` : "";
     const passageLabel = m.passages?.length
       ? `\nEVIDENCE:\n${m.passages.map(p => {
-          const citation = [
-            p.documentTitle ? `title="${p.documentTitle}"` : null,
-            p.sourceUrl ? `url=${p.sourceUrl}` : null,
-            p.page != null ? `page=${p.page}` : null,
-            p.pageEnd != null ? `pageEnd=${p.pageEnd}` : null,
-            p.section ? `section="${p.section}"` : null,
-            p.startOffset != null ? `startOffset=${p.startOffset}` : null,
-            p.endOffset != null ? `endOffset=${p.endOffset}` : null,
-          ].filter((value): value is string => value !== null);
+          const safeMetadata = sanitizeSourceMetadataForOutput({
+            sourceTitle: p.documentTitle,
+            sourceUrl: p.sourceUrl,
+          }, citationContext);
+          const safeSection = sanitizeBoundedMetadataForOutput(
+            p.section,
+            SOURCE_LABEL_MAX_CODE_POINTS,
+          );
+          const citation = {
+            ...(p.id ? { passageId: p.id } : {}),
+            ...(safeMetadata.sourceTitle ? { title: safeMetadata.sourceTitle } : {}),
+            ...(safeMetadata.sourceUrl ? { url: safeMetadata.sourceUrl } : {}),
+            ...(p.page != null ? { page: p.page } : {}),
+            ...(p.pageEnd != null ? { pageEnd: p.pageEnd } : {}),
+            ...(safeSection ? { section: safeSection } : {}),
+            ...(p.startOffset != null ? { startOffset: p.startOffset } : {}),
+            ...(p.endOffset != null ? { endOffset: p.endOffset } : {}),
+          };
           const excerpt = p.content.length > 160 ? `${p.content.slice(0, 157)}...` : p.content;
-          return `- ${citation.length ? `[${citation.join("; ")}] ` : ""}"${excerpt}"`;
+          const serializedCitation = Object.keys(citation).length
+            ? `${JSON.stringify(citation)} `
+            : "";
+          return `- ${serializedCitation}${JSON.stringify(excerpt)}`;
         }).join("\n")}`
       : "";
     const relationLabel = m.relations?.length ? `\nLINKS: ${m.relations.slice(0, 3).map(r => `${r.type}(${(r.confidence * 100).toFixed(0)}%)→${r.targetId.slice(0, 8)}`).join(", ")}` : "";
-    return `${i + 1}. [${date}${src}${tagList}] (${score}% match)${updateLabel}${hopLabel}${crossUserLabel}${epistemicLabel}\nID: ${m.id}\n${m.content}${passageLabel}${relationLabel}`;
+    return `${i + 1}. [${date}${src}${tagList}]${attributionLabel} (${score}% match)${updateLabel}${hopLabel}${epistemicLabel}\nID: ${m.id}\n${m.content}${passageLabel}${relationLabel}`;
   }).join("\n\n");
   return insight ? `**Insight:** ${insight}\n\n---\n\n${text}` : text;
 }
@@ -314,11 +356,11 @@ function vectorEpisodeId(match: VectorizeMatch): string | null {
 }
 
 function vectorMatchesState(match: VectorizeMatch, state: EntryStateRow): boolean {
-  // Legacy entries and legacy vectors did not carry version lineage. Preserve
-  // them, but once both sides identify an episode the vector must be for the
-  // selected state. This drops stale version-scoped entry and passage vectors.
+  if ((match.metadata as Record<string, unknown> | undefined)?.keywordOnly === true) return true;
+  // Semantic vectors are canonical only when both D1 and Vectorize identify the
+  // same immutable episode. Legacy/missing lineage fails closed.
   const vectorEpisode = vectorEpisodeId(match);
-  return !state.current_episode_id || !vectorEpisode || vectorEpisode === state.current_episode_id;
+  return state.current_episode_id !== null && vectorEpisode === state.current_episode_id;
 }
 
 // Keyword candidates: entries whose content contains any query token, bounded by
@@ -573,18 +615,18 @@ function fuseDenseAndKeyword(
       out.push({ id: dm.id, score, metadata: dm.metadata });
     } else {
       const r = keywordRowById.get(pid)!;
-      out.push({ id: pid, score, metadata: { parentId: pid, created_at: r.created_at, tags: JSON.parse(r.tags ?? "[]"), content: r.content, source: r.source } });
+      out.push({ id: pid, score, metadata: { parentId: pid, keywordOnly: true, created_at: r.created_at, tags: JSON.parse(r.tags ?? "[]"), content: r.content, source: r.source } });
     }
   }
   return out;
 }
 
 export async function recallEntries(
-  params: { query: string; topK: number; tag?: string; after?: number; before?: number; kind?: MemoryKind; hops?: number; userId?: string; asOf?: number; knownAt?: number },
+  params: { query: string; topK: number; tag?: string; after?: number; before?: number; kind?: MemoryKind; hops?: number; userId?: string; asOf?: number; knownAt?: number; skipInsight?: boolean },
   env: Env,
   ctx: ExecutionContext
 ): Promise<RecallSearchResult> {
-  const { query, topK } = params;
+  const { query, topK, skipInsight } = params;
   let { tag, after, before, kind } = params;
   const asOf = params.asOf;
   const knownAt = params.knownAt;
@@ -654,7 +696,11 @@ export async function recallEntries(
     const vectorizeTopK = Math.min(topK * VECTORIZE_TOP_K_MULTIPLIER, 50);
     const denseQuery = async (): Promise<{ matches: VectorizeMatch[] }> => {
       try {
-        const scoped = await queryVisibleVectors(values, env, { topK: vectorizeTopK, userId });
+        const scoped = await queryVisibleVectors(values, env, {
+          topK: vectorizeTopK,
+          userId,
+          includeHistoricalEpisodes: knownAt !== undefined || asOf !== undefined,
+        });
         return { matches: scoped.matches };
       } catch (e) {
         // This is the authoritative signal that the Vectorize index is unreachable —
@@ -674,7 +720,11 @@ export async function recallEntries(
 
     if (!semanticUnavailable && results.matches.length && results.matches[0].score < DUPLICATE_FLAG_THRESHOLD) {
       try {
-        const scoped = await queryVisibleVectors(values, env, { topK: 50, userId });
+        const scoped = await queryVisibleVectors(values, env, {
+          topK: 50,
+          userId,
+          includeHistoricalEpisodes: knownAt !== undefined || asOf !== undefined,
+        });
         results = { matches: scoped.matches };
       } catch (e) {
         // Narrow query already succeeded with real matches, so the index works.
@@ -771,7 +821,7 @@ export async function recallEntries(
     const state = stateByEntry.get(id);
     if (!state) return [];
     const tags = parseStringArray(state.tags);
-    if (!tags || tags.includes("auto-pattern") || tags.includes("status:deprecated")) return [];
+    if (!tags || tags.includes("auto-pattern") || !isRecallEligible(tags, state.epistemic_status)) return [];
     if (tag && !tags.includes(tag)) return [];
     if (kind && (KIND_VALUES as readonly string[]).includes(kind) && !tags.includes(`kind:${kind}`)) return [];
     if (after !== undefined && state.created_at < after) return [];
@@ -806,6 +856,7 @@ export async function recallEntries(
       epistemicStatus: row.epistemic_status,
       ownerUserId: row.owner_user_id,
       visibility: row.visibility,
+      passageId: typeof meta?.passageId === "string" ? meta.passageId : null,
     }];
   });
 
@@ -965,7 +1016,8 @@ export async function recallEntries(
                AND ds.document_id = passages.document_id
            )
          )
-       ORDER BY created_at DESC, start_offset ASC, id ASC
+       ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END,
+                created_at DESC, start_offset ASC, id ASC
        LIMIT 5`
     ).bind(
       state.owner_user_id,
@@ -974,6 +1026,7 @@ export async function recallEntries(
       selectedEpisodeId,
       selectedEpisodeId,
       state.owner_user_id,
+      match.passageId ?? null,
     ).all() as { results: Record<string, any>[] };
 
     const selectedPassages = passageRows
@@ -1034,34 +1087,38 @@ export async function recallEntries(
     }];
   }));
 
-  // ── Cross-user mentions: flag high-similarity public entries from other users ──
-  if (userId) {
-    // Use D1 ownership, never mutable Vectorize metadata, for cross-user attribution.
-    const crossUserOwnerIds = new Set<string>();
-    for (const m of matches) {
-      const ownerId = (d1Map.get(m.id) as any)?.owner_user_id;
-      if (ownerId && ownerId !== userId) crossUserOwnerIds.add(ownerId);
-    }
-    if (crossUserOwnerIds.size) {
-      const ownerIds = [...crossUserOwnerIds];
+  // ── Attribution: resolve author usernames so every card can name its author ──
+  // Use D1 ownership, never mutable Vectorize metadata, for cross-user attribution.
+  const ownerIdToUsername = new Map<string, string>();
+  if (matches.length) {
+    const ownerIds = [...new Set(matches.map(m => m.ownerUserId).filter((id): id is string => !!id))];
+    if (ownerIds.length) {
       const placeholders = ownerIds.map(() => "?").join(", ");
       const { results: ownerRows } = await env.DB.prepare(
         `SELECT id, username FROM users WHERE id IN (${placeholders})`
       ).bind(...ownerIds).all() as { results: { id: string; username: string }[] };
-      const usernameMap = new Map(ownerRows.map(r => [r.id, r.username]));
+      for (const row of ownerRows) ownerIdToUsername.set(row.id, row.username);
+    }
+  }
+  for (const m of matches) {
+    if (m.ownerUserId) {
+      const username = ownerIdToUsername.get(m.ownerUserId);
+      if (username) m.ownerUsername = username;
+    }
+  }
 
-      // Attach crossUserMention to matches owned by other users with high similarity
-      const seenOwnerMatches = new Set<string>();
-      for (const m of matches) {
-        const ownerId = (d1Map.get(m.id) as any)?.owner_user_id;
-        if (!ownerId || ownerId === userId) continue;
-        const username = usernameMap.get(ownerId);
-        if (!username) continue;
-        // Only mention once per owner
-        if (seenOwnerMatches.has(ownerId)) continue;
-        seenOwnerMatches.add(ownerId);
-        m.crossUserMention = { entryId: m.id, ownerUsername: username, similarity: m.score };
-      }
+  // ── Cross-user mentions: flag high-similarity public entries from other users ──
+  if (userId) {
+    // Only mention once per owner, and only for entries from other users.
+    const seenOwnerMatches = new Set<string>();
+    for (const m of matches) {
+      const ownerId = m.ownerUserId;
+      if (!ownerId || ownerId === userId) continue;
+      const username = ownerIdToUsername.get(ownerId);
+      if (!username) continue;
+      if (seenOwnerMatches.has(ownerId)) continue;
+      seenOwnerMatches.add(ownerId);
+      m.crossUserMention = { entryId: m.id, ownerUsername: username, similarity: m.score };
     }
   }
 
@@ -1070,8 +1127,9 @@ export async function recallEntries(
   const proposed_edges: { source_id: string; target_id: string; type: string; reason: string }[] = [];
 
   // Synthesize over exactly what's shown (seeds + any surfaced neighbors) so the
-  // insight stays grounded in the returned results.
-  const insight = matches.length > 1
+  // insight stays grounded in the returned results. Chat answers call the LLM
+  // themselves, so callers that only need retrieval can skip this extra call.
+  const insight = matches.length > 1 && !skipInsight
     ? await synthesizeInsight(embedQuery, matches.map(m => ({ id: m.id, content: m.content })), env)
     : "";
 

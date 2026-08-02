@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { captureEntry } from "../../src/testing";
 import { makeTestDb, makeTestEnv, makeVectorizeMock } from "../helpers/make-env";
-import type { Env } from "../../src/testing";
+import type { CaptureResult, Env } from "../../src/testing";
 import { D1Mock } from "../helpers/d1-mock";
 import { TEST_USER_ID } from "../helpers/test-principal";
 
@@ -39,8 +39,9 @@ function seedEntry(
   overrides: Record<string, unknown> = {},
 ) {
   const createdAt = Date.now() - 1_000;
+  const id = String(overrides.id ?? "existing");
   const entry = {
-    id: "existing",
+    id,
     content: "Existing memory",
     tags: "[]",
     source: "api",
@@ -52,7 +53,7 @@ function seedEntry(
     contradiction_losses: 0,
     owner_user_id: TEST_USER_ID,
     revision: 0,
-    current_episode_id: null,
+    current_episode_id: `episode-${id}`,
     recorded_at: createdAt,
     valid_from: createdAt,
     valid_to: null,
@@ -62,6 +63,10 @@ function seedEntry(
   };
   db.entries.push(entry);
   return entry;
+}
+
+function currentMatch(id: string, score: number) {
+  return { id, score, metadata: { parentId: id, episodeId: `episode-${id}` } };
 }
 
 describe("captureEntry()", () => {
@@ -82,7 +87,7 @@ describe("captureEntry()", () => {
     const before = Date.now();
     const { ctx } = makeCtx();
 
-    const result = await captureEntry("My first memory", [], "api", env, ctx);
+    const result: CaptureResult = await captureEntry("My first memory", [], "api", env, ctx);
 
     expect(result.status).toBe("stored");
     if (result.status !== "stored") return;
@@ -95,6 +100,7 @@ describe("captureEntry()", () => {
       source: "api",
       revision: 1,
       epistemic_status: "candidate",
+      visibility: "private",
     });
     expect(entry.current_episode_id).toEqual(expect.any(String));
     expect(entry.created_at).toBeGreaterThanOrEqual(before);
@@ -115,6 +121,181 @@ describe("captureEntry()", () => {
     expect(insertMock).not.toHaveBeenCalled();
     const vectors = upsertMock.mock.calls[0][0] as any[];
     expect(vectors.every((vector: any) => /^ev:[0-9a-f-]{36}:\d+$/.test(vector.id))).toBe(true);
+  });
+
+  it("honors explicit public visibility without requiring a metadata tag", async () => {
+    const { ctx } = makeCtx();
+    const result = await captureEntry(
+      "Team decision",
+      [],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+      { visibility: "public" },
+    );
+
+    expect(result).toMatchObject({ status: "stored", visibility: "public" });
+    expect(db.entries[0].visibility).toBe("public");
+    expect(JSON.parse(db.entries[0].tags)).not.toContain("private");
+  });
+
+  it.each([
+    ["content_too_large", { content: "x".repeat(32 * 1024 + 1), tags: [] }],
+    ["content_too_large", { content: "🌿".repeat(8_190), tags: [], source: "123456789" }],
+    ["too_many_tags", { content: "note", tags: Array.from({ length: 26 }, (_, index) => `tag-${index}`) }],
+    ["too_many_tags", { content: Array.from({ length: 26 }, (_, index) => `#derived${index}`).join(" "), tags: [] }],
+    ["tag_too_long", { content: "note", tags: ["x".repeat(65)] }],
+    ["tag_too_long", { content: `note #${"x".repeat(65)}`, tags: [] }],
+    ["source_url_too_long", { content: "note", tags: [], sourceUrl: `https://example.test/${"x".repeat(2049)}` }],
+    ["source_url_too_long", { content: "note", tags: [], source: `https://example.test/${"x".repeat(2049)}` }],
+    ["source_title_too_long", { content: "note", tags: [], sourceTitle: "🌿".repeat(513) }],
+  ])("rejects %s before model or vector work", async (error, value) => {
+    const aiRun = vi.fn();
+    const vectorQuery = vi.fn();
+    env = makeTestEnv(db, {
+      AI: { run: aiRun } as unknown as Ai,
+      VECTORIZE: makeVectorizeMock({ query: vectorQuery }),
+    });
+    const { ctx } = makeCtx();
+
+    await expect(captureEntry(
+      value.content,
+      value.tags,
+      "source" in value ? value.source : "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+      {
+        sourceUrl: "sourceUrl" in value ? value.sourceUrl : undefined,
+        sourceTitle: "sourceTitle" in value ? value.sourceTitle : undefined,
+      },
+    )).rejects.toMatchObject({ code: error });
+    expect(aiRun).not.toHaveBeenCalled();
+    expect(vectorQuery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["pem_private_key", "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----"],
+    ["github_token", `ghp_${"a".repeat(36)}`],
+    ["slack_token", `xoxb-123456789012-123456789012-${"a".repeat(24)}`],
+    ["stripe_live_secret", `sk_live_${"a".repeat(24)}`],
+    ["openai_project_key", `sk-proj-${"a".repeat(32)}`],
+    ["openai_project_key", `sk-proj-${"a".repeat(19)}-`],
+    ["openai_project_key", `sk-svcacct-${"a".repeat(19)}-`],
+    ["openai_project_key", `(sk-proj-${"a".repeat(19)}-)`],
+    ["openai_project_key", `prefix: sk-svcacct-${"a".repeat(19)}-.`],
+  ])("rejects a structurally valid %s before model or vector work", async (detector, content) => {
+    const aiRun = vi.fn();
+    const vectorQuery = vi.fn();
+    env = makeTestEnv(db, {
+      AI: { run: aiRun } as unknown as Ai,
+      VECTORIZE: makeVectorizeMock({ query: vectorQuery }),
+    });
+    const { ctx } = makeCtx();
+
+    await expect(captureEntry(content, [], "api", env, ctx, TEST_USER_ID)).rejects.toMatchObject({
+      code: "secret_detected",
+      detector,
+    });
+    expect(aiRun).not.toHaveBeenCalled();
+    expect(vectorQuery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["tag", { tags: [`sk_live_${"a".repeat(24)}`] }],
+    ["source", { source: `ghp_${"a".repeat(36)}` }],
+    ["source URL", { sourceUrl: `https://example.test/sk-proj-${"a".repeat(32)}` }],
+    ["source title", { sourceTitle: `xoxb-123456789012-123456789012-${"a".repeat(24)}` }],
+  ])("rejects a secret in capture %s metadata before model or vector work", async (_field, metadata) => {
+    const aiRun = vi.fn();
+    const vectorQuery = vi.fn();
+    env = makeTestEnv(db, {
+      AI: { run: aiRun } as unknown as Ai,
+      VECTORIZE: makeVectorizeMock({ query: vectorQuery }),
+    });
+    const { ctx } = makeCtx();
+
+    await expect(captureEntry(
+      "Safe note",
+      "tags" in metadata ? metadata.tags : [],
+      "source" in metadata ? metadata.source : "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+      {
+        sourceUrl: "sourceUrl" in metadata ? metadata.sourceUrl : undefined,
+        sourceTitle: "sourceTitle" in metadata ? metadata.sourceTitle : undefined,
+      },
+    )).rejects.toMatchObject({ code: "secret_detected" });
+    expect(aiRun).not.toHaveBeenCalled();
+    expect(vectorQuery).not.toHaveBeenCalled();
+    expect(db.entries).toHaveLength(0);
+  });
+
+  it.each(["xoxa", "xoxr", "xoxs"])("rejects a structurally valid %s Slack token", async (prefix) => {
+    const { ctx } = makeCtx();
+    await expect(captureEntry(
+      `${prefix}-2-${"a".repeat(40)}`,
+      [],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+    )).rejects.toMatchObject({ code: "secret_detected", detector: "slack_token" });
+  });
+
+  it("measures tag limits in characters rather than UTF-8 bytes", async () => {
+    const { ctx } = makeCtx();
+    await expect(captureEntry(
+      "Unicode tag",
+      ["🌿".repeat(64)],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+    )).resolves.toMatchObject({ status: "stored" });
+  });
+
+  it("does not reject generic bearer text", async () => {
+    const { ctx } = makeCtx();
+    await expect(captureEntry(
+      "Use Authorization: Bearer example in the docs",
+      [],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+    )).resolves.toMatchObject({ status: "stored" });
+  });
+
+  it.each([
+    `mask-proj-${"a".repeat(19)}-`,
+    `mask-svcacct-${"a".repeat(19)}-`,
+    `sk-proj-${"a".repeat(18)}-`,
+    `sk-svcacct-${"a".repeat(18)}-`,
+  ])("does not treat adjacent or sub-minimum OpenAI-like text as a token: %s", async (content) => {
+    const { ctx } = makeCtx();
+    await expect(captureEntry(
+      content,
+      [],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+    )).resolves.toMatchObject({ status: "stored" });
+  });
+
+  it("allows a private-key header mention without a matching encoded block", async () => {
+    const { ctx } = makeCtx();
+    await expect(captureEntry(
+      "The docs mention -----BEGIN PRIVATE KEY----- as a header.",
+      [],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+    )).resolves.toMatchObject({ status: "stored" });
   });
 
   it("resolves an ownerless internal capture to the _system user", async () => {
@@ -162,7 +343,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing", score: 0.97, metadata: { parentId: "existing" } }],
+          matches: [currentMatch("existing", 0.97)],
         }),
       }),
     });
@@ -183,7 +364,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing", score: 0.88, metadata: { parentId: "existing" } }],
+          matches: [currentMatch("existing", 0.88)],
         }),
       }),
       AI: makeResponseAI('{"action":"keep_both"}'),
@@ -213,7 +394,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "old-entry", score: 0.72, metadata: { parentId: "old-entry" } }],
+          matches: [currentMatch("old-entry", 0.72)],
         }),
         deleteByIds: deleteByIdsMock,
       }),
@@ -223,7 +404,7 @@ describe("captureEntry()", () => {
     });
     const { ctx } = makeCtx();
 
-    const result = await captureEntry("I moved to LA", [], "api", env, ctx, TEST_USER_ID);
+    const result = await captureEntry("I moved to LA", [], "api", env, ctx, TEST_USER_ID, { visibility: "public" });
 
     expect(result).toMatchObject({
       status: "contradiction",
@@ -270,7 +451,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "canonical-entry", score: 0.72, metadata: { parentId: "canonical-entry" } }],
+          matches: [currentMatch("canonical-entry", 0.72)],
         }),
         deleteByIds: deleteByIdsMock,
       }),
@@ -280,7 +461,7 @@ describe("captureEntry()", () => {
     });
     const { ctx } = makeCtx();
 
-    const result = await captureEntry("I moved to LA", [], "api", env, ctx, TEST_USER_ID);
+    const result = await captureEntry("I moved to LA", [], "api", env, ctx, TEST_USER_ID, { visibility: "public" });
 
     expect(result).toMatchObject({
       status: "contradiction_protected",
@@ -311,16 +492,16 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing", score: 0.88, metadata: { parentId: "existing" } }],
+          matches: [currentMatch("existing", 0.88)],
         }),
       }),
       AI: makeResponseAI('{"action":"replace","target_id":"existing"}'),
     });
     const { ctx } = makeCtx();
 
-    const result = await captureEntry("I switched to Cursor", [], "api", env, ctx, TEST_USER_ID);
+    const result = await captureEntry("I switched to Cursor", [], "api", env, ctx, TEST_USER_ID, { visibility: "public" });
 
-    expect(result).toEqual({ status: "replaced", id: "existing" });
+    expect(result).toEqual({ status: "replaced", id: "existing", visibility: "public" });
     expect(db.entries).toHaveLength(1);
     const entry = db.entries[0] as any;
     expect(entry).toMatchObject({ content: "I switched to Cursor", revision: 1 });
@@ -340,7 +521,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "existing", score: 0.88, metadata: { parentId: "existing" } }],
+          matches: [currentMatch("existing", 0.88)],
         }),
         upsert: upsertMock,
       }),
@@ -351,9 +532,9 @@ describe("captureEntry()", () => {
     const { ctx } = makeCtx();
     const raw = "I like dark mode at night";
 
-    const result = await captureEntry(raw, [], "api", env, ctx, TEST_USER_ID);
+    const result = await captureEntry(raw, [], "api", env, ctx, TEST_USER_ID, { visibility: "public" });
 
-    expect(result).toEqual({ status: "merged", id: "existing" });
+    expect(result).toEqual({ status: "merged", id: "existing", visibility: "public" });
     const entry = db.entries[0] as any;
     expect(entry).toMatchObject({ content: "Combined merged memory", revision: 1 });
     const episode = db.episodes.find((candidate: any) => candidate.id === entry.current_episode_id);
@@ -367,11 +548,58 @@ describe("captureEntry()", () => {
     expect(vectors[0].metadata.content).toBe("Combined merged memory");
   });
 
+  it("stores a private capture separately instead of replacing a same-owner public target", async () => {
+    seedEntry(db, {
+      content: "Public preference",
+      visibility: "public",
+      importance_score: 2,
+    });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [currentMatch("existing", 0.88)],
+        }),
+      }),
+      AI: makeResponseAI('{"action":"replace","target_id":"existing"}'),
+    });
+    const { ctx } = makeCtx();
+
+    const result = await captureEntry(
+      "Private replacement proposal",
+      [],
+      "api",
+      env,
+      ctx,
+      TEST_USER_ID,
+      { visibility: "private" },
+    );
+
+    expect(result).toMatchObject({
+      status: "flagged",
+      visibility: "private",
+      mergeSkipped: "visibility_mismatch",
+      matchId: "existing",
+    });
+    if (result.status !== "flagged") return;
+    expect(result.id).not.toBe("existing");
+    expect(db.entries).toHaveLength(2);
+    expect(db.entries.find((entry: any) => entry.id === "existing")).toMatchObject({
+      content: "Public preference",
+      visibility: "public",
+      revision: 0,
+    });
+    expect(db.entries.find((entry: any) => entry.id === result.id)).toMatchObject({
+      content: "Private replacement proposal",
+      visibility: "private",
+      revision: 1,
+    });
+  });
+
   it("falls through to a new capture when a merge target is missing", async () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "ghost-id", score: 0.88, metadata: { parentId: "ghost-id" } }],
+          matches: [currentMatch("ghost-id", 0.88)],
         }),
       }),
       AI: makeResponseAI('{"action":"replace","target_id":"ghost-id"}'),
@@ -396,7 +624,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "foreign", score: 0.88, metadata: { parentId: "foreign" } }],
+          matches: [currentMatch("foreign", 0.88)],
         }),
       }),
       AI: makeResponseAI('{"action":"replace","target_id":"foreign"}'),
@@ -451,7 +679,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "research", score: 0.88, metadata: { parentId: "research" } }],
+          matches: [currentMatch("research", 0.88)],
         }),
       }),
       AI: makeResponseAI('{"action":"replace","target_id":"research"}'),

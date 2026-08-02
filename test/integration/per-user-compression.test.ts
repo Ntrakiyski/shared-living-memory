@@ -134,6 +134,7 @@ describe("Per-user compression", () => {
 
       const digest = db.entries.find(entry => entry.id === result.synthesizedId);
       expect(digest.owner_user_id).toBe("user-1");
+      expect(digest.visibility).toBe("public");
       expect(JSON.parse(digest.tags)).not.toContain("private");
     });
 
@@ -167,6 +168,7 @@ describe("Per-user compression", () => {
       expect(result.entriesUsed).toBe(10);
       const digest = db.entries.find(entry => entry.id === result.synthesizedId);
       expect(digest.owner_user_id).toBe("user-1");
+      expect(digest.visibility).toBe("private");
       expect(JSON.parse(digest.tags)).toContain("private");
     });
 

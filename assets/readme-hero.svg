@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" fill="none">
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="50%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="surface" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0f0f23"/>
+      <stop offset="100%" stop-color="#1a1a2e"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="800" height="400" rx="16" fill="url(#surface)"/>
+
+  <!-- Subtle grid -->
+  <g opacity="0.04">
+    <line x1="0" y1="0" x2="800" y2="0" stroke="white"/><line x1="0" y1="100" x2="800" y2="100" stroke="white"/>
+    <line x1="0" y1="200" x2="800" y2="200" stroke="white"/><line x1="0" y1="300" x2="800" y2="300" stroke="white"/>
+    <line x1="200" y1="0" x2="200" y2="400" stroke="white"/><line x1="400" y1="0" x2="400" y2="400" stroke="white"/>
+    <line x1="600" y1="0" x2="600" y2="400" stroke="white"/>
+  </g>
+
+  <!-- Connection lines -->
+  <g stroke="url(#brand)" stroke-width="0.5" opacity="0.3">
+    <circle cx="200" cy="200" r="3" fill="#8b5cf6"/>
+    <circle cx="380" cy="140" r="3" fill="#6366f1"/>
+    <circle cx="500" cy="260" r="3" fill="#a78bfa"/>
+    <circle cx="300" cy="300" r="3" fill="#8b5cf6"/>
+    <circle cx="600" cy="180" r="3" fill="#6366f1"/>
+    <path d="M200 200 L380 140 M380 140 L500 260 M200 200 L500 260 M200 200 L300 300 M380 140 L600 180 M500 260 L600 180"/>
+  </g>
+
+  <!-- Project name -->
+  <text x="400" y="160" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="48" font-weight="700" letter-spacing="-0.02em" fill="white">Shared Living Memory</text>
+
+  <!-- Tagline -->
+  <text x="400" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="18" fill="#94a3b8">A governed team knowledgebase with owners, citations, versions,</text>
+  <text x="400" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="18" fill="#94a3b8">and audit boundaries &mdash; running on Cloudflare Workers</text>
+
+  <!-- Badge row -->
+  <g transform="translate(210, 280)">
+    <rect x="0" y="0" width="380" height="28" rx="6" fill="#1e1e3a" stroke="#2d2d5e" stroke-width="0.5"/>
+    <text x="190" y="19" text-anchor="middle" font-family="monospace" font-size="12" fill="#8b5cf6">D1</text>
+    <rect x="230" y="4" width="0.5" height="20" fill="#2d2d5e"/>
+    <text x="260" y="19" text-anchor="middle" font-family="monospace" font-size="12" fill="#8b5cf6">Vectorize</text>
+    <rect x="320" y="4" width="0.5" height="20" fill="#2d2d5e"/>
+    <text x="350" y="19" text-anchor="middle" font-family="monospace" font-size="12" fill="#8b5cf6">Workers AI</text>
+  </g>
+
+  <!-- Bottom line -->
+  <rect x="0" y="399" width="800" height="1" rx="0.5" fill="url(#brand)" opacity="0.5"/>
+</svg>

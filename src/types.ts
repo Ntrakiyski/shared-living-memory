@@ -3,7 +3,7 @@
  *
  * Purpose: Define all cross-module interfaces, enums, and type aliases in one place.
  * Input: None (type-only module).
- * Output: Env, RecallMatch, MemoryStatus, MemoryKind, CaptureResult, etc.
+ * Output: Env, RecallMatch, MemoryStatus, MemoryKind, capture contracts, etc.
  * Logic: Type definitions only — no runtime logic.
  */
 
@@ -65,13 +65,78 @@ export interface RecallMatch {
 
 // ─── Ingestion capture result ──────────────────────────────────────────────────
 
+export type CaptureVisibility = "private" | "public";
+
+export type CaptureRejectionCode =
+  | "content_too_large"
+  | "too_many_tags"
+  | "tag_too_long"
+  | "source_url_too_long"
+  | "source_title_too_long"
+  | "secret_detected";
+
+export interface CaptureRequest {
+  content: string;
+  tags?: string[];
+  source?: string;
+  source_url?: string;
+  source_title?: string;
+  visibility?: CaptureVisibility;
+}
+
+export interface CaptureStoredResponse {
+  ok: true;
+  id: string;
+  action: "stored" | "merged" | "replaced" | "stored_separately";
+  visibility: CaptureVisibility;
+  warnings: string[];
+}
+
+export interface CaptureDuplicateResponse {
+  ok: false;
+  error: "duplicate";
+  action: "blocked_duplicate";
+  match_id: string;
+  match_score: number;
+  warnings: string[];
+}
+
+export type CaptureRequestError =
+  | CaptureRejectionCode
+  | "Unauthorized"
+  | "Invalid JSON"
+  | "invalid_request"
+  | "content is required"
+  | "tags must be an array of strings"
+  | "visibility must be private or public"
+  | "source_url must be a string"
+  | "source_title must be a string";
+
+export interface CaptureRejectedResponse {
+  ok: false;
+  error: CaptureRequestError;
+  action?: never;
+}
+
+export type CaptureResponse = CaptureStoredResponse | CaptureDuplicateResponse | CaptureRejectedResponse;
+
 export type CaptureResult =
   | { status: "blocked"; matchId: string; score: number }
-  | { status: "stored"; id: string; crossUserNote?: string; awareness?: AwarenessDelivery }
-  | { status: "flagged"; id: string; matchId: string; score: number; crossUserNote?: string; awareness?: AwarenessDelivery }
-  | { status: "contradiction"; id: string; resolvedConflict: string; reason?: string; awareness?: AwarenessDelivery }
-  | { status: "contradiction_protected"; id: string; canonicalId: string; reason?: string; awareness?: AwarenessDelivery }
-  | { status: "contradiction_resolved"; id: string; replacedId?: string; mergedInto?: string; keptBoth?: boolean; reason?: string };
+  | { status: "stored"; id: string; visibility: CaptureVisibility; crossUserNote?: string; awareness?: AwarenessDelivery }
+  | {
+      status: "flagged";
+      id: string;
+      matchId: string;
+      score: number;
+      crossUserNote?: string;
+      mergeSkipped?: "target_not_owned" | "target_protected" | "visibility_mismatch";
+      visibility: CaptureVisibility;
+      awareness?: AwarenessDelivery;
+    }
+  | { status: "contradiction"; id: string; visibility: CaptureVisibility; resolvedConflict: string; reason?: string; awareness?: AwarenessDelivery }
+  | { status: "contradiction_protected"; id: string; visibility: CaptureVisibility; canonicalId: string; reason?: string; awareness?: AwarenessDelivery }
+  | { status: "merged"; id: string; visibility: CaptureVisibility }
+  | { status: "replaced"; id: string; visibility: CaptureVisibility };
 
 // ─── Memory Pillar: Episodes, Snapshots, Passages ────────────────────────────
 
@@ -140,6 +205,9 @@ export interface Passage {
   createdAt: number;
 }
 
+export const DOCUMENT_TITLE_ORIGINS = ["explicit", "generated"] as const;
+export type DocumentTitleOrigin = (typeof DOCUMENT_TITLE_ORIGINS)[number];
+
 export interface Document {
   id: string;
   title: string;
@@ -150,6 +218,7 @@ export interface Document {
   ownerUserId: string;
   contentHash: string | null;
   version: string | null;
+  titleOrigin: DocumentTitleOrigin;
 }
 
 export interface DocumentSection {
@@ -205,6 +274,26 @@ export interface UserDeactivation {
   startedAt: number | null;
   updatedAt: number;
   completedAt: number | null;
+}
+
+/** Content-free boolean status returned by GET /api/bootstrap-status. */
+export interface BootstrapStatus {
+  needsBootstrap: boolean;
+}
+
+/** One-time plaintext response for key creation / rotation. */
+export interface NewKeyResponse {
+  username: string;
+  key: string;
+}
+
+/** GET /api/me response — never exposes the key hash. */
+export interface MeResponse {
+  id: string;
+  username: string;
+  role: UserRole;
+  status: string;
+  createdAt: number;
 }
 
 export const AWARENESS_EVENT_TYPES = ["cross_user_overlap"] as const;

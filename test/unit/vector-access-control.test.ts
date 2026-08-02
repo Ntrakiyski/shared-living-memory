@@ -17,6 +17,7 @@ function entry(id: string, ownerUserId: string, tags: string[], content = id) {
     source: "test",
     created_at: 1,
     vector_ids: JSON.stringify([`v-${id}`]),
+    current_episode_id: `episode-${id}`,
     owner_user_id: ownerUserId,
     recall_count: 0,
     importance_score: 0,
@@ -24,7 +25,7 @@ function entry(id: string, ownerUserId: string, tags: string[], content = id) {
 }
 
 function match(id: string, score: number, parentId = id) {
-  return { id: `v-${id}`, score, metadata: { parentId } };
+  return { id: `v-${id}`, score, metadata: { parentId, episodeId: `episode-${parentId}` } };
 }
 
 function embeddingAI() {

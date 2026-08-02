@@ -197,7 +197,16 @@ function many<T>(db: SqliteD1, sql: string, ...bindings: SQLInputValue[]): T[] {
 
 async function seedVersionedEntry(
   harness: Harness,
-  input: { entryId?: string; content: string; owner?: string; private?: boolean; epistemicStatus?: "candidate" | "reviewed" | "canonical" },
+  input: {
+    entryId?: string;
+    content: string;
+    owner?: string;
+    private?: boolean;
+    epistemicStatus?: "candidate" | "reviewed" | "canonical";
+    sourceUrl?: string;
+    title?: string;
+    contentType?: string;
+  },
   now: number,
 ) {
   return commitEntryVersion({
@@ -208,6 +217,10 @@ async function seedVersionedEntry(
     materializedContent: input.content,
     tags: ["status:draft", ...(input.private === false ? [] : ["private"])],
     source: "test",
+    sourceUrl: input.sourceUrl,
+    title: input.title,
+    contentType: input.contentType,
+    visibility: input.private === false ? "public" : "private",
     epistemicStatus: input.epistemicStatus ?? "candidate",
     now,
   }, harness.env);
@@ -785,7 +798,11 @@ describe("explicit governed action executors", () => {
   });
 
   it("restores an owned snapshot into a new private draft candidate", async () => {
-    const seeded = await seedVersionedEntry(harness, { content: "Original value" }, 2_000);
+    const seeded = await seedVersionedEntry(harness, {
+      content: "Original value",
+      sourceUrl: "doi:10.1000/operator-history",
+      contentType: "research",
+    }, 2_000);
     await commitEntryVersion({
       kind: "update",
       actorUserId: "user-owner",
@@ -825,6 +842,21 @@ describe("explicit governed action executors", () => {
       epistemic_status: "candidate",
     });
     expect(JSON.parse(entry.tags)).toEqual(expect.arrayContaining(["restored", "status:draft", "private"]));
+    const restoredEnvelope = one<{ title: string; title_origin: string; source_url: string; content_type: string }>(
+      harness.db,
+      `SELECT d.title, d.title_origin, d.source_url, ep.content_type
+       FROM entries e
+       JOIN episodes ep ON ep.id = e.current_episode_id
+       JOIN documents d ON d.episode_id = ep.id AND d.owner_user_id = e.owner_user_id
+       WHERE e.id = ?`,
+      restored.result.entryId,
+    );
+    expect(restoredEnvelope).toEqual({
+      title: "doi:10.1000/operator-history",
+      title_origin: "generated",
+      source_url: "doi:10.1000/operator-history",
+      content_type: "research",
+    });
   });
 
   it("forces an operator restore of a public snapshot into a private draft candidate", async () => {
@@ -1031,6 +1063,11 @@ function configureNightlyCandidate(
   classifier: Record<string, unknown> | Error,
   score = 0.96,
 ) {
+  const targetEpisodeId = one<{ current_episode_id: string }>(
+    harness.db,
+    `SELECT current_episode_id FROM entries WHERE id = ?`,
+    targetEntryId,
+  ).current_episode_id;
   const run = vi.fn(async (model: string) => {
     if (model === "@cf/baai/bge-small-en-v1.5") {
       return { data: [new Array(384).fill(0.01)] };
@@ -1042,7 +1079,7 @@ function configureNightlyCandidate(
     matches: [{
       id: `vector:${targetEntryId}`,
       score,
-      metadata: { parentId: targetEntryId, is_private: false },
+      metadata: { parentId: targetEntryId, episodeId: targetEpisodeId, is_private: false },
     }],
   }));
   (harness.env as any).AI = { run };

@@ -1,6 +1,10 @@
 /** Generic, governed proposal inbox and explicit approved-action executor. */
 
-import { commitEntryVersion, EntryVersionError } from "./entry-version-service";
+import {
+  commitEntryVersion,
+  EntryVersionError,
+  loadOwnedRestoreSnapshot,
+} from "./entry-version-service";
 import { withStatus } from "./tags";
 import { createEdge, deleteEdge, isValidEdgeType, type EdgeType } from "./graph";
 import { isManagedMirror } from "./integrations-mirror";
@@ -1149,6 +1153,7 @@ async function executeEntryCreate(
     tags,
     source: typeof payload.source === "string" ? payload.source : "operator-proposal",
     sourceUrl: typeof payload.sourceUrl === "string" ? payload.sourceUrl : null,
+    visibility,
     contentType: typeof payload.contentType === "string" ? payload.contentType : undefined,
     title: typeof payload.title === "string" ? payload.title : undefined,
     epistemicStatus: requestedEpistemic,
@@ -1219,22 +1224,12 @@ async function executeEntryRestore(env: Env, row: ProposalRow, now: number): Pro
     throw new ActionProposalError("invalid_input", "Approved entry.restore payload is invalid.");
   }
   const entry = await loadOwnedActionEntry(env, row, payload);
-  const snapshot = await env.DB.prepare(
-    `SELECT s.id, s.content, s.tags, s.source, s.valid_from, s.valid_to,
-            ep.source_url, ep.content_type
-     FROM entry_snapshots s
-     LEFT JOIN episodes ep ON ep.id = s.episode_id
-     WHERE s.id = ? AND s.entry_id = ?`,
-  ).bind(payload.snapshotId, entry.id).first<{
-    id: string;
-    content: string;
-    tags: string;
-    source: string;
-    valid_from: number | null;
-    valid_to: number | null;
-    source_url: string | null;
-    content_type: string | null;
-  }>();
+  const snapshot = await loadOwnedRestoreSnapshot(
+    env,
+    entry.owner_user_id,
+    entry.id,
+    payload.snapshotId,
+  );
   if (!snapshot) throw new ActionProposalError("stale", "The approved restore snapshot no longer exists.");
   const tags = withStatus(
     [...new Set([
@@ -1255,6 +1250,8 @@ async function executeEntryRestore(env: Env, row: ProposalRow, now: number): Pro
     source: snapshot.source,
     sourceUrl: snapshot.source_url,
     contentType: snapshot.content_type ?? "text",
+    title: snapshot.source_title ?? undefined,
+    titleOrigin: snapshot.source_title_origin ?? undefined,
     validFrom: snapshot.valid_from,
     validTo: snapshot.valid_to,
     epistemicStatus: "candidate",

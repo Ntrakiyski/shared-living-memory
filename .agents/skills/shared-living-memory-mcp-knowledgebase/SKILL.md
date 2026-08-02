@@ -1,22 +1,22 @@
 ---
-name: second-brain-mcp-knowledgebase
-description: "Use when an agent or human wants to connect to Second Brain through MCP and use it as a living team knowledgebase: capture knowledge, recall with citations, respect privacy, create links, inspect history, and translate knowledge between different people or agent domains."
+name: shared-living-memory-mcp-knowledgebase
+description: "Use when an agent or human wants to connect to Shared Living Memory through MCP and use it as a living team knowledgebase: capture knowledge, recall with citations, respect privacy, create links, inspect history, and translate knowledge between different people or agent domains."
 ---
 
-# Second Brain MCP Knowledgebase
+# Shared Living Memory MCP Knowledgebase
 
-Use this skill after Second Brain is connected through MCP, or when helping a human/agent decide how to use the knowledgebase safely.
+Use this skill after Shared Living Memory is connected through MCP, or when helping a human/agent decide how to use the knowledgebase safely.
 
-Second Brain is a governed team knowledgebase. Treat entries as durable knowledge with owners, visibility, provenance, versions, citations, relationships, and audit boundaries.
+Shared Living Memory is a governed team knowledgebase. Treat entries as durable knowledge with owners, visibility, provenance, versions, citations, relationships, and audit boundaries.
 
 ## First-run identity setup
 
 Before using memory tools, make sure the human has a user identity. The workspace key is only the workspace/transport key; useful agent memory requires a username and user API key. If the client has browser support, open the dashboard automatically as the first onboarding action; otherwise show the link and ask the human to open it.
 
-1. Open <https://second-brain.nikolay-trakiyski.workers.dev/>.
-2. Ask the human to enter the workspace key in the dashboard.
-3. Have them select an existing username or create a new username.
-4. Have them copy the generated user API key immediately; it is shown once.
+1. Open <https://shared-living-memory.nikolay-trakiyski.workers.dev/>.
+2. Ask the human to enter the workspace key in the dashboard (first-time bootstrap) or sign in with their personal API key.
+3. For first-time setup: have them create an administrator username and copy the generated API key immediately; it is shown once.
+4. For existing workspaces: the human signs in with their personal API key directly.
 5. Ask them to provide the username and user API key to the agent or MCP client configuration.
 
 For header-based MCP clients, use:
@@ -24,12 +24,12 @@ For header-based MCP clients, use:
 ```json
 {
   "Authorization": "Bearer YOUR-WORKSPACE-KEY",
-  "X-Second-Brain-User": "your-username",
-  "X-Second-Brain-User-Key": "sbu_your-user-api-key"
+  "X-Shared-Living-Memory-User": "your-username",
+  "X-Shared-Living-Memory-User-Key": "slm_your-user-api-key"
 }
 ```
 
-Never call `remember` with the workspace key or user API key. Secrets are setup credentials, not memories.
+The personal-bearer path (API key as the Bearer token, no separate user headers) is also supported for clients that prefer a single credential. Never call `remember` with the workspace key or user API key. Secrets are setup credentials, not memories.
 
 ## Core product frame
 
@@ -39,7 +39,7 @@ The real product is translation between different mental maps.
 2. **Translation layer** — explain one person/agent's knowledge in another person/agent's context.
 3. **Living organism / Hermes layer** — proactive agents scout, draft, link, and propose maintenance through governed tools.
 
-Do not treat Second Brain as a dumping ground. Every useful write should improve future recall, translation, or decision quality.
+Do not treat Shared Living Memory as a dumping ground. Every useful write should improve future recall, translation, or decision quality.
 
 ## Before using tools
 
