@@ -3784,8 +3784,14 @@
 
       function authHeaders(extra) {
         const headers = Object.assign({}, extra || {})
-        headers['Authorization'] = `Bearer ${AUTH_TOKEN}`
-        if (CURRENT_USERNAME && USER_API_KEY) {
+        // When the user signed in with a personal key (no workspace key stored),
+        // use the personal API key as the Bearer token directly.
+        if (AUTH_TOKEN) {
+          headers['Authorization'] = `Bearer ${AUTH_TOKEN}`
+        } else if (USER_API_KEY) {
+          headers['Authorization'] = `Bearer ${USER_API_KEY}`
+        }
+        if (CURRENT_USERNAME && USER_API_KEY && AUTH_TOKEN) {
           headers['X-Shared-Living-Memory-User'] = CURRENT_USERNAME
           headers['X-Shared-Living-Memory-User-Key'] = USER_API_KEY
         }
