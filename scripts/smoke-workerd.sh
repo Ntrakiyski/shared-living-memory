@@ -156,7 +156,7 @@ if ! grep -Eiq '^www-authenticate:[[:space:]]*Bearer' "$MCP_HEADERS"; then
   exit 1
 fi
 
-smoke_username="ci_smoke_${PORT}_$$"
+smoke_username="ci_bootstrap_${PORT}_$$"
 user_status="$(
   curl --silent --show-error \
     --connect-timeout 2 \
@@ -167,12 +167,12 @@ user_status="$(
     --data "{\"username\":\"$smoke_username\"}" \
     --output "$USER_BODY" \
     --write-out "%{http_code}" \
-    "$BASE_URL/api/users" \
+    "$BASE_URL/api/bootstrap" \
     2>/dev/null || true
 )"
 
 if [[ "$user_status" != "201" ]]; then
-  echo "Admin user provisioning must return HTTP 201; received: ${user_status:-none}." >&2
+  echo "First-admin bootstrap must return HTTP 201; received: ${user_status:-none}." >&2
   exit 1
 fi
 

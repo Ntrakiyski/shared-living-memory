@@ -25,7 +25,8 @@ function makeEnv(aiResponse: string, vectorMatches: any[] = [], dbEntries: any[]
         });
       }),
     } as unknown as Ai,
-    AUTH_TOKEN: "test-token",
+        AUTH_TOKEN: "test-token",
+        MCP_OAUTH_ENABLED: "false",
     OAUTH_KV: makeKVMock(),
   };
 }
@@ -114,7 +115,8 @@ describe("checkDuplicateAndContradiction()", () => {
           throw new Error("AI service unavailable");
         }),
       } as unknown as Ai,
-      AUTH_TOKEN: "test-token",
+          AUTH_TOKEN: "test-token",
+        MCP_OAUTH_ENABLED: "false",
       OAUTH_KV: makeKVMock(),
     };
     const { contradiction } = await checkDuplicateAndContradiction("I moved to LA", env);
@@ -198,7 +200,8 @@ describe("checkDuplicateAndContradiction()", () => {
           throw new Error("AI unavailable");
         }),
       } as unknown as Ai,
-      AUTH_TOKEN: "test-token",
+          AUTH_TOKEN: "test-token",
+        MCP_OAUTH_ENABLED: "false",
       OAUTH_KV: makeKVMock(),
     };
     const { mergeAction } = await checkDuplicateAndContradiction("I like dark mode", env);

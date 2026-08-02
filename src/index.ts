@@ -58,8 +58,24 @@ const oauthProvider = new OAuthProvider({
 });
 
 export default {
-  fetch: (req: Request, env: Env, ctx: ExecutionContext) =>
-    oauthProvider.fetch(req, env as any, ctx),
+  fetch: (req: Request, env: Env, ctx: ExecutionContext) => {
+    // When OAuth issuance is disabled (the pilot default), intercept OAuth
+    // discovery, authorization, dynamic registration, and token endpoints
+    // before the OAuthProvider wrapper so they never reach the issuance path.
+    // The personal-bearer resolveExternalToken path remains fully functional.
+    if ((env as any).MCP_OAUTH_ENABLED !== "true") {
+      const url = new URL(req.url);
+      if (
+        url.pathname === "/.well-known/oauth-authorization-server" ||
+        url.pathname === "/oauth/authorize" ||
+        url.pathname === "/oauth/token" ||
+        url.pathname === "/oauth/register"
+      ) {
+        return new Response("OAuth issuance is disabled for the team pilot. Use a personal API key as the Bearer token.", { status: 404 });
+      }
+    }
+    return oauthProvider.fetch(req, env as any, ctx);
+  },
   scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
     ctx.waitUntil(runNightlyCompression(env, ctx));
     ctx.waitUntil(runGraphPass(env, ctx));

@@ -108,6 +108,7 @@ function makeEnv(db: SqliteD1): Env {
       describe: vi.fn(async () => ({})),
     } as unknown as VectorizeIndex,
     AUTH_TOKEN: "test-token",
+    MCP_OAUTH_ENABLED: "false",
     OAUTH_KV: {} as KVNamespace,
   };
 }

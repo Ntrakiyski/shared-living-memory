@@ -137,6 +137,7 @@ describe("user deactivation service", () => {
       OAUTH_KV: kv as unknown as KVNamespace,
       AI: {} as Ai,
       AUTH_TOKEN: "test",
+      MCP_OAUTH_ENABLED: "false",
     };
   });
 
