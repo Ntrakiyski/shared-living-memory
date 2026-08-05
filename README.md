@@ -3,6 +3,13 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/runtime-cloudflare_workers-A6E9CC?style=flat-square&labelColor=1E1B16" alt="Runtime: Cloudflare Workers">
+  <img src="https://img.shields.io/badge/storage-D1_%2B_Vectorize-A6E9CC?style=flat-square&labelColor=1E1B16" alt="Storage: D1 + Vectorize">
+  <img src="https://img.shields.io/badge/license-MIT-A6E9CC?style=flat-square&labelColor=1E1B16" alt="License: MIT">
+  <a href="https://github.com/Ntrakiyski"><img src="https://img.shields.io/badge/fractals-studio-FA5C2C?style=flat-square&labelColor=1E1B16" alt="Fractals Studio"></a>
+</p>
+
+<p align="center">
   <a href="https://shared-living-memory.nikolay-trakiyski.workers.dev"><strong>Open the live deployment</strong></a>
   ·
   <a href="#one-decision-reused-across-the-whole-team">See the team workflow</a>
@@ -196,3 +203,7 @@ It is also not a general-purpose vector database or an autonomous agent runtime.
 ## License
 
 [MIT](LICENSE)
+
+---
+
+<p align="center"><sub>Built by <a href="https://github.com/Ntrakiyski">Fractals</a></sub></p>

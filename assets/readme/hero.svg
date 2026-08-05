@@ -1,161 +1,33 @@
-<svg xmlns="http://www.w3.org/2000/svg"
-     width="1200" height="500" viewBox="0 0 1200 500"
-     role="img" aria-labelledby="title desc">
-  <title id="title">Shared Living Memory</title>
-  <desc id="desc">A shared memory layer that keeps decisions, client context, research, and AI findings available across a growing team with ownership, privacy, history, and citations.</desc>
+<svg viewBox="0 0 1200 320" width="100%" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Shared Living Memory — a governed knowledge layer for people and AI agents">
+  <rect x="0" y="0" width="1200" height="320" rx="28" fill="#FAF4EC"/>
+  <rect x="1.5" y="1.5" width="1197" height="317" rx="26.5" fill="none" stroke="#1E1B16" stroke-opacity="0.12" stroke-width="1.5"/>
 
-  <defs>
-    <pattern id="paper-lines" width="1200" height="42" patternUnits="userSpaceOnUse">
-      <path d="M0 41.5H1200" stroke="#26241F" stroke-opacity=".035"/>
-    </pattern>
-    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5"
-            markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0 0L10 5L0 10Z" fill="#B26641"/>
-    </marker>
-  </defs>
+  <circle cx="1010" cy="70" r="180" fill="#A6E9CC" fill-opacity="0.5"/>
+  <circle cx="1090" cy="230" r="110" fill="#36CE96" fill-opacity="0.28"/>
 
-  <rect width="1200" height="500" rx="28" fill="#F4F1EA"/>
-  <rect width="1200" height="500" rx="28" fill="url(#paper-lines)"/>
-  <rect x="1" y="1" width="1198" height="498" rx="27" fill="none" stroke="#26241F" stroke-opacity=".10"/>
+  <text x="72" y="94" font-family="Manrope, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="2.6" fill="#C2410C">SHARED CONTEXT FOR PEOPLE + AI</text>
 
-  <g transform="translate(64 50)">
-    <text x="0" y="0" dominant-baseline="hanging"
-          font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
-          font-size="16" font-weight="700" letter-spacing="2.3" fill="#8A4E2F">
-      SHARED CONTEXT FOR PEOPLE + AI
-    </text>
+  <text x="70" y="164" font-family="Manrope, 'Helvetica Neue', Arial, sans-serif" font-size="58" font-weight="800" letter-spacing="-1.6" fill="#1E1B16">Shared Living Memory</text>
 
-    <text x="0" y="72"
-          font-family="Georgia, 'Times New Roman', serif"
-          font-size="62" font-weight="600" letter-spacing="-1.8" fill="#26241F">
-      Shared Living
-    </text>
-    <text x="0" y="132"
-          font-family="Georgia, 'Times New Roman', serif"
-          font-size="62" font-weight="600" letter-spacing="-1.8" fill="#26241F">
-      Memory
-    </text>
+  <text x="72" y="208" font-family="Manrope, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="500" fill="#1E1B16" fill-opacity="0.72">Decisions, client context, research, and AI findings —</text>
+  <text x="72" y="238" font-family="Manrope, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="500" fill="#1E1B16" fill-opacity="0.72">captured once, reused with ownership, privacy, and evidence.</text>
 
-    <text x="0" y="190"
-          font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-          font-size="25" font-weight="700" fill="#26241F">
-      Keep the whole team aligned without
-    </text>
-    <text x="0" y="223"
-          font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-          font-size="25" font-weight="700" fill="#26241F">
-      repeating the same context.
-    </text>
+  <g transform="translate(72,260)">
+    <rect x="0" y="0" width="152" height="34" rx="17" fill="#FCFBF7" stroke="#1E1B16" stroke-opacity="0.14"/>
+    <circle cx="20" cy="17" r="5" fill="#FA5C2C"/>
+    <text x="34" y="22" font-family="Manrope, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" fill="#1E1B16">clear ownership</text>
 
-    <text x="0" y="270"
-          font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-          font-size="18.5" fill="#6E6B62">
-      Decisions, client knowledge, research, and operating know-how
-    </text>
-    <text x="0" y="298"
-          font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-          font-size="18.5" fill="#6E6B62">
-      stay available across handoffs, onboarding, and every AI tool.
-    </text>
+    <rect x="164" y="0" width="164" height="34" rx="17" fill="#FCFBF7" stroke="#1E1B16" stroke-opacity="0.14"/>
+    <circle cx="184" cy="17" r="5" fill="#36CE96"/>
+    <text x="198" y="22" font-family="Manrope, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" fill="#1E1B16">private by default</text>
 
-    <g transform="translate(0 352)">
-      <rect x="0" y="0" width="162" height="42" rx="21" fill="#FCFBF7" stroke="#D8D1C4"/>
-      <circle cx="23" cy="21" r="6" fill="#B26641"/>
-      <text x="39" y="27" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="15" font-weight="700" fill="#26241F">clear ownership</text>
-
-      <rect x="176" y="0" width="178" height="42" rx="21" fill="#FCFBF7" stroke="#D8D1C4"/>
-      <circle cx="199" cy="21" r="6" fill="#5B8A6B"/>
-      <text x="215" y="27" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="15" font-weight="700" fill="#26241F">private by default</text>
-
-      <rect x="368" y="0" width="178" height="42" rx="21" fill="#FCFBF7" stroke="#D8D1C4"/>
-      <path d="M390 15h12v10h-12zM395 12h12v10" fill="none" stroke="#B26641" stroke-width="1.8"/>
-      <text x="415" y="27" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="15" font-weight="700" fill="#26241F">history + evidence</text>
-    </g>
+    <rect x="340" y="0" width="164" height="34" rx="17" fill="#FCFBF7" stroke="#1E1B16" stroke-opacity="0.14"/>
+    <circle cx="360" cy="17" r="5" fill="#1A8EFA"/>
+    <text x="374" y="22" font-family="Manrope, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" fill="#1E1B16">history + evidence</text>
   </g>
 
-  <g transform="translate(680 48)">
-    <text x="0" y="0" dominant-baseline="hanging"
-          font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
-          font-size="15" font-weight="700" letter-spacing="1.7" fill="#6E6B62">
-      THE TEAM CREATES
-    </text>
-
-    <g transform="translate(0 38)">
-      <rect width="208" height="60" rx="14" fill="#FCFBF7" stroke="#D8D1C4"/>
-      <circle cx="26" cy="30" r="10" fill="#EAD9CE"/>
-      <path d="M22 30l3 3 6-8" fill="none" stroke="#B26641" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-      <text x="47" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="18" font-weight="700" fill="#26241F">Decisions + why</text>
-    </g>
-
-    <g transform="translate(228 38)">
-      <rect width="208" height="60" rx="14" fill="#FCFBF7" stroke="#D8D1C4"/>
-      <rect x="17" y="21" width="20" height="18" rx="3" fill="#EAD9CE"/>
-      <path d="M21 25h12M21 30h9M21 35h11" stroke="#B26641" stroke-width="1.7" stroke-linecap="round"/>
-      <text x="47" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="18" font-weight="700" fill="#26241F">Client context</text>
-    </g>
-
-    <g transform="translate(0 112)">
-      <rect width="208" height="60" rx="14" fill="#FCFBF7" stroke="#D8D1C4"/>
-      <circle cx="26" cy="27" r="9" fill="none" stroke="#5B8A6B" stroke-width="2"/>
-      <path d="M32 34l7 7" stroke="#5B8A6B" stroke-width="2.2" stroke-linecap="round"/>
-      <text x="47" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="18" font-weight="700" fill="#26241F">Research + sources</text>
-    </g>
-
-    <g transform="translate(228 112)">
-      <rect width="208" height="60" rx="14" fill="#FCFBF7" stroke="#D8D1C4"/>
-      <rect x="17" y="19" width="20" height="22" rx="5" fill="#E5EBE2"/>
-      <path d="M22 25h10M22 30h10M22 35h7" stroke="#5B8A6B" stroke-width="1.8" stroke-linecap="round"/>
-      <text x="47" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="18" font-weight="700" fill="#26241F">AI findings</text>
-    </g>
-
-    <path d="M218 174V210"
-          fill="none" stroke="#B26641" stroke-width="2" marker-end="url(#arrow)"/>
-
-    <g transform="translate(0 214)">
-      <rect width="436" height="104" rx="20" fill="#26241F"/>
-      <circle cx="42" cy="42" r="20" fill="#3B3730"/>
-      <path d="M31 44c7-17 19-17 27 0M34 50c6-11 15-11 21 0" fill="none" stroke="#D38A5E" stroke-width="2.2" stroke-linecap="round"/>
-      <text x="76" y="43" font-family="Georgia, 'Times New Roman', serif"
-            font-size="26" font-weight="600" fill="#FCFBF7">Shared memory layer</text>
-      <text x="76" y="72" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="16" fill="#C8C1B4">owner · visibility · source · version history</text>
-    </g>
-
-    <path d="M218 318V342" stroke="#B26641" stroke-width="2" marker-end="url(#arrow)"/>
-
-    <text x="0" y="346" dominant-baseline="hanging"
-          font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
-          font-size="15" font-weight="700" letter-spacing="1.7" fill="#6E6B62">
-      THE TEAM REUSES
-    </text>
-
-    <g transform="translate(0 378)">
-      <rect width="136" height="62" rx="14" fill="#F1E4DB" stroke="#C99F86"/>
-      <text x="68" y="26" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="17" font-weight="700" fill="#26241F">Faster</text>
-      <text x="68" y="47" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="17" font-weight="700" fill="#26241F">onboarding</text>
-    </g>
-    <g transform="translate(150 378)">
-      <rect width="136" height="62" rx="14" fill="#F1E4DB" stroke="#C99F86"/>
-      <text x="68" y="26" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="17" font-weight="700" fill="#26241F">Clearer</text>
-      <text x="68" y="47" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="17" font-weight="700" fill="#26241F">handoffs</text>
-    </g>
-    <g transform="translate(300 378)">
-      <rect width="136" height="62" rx="14" fill="#F1E4DB" stroke="#C99F86"/>
-      <text x="68" y="26" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="17" font-weight="700" fill="#26241F">Consistent</text>
-      <text x="68" y="47" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-            font-size="17" font-weight="700" fill="#26241F">answers</text>
-    </g>
+  <g transform="translate(1078,26) scale(0.86)">
+    <path d="M 32,2 L 34.43107448733703,18.212691457829088 L 42.260604299770065,3.8092213764227516 L 39,19.875644347017857 L 51.283628290596184,9.018666706430661 L 42.72462220366569,23.00097346438845 L 57.98076211353316,17 L 45.15569669100272,27.211717993440637 L 61.54423259036624,26.79055466999209 L 46,32 L 61.54423259036624,37.20944533000791 L 45.15569669100272,36.78828200655936 L 57.98076211353316,46.99999999999999 L 42.72462220366569,40.99902653561155 L 51.283628290596184,54.981333293569335 L 39,44.124355652982146 L 42.260604299770065,60.190778623577245 L 34.43107448733703,45.78730854217091 L 32,62 L 29.56892551266297,45.78730854217091 L 21.739395700229938,60.19077862357725 L 24.999999999999996,44.12435565298214 L 12.71637170940382,54.981333293569335 L 21.27537779633431,40.99902653561155 L 6.019237886466847,47.000000000000014 L 18.844303308997283,36.78828200655937 L 2.455767409633758,37.20944533000791 L 18,32 L 2.455767409633758,26.790554669992098 L 18.844303308997283,27.211717993440633 L 6.019237886466843,16.999999999999996 L 21.275377796334304,23.00097346438845 L 12.716371709403816,9.018666706430665 L 24.999999999999993,19.87564434701786 L 21.73939570022992,3.809221376422755 L 29.568925512662975,18.212691457829088 Z" fill="#FA5C2C"/>
+    <path d="M 32,18 L 33.12871315483505,25.598749605420647 L 36.78828200655936,18.844303308997283 L 35.25,26.370834875401147 L 40.99902653561155,21.275377796334308 L 36.97928888027336,27.821880537037494 L 44.12435565298214,25 L 38.108002035108406,29.776869068383153 L 45.78730854217091,29.568925512662975 L 38.5,32 L 45.78730854217091,34.43107448733703 L 38.108002035108406,34.22313093161685 L 44.124355652982146,39 L 36.97928888027336,36.178119462962506 L 40.99902653561155,42.72462220366569 L 35.25,37.62916512459885 L 36.78828200655936,45.15569669100272 L 33.12871315483505,38.40125039457935 L 32,46 L 30.871286845164953,38.40125039457935 L 27.211717993440637,45.15569669100272 L 28.75,37.62916512459885 L 23.00097346438845,42.72462220366569 L 27.02071111972664,36.178119462962506 L 19.87564434701786,39.00000000000001 L 25.891997964891598,34.22313093161685 L 18.212691457829088,34.43107448733702 L 25.5,32 L 18.212691457829088,29.56892551266298 L 25.891997964891594,29.77686906838315 L 19.87564434701786,25 L 27.02071111972664,27.821880537037494 L 23.000973464388448,21.27537779633431 L 28.749999999999996,26.37083487540115 L 27.21171799344063,18.844303308997283 L 30.871286845164953,25.598749605420647 Z" fill="#FDBBFB"/>
   </g>
 </svg>
