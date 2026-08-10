@@ -25,6 +25,12 @@ Important knowledge is created all day—in client calls, project chats, documen
 
 It is designed to reduce repeated explanations, shorten onboarding, preserve decision rationale through handoffs, and keep human and AI work aligned with the team's current knowledge.
 
+## Interactive architecture map
+
+[![Shared Living Memory architecture diagram](docs/architecture/architecture.png)](docs/architecture/architecture.html)
+
+The image links to the committed self-contained map. After cloning or downloading the repository, open [`docs/architecture/architecture.html`](docs/architecture/architecture.html) locally to search components, trace relationships, switch themes, and export the diagram.
+
 ## What changes as the team grows
 
 | Team moment | What the shared layer preserves |
