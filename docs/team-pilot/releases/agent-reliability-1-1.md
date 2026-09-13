@@ -133,12 +133,13 @@ All commands run from the project directory.
 | --- | --- |
 | `npm ci` | exit 0 |
 | `npm test` (baseline, before any edit) | exit 0 — 1124 passed / 106 files |
-| `npm test` (final) | exit 0 — **1301 passed / 116 files** |
-| `npx tsc --noEmit` | exit 0 for every file under `src/` (0 errors). Failures appear only in files that other concurrent agents were mid-edit on — see §7. |
+| `npm test` (final) | exit 0 — **1310 passed / 117 files** |
+| `npm run typecheck` (final, runs `wrangler types` then `tsc --noEmit`) | exit 0 |
+| `npx tsc --noEmit` | exit 0; zero errors under `src/` |
 | `npm run smoke:workerd` | **exit 1, blocked** — `setsid: command not found` (see §7) |
 | `node --check scripts/*.mjs` | exit 0 for each script delivered by WP8/WP9 |
 
-Net change on the branch: 38 files changed, 7,708 insertions, 220 deletions (tracked files only; the specification and task notes remain untracked by design).
+Net change on the branch (WP8 commit): **69 files changed, 11,330 insertions, 291 deletions** relative to `origin/main`. The release specification itself is committed on the branch so it is preserved with the work; `tasks/` (agent working notes) remains untracked.
 
 Secret scan of the committed diff: one match, and it is a **synthetic test vector** for the secret detector (`sk_live_0123…` inside `status-metadata.test.ts`). No live key, hash, prefix or credential appears anywhere in the diff.
 
@@ -155,8 +156,8 @@ Secret scan of the committed diff: one match, and it is a **synthetic test vecto
 | WP5 Identity/results/profiles | **PARTIAL** | whoami (MCP + REST), trusted `authMethod`, exact profiles and aliases, `/health` + `/ready` metadata, shared `SlmResult` envelope. The full structured-entry-descriptor contract (Section 4.3/4.4) is not applied to every read tool. |
 | WP6 Status/review | **PARTIAL** | reasons, revision preconditions and atomic `status_change_json` are complete; named-reviewer binding and audience are not implemented. |
 | WP7 Pagination | **COMPLETE** | versioned cursor, context hash, keyset query, `paginateRows`, REST `/list` opt-in |
-| WP8 Export/UI/docs | **PARTIAL** | delivered by the WP8 work package — secure exporter plus doc/onboarding alignment. The dashboard changes in Section 12 are not done. |
-| WP9 Stage/operations | **PARTIAL / BLOCKED** | binding preflight, load script, canary/CI corrections and unit tests delivered by the WP9 work package; every remote staging and load gate is blocked. |
+| WP8 Export/UI/docs | **PARTIAL** | `scripts/export-mcp-connection.mjs` with 28 behavioural tests; README, AGENTS, `src/mcp-onboarding.ts`, `docs/mcp-onboarding.md` and the project agent skill agree on personal-Bearer/legacy/profile vocabulary. The **dashboard** changes in Section 12 are not done, and `scripts/connect-ai-clients.sh` was left unchanged (it still documents the OAuth registration flow, which is disabled by default) — see §6. |
+| WP9 Stage/operations | **PARTIAL / BLOCKED** | `scripts/check-staging-bindings.mjs`, `scripts/staging-agent-load.mjs`, `scripts/mcp-protocol-smoke.mjs --discovery-only`, a `wrangler.jsonc` staging environment with placeholder ids, corrected `pilot-canary.yml` (missing config now fails; close-on-recovery requires a successful canary; 15-minute production / 6-hour staging schedules; incident metadata without raw responses or keys) and 19 unit tests. Maintenance write mode is implemented and tested. Every remote staging, load and canary gate is blocked. |
 | WP10 Integrated release audit | **THIS DOCUMENT** | see §6 and §7 |
 
 ---
@@ -166,11 +167,13 @@ Secret scan of the committed diff: one match, and it is a **synthetic test vecto
 These are stated as gaps, not as completed work.
 
 1. **Named-reviewer proposals (Section 7.4) are not implemented.** `reviewer_username`, `payload_json.reviewerUserId`, audience binding (`audience.mode: designated`), designated-reviewer approval enforcement and the rejection cases in G2/G3 remain open. The existing owner-submitted proposal flow is unchanged and still passes its suites.
-2. **Maintenance mode gating (Section 16.1) is not implemented.** `SLM_WRITE_MODE` is read and `/ready` returns 503 `maintenance_read_only`, but the safe-route allowlist, mutation rejection and MCP tool whitelist are not in place. Deploying with `read-only` would therefore *not* protect writes. This is a release-gate gap, not a cosmetic one.
+2. **Maintenance mode gating (Section 16.1) is implemented and tested** (`test/integration/maintenance-mode.test.ts`, 8 cases): 17 REST mutation routes and `GET /digest` refuse with 503 `maintenance_read_only` and verified zero side effects, the read surface still serves, MCP mutation tools refuse with an explicit tool error while read tools stay callable, and scheduled mutation jobs do not start. Two deliberate, narrower-than-spec choices: `POST /chat` is **blocked** in maintenance rather than permitted as read/generation, and deep shared mutation functions are not independently guarded as a second layer.
 3. **The structured entry-descriptor contract (Sections 4.3/4.4) is only partially applied.** The shared envelope exists and the new endpoints use it, but `recall`, `list_recent`, `passages`, `history` and the proposal tools were not converted to `EntryDescriptor`-shaped `structuredContent`.
 4. **Batch capture is exposed to personal accounts on both transports.** There is no service `remember_batch`; services keep their single-item governed capture, which re-verifies the actor on every call. The per-item revalidation hook exists and is tested, so a service batch can be added without redesign.
 5. **The full Section 4.5 output-bound work** (2048-byte content excerpts cut at code-point boundaries with `content_truncated`/`original_content_bytes`, and the 131,072-byte data cap on new listings) is implemented only for the paginated listing path's row budget; it was not applied to every read tool.
 6. **Nightly staleness restriction and the recall/graph exclusion list (G5)** were not re-verified in this pass.
+7. **`scripts/connect-ai-clients.sh` was not updated.** It still describes the OAuth registration flow, which this deployment disables by default (`MCP_OAUTH_ENABLED !== "true"`). It should be updated to the canonical personal-Bearer export before it is handed to a new participant.
+8. **`GET /chat` and the remaining read tools** were not converted to the shared envelope, and the Section 4.5 output bounds are applied only to the paginated listing path.
 
 ---
 
