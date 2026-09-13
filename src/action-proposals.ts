@@ -332,19 +332,24 @@ async function actorCanAccessProposal(
   actor: ActorContext,
   row: ProposalRow,
 ): Promise<boolean> {
-  if (actor.kind === "system") return true;
-
-  // A designated proposal has a fixed audience: proposer, subject owner and the
-  // designated reviewer. Generic admin or team visibility cannot override it.
+  // A designated proposal has a fixed audience: the proposer, the resolved
+  // subject owner and the designated reviewer — nothing else, including admin,
+  // team and internal system visibility. The binding is evaluated FIRST so no
+  // broader rule can widen it.
   const designated = designatedReviewerId(row);
   if (designated) {
     if (actor.kind === "service") {
       return row.proposer_kind === "service" && row.proposer_id === actor.serviceIdentityId;
     }
+    if (actor.kind !== "human") return false;
     if (actor.userId === designated) return true;
     if (row.proposer_kind === "human" && row.proposer_id === actor.userId) return true;
     return await proposalOwnerUserId(env, row) === actor.userId;
   }
+
+  // An unassigned (legacy) proposal keeps the pre-existing visibility rules,
+  // including the internal system path used by scheduled reconciliation.
+  if (actor.kind === "system") return true;
 
   if (actor.kind === "service") {
     return row.proposer_kind === "service" && row.proposer_id === actor.serviceIdentityId

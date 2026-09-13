@@ -408,3 +408,58 @@ describe("M2: proposal-driven status metadata", () => {
     ).status_change_json).toBeNull();
   });
 });
+
+describe("designated audience cannot be widened by any other principal", () => {
+  let harness: Harness;
+  let entryId: string;
+
+  beforeEach(async () => {
+    harness = makeHarness();
+    entryId = await seedCandidate(harness);
+  });
+
+  afterEach(() => {
+    harness.db.close();
+  });
+
+  it("denies an internal system actor at the policy layer for proposal reads", async () => {
+    await createActionProposal(harness.env, submission(entryId));
+    const systemActor = {
+      kind: "system" as const,
+      actorId: "_reconciliation",
+      systemId: "_reconciliation",
+      authMethod: "scheduled-worker",
+      scopes: new Set<never>(),
+    };
+    // System identities are default-denied; the only whitelisted one (the nightly
+    // contradiction scanner) may create an edge proposal and nothing else. So no
+    // system actor can reach the audience predicate at all, and the designated
+    // rule is a second layer rather than the only one.
+    await expect(listActionProposals(harness.env, { actor: systemActor as never }))
+      .rejects.toMatchObject({ decision: { reasonCode: "system_default_deny" } });
+  });
+
+  it("refuses a system actor at review and execute on a designated proposal", async () => {
+    const proposal = await createActionProposal(harness.env, submission(entryId));
+    const systemActor = {
+      kind: "system" as const,
+      actorId: "_reconciliation",
+      systemId: "_reconciliation",
+      authMethod: "scheduled-worker",
+      scopes: new Set<never>(),
+    };
+    await expect(reviewActionProposal(harness.env, {
+      actor: systemActor as never,
+      proposalId: proposal.id,
+      decision: "approve",
+      reason: "internal",
+    })).rejects.toBeTruthy();
+    await expect(executeApprovedProposal(harness.env, {
+      actor: systemActor as never,
+      proposalId: proposal.id,
+    })).rejects.toBeTruthy();
+    expect(harness.db.one<{ reviewer_id: string | null }>(
+      "SELECT reviewer_id FROM action_proposals WHERE id = ?", proposal.id,
+    ).reviewer_id).toBeNull();
+  });
+});
