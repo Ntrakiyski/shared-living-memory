@@ -382,3 +382,91 @@ describe("MCP recall structured result (Section 4.4/11)", () => {
     }
   });
 });
+
+describe("direct mutation results (Section 4.4)", () => {
+  let harness: Harness;
+
+  beforeEach(async () => {
+    harness = makeHarness();
+  });
+
+  afterEach(() => {
+    harness.db.close();
+  });
+
+  async function seedOne(harnessIn: Harness): Promise<string> {
+    const { commitEntryVersion } = await import("../../src/entry-version-service");
+    const committed = await commitEntryVersion({
+      kind: "capture",
+      actorUserId: "user-alice",
+      entryId: "entry-mutate",
+      rawContent: "Original",
+      materializedContent: "Original",
+      tags: ["work"],
+      source: "api:alice",
+      visibility: "public",
+      epistemicStatus: "candidate",
+    }, harnessIn.env);
+    return committed.entryId;
+  }
+
+  function tool(harnessIn: Harness, name: string, input: Record<string, unknown>) {
+    const server = buildMcpServer(harnessIn.env, ctx, ALICE, "full") as any;
+    return server._registeredTools[name].handler(input, {});
+  }
+
+  it("append returns entry_id, episode_id, revision and changed", async () => {
+    const entryId = await seedOne(harness);
+    const result = await tool(harness, "append", { id: entryId, addition: "More context" });
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent.data).toMatchObject({
+      entry_id: entryId,
+      changed: true,
+      revision: 2,
+    });
+    expect(result.structuredContent.data.episode_id).toBeTruthy();
+  });
+
+  it("update returns the committed revision", async () => {
+    const entryId = await seedOne(harness);
+    const result = await tool(harness, "update", { id: entryId, content: "Replaced entirely" });
+    expect(result.structuredContent.data).toMatchObject({
+      entry_id: entryId,
+      changed: true,
+      revision: 2,
+    });
+  });
+
+  it("set_status returns the committed revision and a real episode", async () => {
+    const entryId = await seedOne(harness);
+    const result = await tool(harness, "set_status", { id: entryId, status: "canonical", reason: "reviewed" });
+    expect(result.structuredContent.data).toMatchObject({
+      entry_id: entryId,
+      changed: true,
+      revision: 2,
+    });
+    expect(result.structuredContent.data.episode_id).toBeTruthy();
+  });
+
+  it("set_epistemic_status returns the committed revision", async () => {
+    const entryId = await seedOne(harness);
+    const result = await tool(harness, "set_epistemic_status", {
+      entry_id: entryId, new_status: "reviewed", reason: "checked",
+    });
+    expect(result.structuredContent.data).toMatchObject({
+      entry_id: entryId,
+      changed: true,
+      revision: 2,
+    });
+  });
+
+  it("reports a stale expected_revision as a tool error, not a silent success", async () => {
+    const entryId = await seedOne(harness);
+    await tool(harness, "set_status", { id: entryId, status: "canonical" });
+    const stale = await tool(harness, "set_status", {
+      id: entryId, status: "draft", expected_revision: 1,
+    });
+    expect(stale.isError).toBe(true);
+    expect(stale.content[0].text).toContain("revision_conflict");
+  });
+});

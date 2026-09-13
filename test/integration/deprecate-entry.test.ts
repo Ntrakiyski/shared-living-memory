@@ -33,7 +33,8 @@ describe("deprecateEntry()", () => {
 
     const result = await deprecateEntry("entry-1", env);
 
-    expect(result).toBe(true);
+    expect(result).toMatchObject({ entryId: "entry-1" });
+    expect(result?.revision).toBeGreaterThan(0);
 
     // Row must still exist
     const row = db.entries.find((e: any) => e.id === "entry-1");
@@ -53,7 +54,7 @@ describe("deprecateEntry()", () => {
 
   it("returns false for a missing id", async () => {
     const result = await deprecateEntry("missing-id", env);
-    expect(result).toBe(false);
+    expect(result).toBeNull();
     expect(deleteByIdsMock).not.toHaveBeenCalled();
   });
 });

@@ -2537,9 +2537,9 @@ export const defaultHandler = {
         return json({ ok: false, error: `No entry found with ID: ${id}` }, 404);
       }
 
-      let ok: boolean;
+      let committedVersion: Awaited<ReturnType<typeof applyStatus>>;
       try {
-        ok = await applyStatus(id, status, env, user_id, {
+        committedVersion = await applyStatus(id, status, env, user_id, {
           reason: body.reason,
           expectedRevision: body.expected_revision,
           actor: { kind: "human", id: user_id! },
@@ -2548,11 +2548,19 @@ export const defaultHandler = {
         return statusChangeResponse(error);
       }
 
-      if (!ok) {
+      if (!committedVersion) {
         return json({ ok: false, error: `No entry found with ID: ${id}` }, 404);
       }
 
-      return json({ ok: true, id, status, reason_recorded: body.reason !== undefined });
+      return json({
+        ok: true,
+        id,
+        status,
+        reason_recorded: body.reason !== undefined,
+        // Additive: the committed version this change produced.
+        revision: committedVersion.revision,
+        episode_id: committedVersion.episodeId,
+      });
     }
 
     // POST /epistemic-status — transition epistemic lifecycle (Ticket 10)

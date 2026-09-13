@@ -34,6 +34,7 @@ import {
 } from "./types";
 import { withStatus } from "./tags";
 import { detectHighConfidenceSecret } from "./ingest";
+import { type CommitEntryVersionResult } from "./entry-version-service";
 import { initializeDatabase } from "./db";
 import { captureEntry } from "./ingest";
 import { commitEntryVersion } from "./entry-version-service";
@@ -624,16 +625,16 @@ export async function deprecateEntry(
   env: Env,
   actorUserId?: string,
   options: DirectStatusOptions = {},
-): Promise<boolean> {
+): Promise<CommitEntryVersionResult | null> {
   const row = await env.DB.prepare(
     `SELECT content, tags, source, vector_ids, owner_user_id, revision,
             valid_from, valid_to, epistemic_status
      FROM entries WHERE id = ?`
   ).bind(id).first() as Record<string, any> | null;
-  if (!row) return false;
+  if (!row) return null;
   const ownerUserId = row.owner_user_id as string;
-  if (actorUserId && ownerUserId !== actorUserId) return false;
-  if (!ownerUserId) return false;
+  if (actorUserId && ownerUserId !== actorUserId) return null;
+  if (!ownerUserId) return null;
   precheckRevision(row, options);
   const reason = normalizeStatusReason(options.reason);
 
@@ -666,7 +667,7 @@ export async function deprecateEntry(
   } catch (e) {
     console.error("Vectorize deleteByIds failed during deprecate (non-fatal):", e);
   }
-  return true;
+  return committed;
 }
 
 // Apply a lifecycle status to an entry (issue #119). 'deprecated' deletes vectors
@@ -751,21 +752,21 @@ export async function applyStatus(
   env: Env,
   actorUserId?: string,
   options: DirectStatusOptions = {},
-): Promise<boolean> {
+): Promise<CommitEntryVersionResult | null> {
   if (status === "deprecated") return deprecateEntry(id, env, actorUserId, options);
   const row = await env.DB.prepare(
     `SELECT content, tags, source, owner_user_id, revision,
             valid_from, valid_to, epistemic_status
      FROM entries WHERE id = ?`
   ).bind(id).first() as Record<string, any> | null;
-  if (!row) return false;
+  if (!row) return null;
   const ownerUserId = row.owner_user_id as string;
-  if (!ownerUserId || (actorUserId && ownerUserId !== actorUserId)) return false;
+  if (!ownerUserId || (actorUserId && ownerUserId !== actorUserId)) return null;
   precheckRevision(row, options);
   const reason = normalizeStatusReason(options.reason);
   const tags: string[] = JSON.parse(row.tags ?? "[]");
   const actor = options.actor ?? { kind: "human" as const, id: ownerUserId };
-  await commitEntryVersion({
+  return await commitEntryVersion({
     kind: "status",
     actorUserId: ownerUserId,
     entryId: id,
@@ -787,7 +788,6 @@ export async function applyStatus(
       proposalId: options.proposalId ?? null,
     },
   }, env);
-  return true;
 }
 
 // ─── Nightly cross-user contradiction detection (S06) ─────────────────────────

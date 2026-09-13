@@ -99,11 +99,11 @@ describe("status reason contract (M1)", () => {
   });
 
   it("records from/to/actor/revision and the reason in the same episode", async () => {
-    const ok = await applyStatus("entry-1", "canonical", harness.env, OWNER, {
+    const committedVersion = await applyStatus("entry-1", "canonical", harness.env, OWNER, {
       reason: "  Reviewed with the team  ",
       actor: { kind: "human", id: OWNER },
     });
-    expect(ok).toBe(true);
+    expect(committedVersion).toMatchObject({ entryId: "entry-1", revision: 2 });
 
     const current = harness.db.one<{ current_episode_id: string; revision: number }>(
       "SELECT current_episode_id, revision FROM entries WHERE id = 'entry-1'",
@@ -195,7 +195,7 @@ describe("revision preconditions (M3)", () => {
       reason: "first",
       actor: { kind: "human", id: OWNER },
     });
-    expect(first).toBe(true);
+    expect(first).toMatchObject({ entryId: "entry-1", revision: 2 });
 
     await expect(applyStatus("entry-1", "draft", harness.env, OWNER, {
       expectedRevision: 1,

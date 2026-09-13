@@ -1113,19 +1113,26 @@ export function buildMcpServer(
         return { content: [{ type: "text", text: mirrorEditError(source) }] };
       }
 
+      let appended;
       try {
-        await appendToEntry(env, id, existingContent, a, tags, source, userId, ctx);
+        appended = await appendToEntry(env, id, existingContent, a, tags, source, userId, ctx);
       } catch (e) {
         console.error("Append failed:", e);
-        return {
-          content: [{ type: "text", text: `Append failed: ${(e as Error).message}` }],
-        };
+        const mapped = mapDomainError(e);
+        return toToolError(failResult(mapped.code, mapped.message, mapped.retryable, mapped.details));
       }
 
+      const envelope = okResult({
+        entry_id: appended.entryId,
+        episode_id: appended.episodeId,
+        revision: appended.revision,
+        changed: true as const,
+      });
       return {
+        structuredContent: envelope as unknown as Record<string, unknown>,
         content: [{
-          type: "text",
-          text: `Appended to entry ${id}. The original content is preserved and your update has been added with today's date.`,
+          type: "text" as const,
+          text: `Appended to entry ${id} (revision ${appended.revision}). The original content is preserved and your update has been added with today's date.`,
         }],
       };
     })
@@ -1183,8 +1190,15 @@ export function buildMcpServer(
           validTo: row.valid_to as number | null,
           epistemicStatus: row.epistemic_status,
         }, env);
+        const updateEnvelope = okResult({
+          entry_id: committed.entryId,
+          episode_id: committed.episodeId,
+          revision: committed.revision,
+          changed: true as const,
+        });
         return {
-          content: [{ type: "text", text: `Updated entry ${id} as revision ${committed.revision}. Re-embedded as ${committed.vectorIds.length} vector(s).` }],
+          structuredContent: updateEnvelope as unknown as Record<string, unknown>,
+          content: [{ type: "text" as const, text: `Updated entry ${id} as revision ${committed.revision}. Re-embedded as ${committed.vectorIds.length} vector(s).` }],
         };
       } catch (e) {
         console.error("Versioned MCP update failed:", e);
@@ -1212,9 +1226,9 @@ export function buildMcpServer(
           return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
         }
       }
-      let ok: boolean;
+      let committedVersion: Awaited<ReturnType<typeof applyStatus>>;
       try {
-        ok = await applyStatus(id, status as MemoryStatus, env, userId, {
+        committedVersion = await applyStatus(id, status as MemoryStatus, env, userId, {
           reason,
           expectedRevision: expected_revision,
           actor: { kind: "human", id: userId },
@@ -1226,8 +1240,17 @@ export function buildMcpServer(
         }
         throw error;
       }
-      if (!ok) return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
-      return { content: [{ type: "text", text: status === "deprecated" ? `Entry ${id} deprecated — removed from recall, kept for audit.` : `Entry ${id} marked ${status}.` }] };
+      if (!committedVersion) return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
+      const envelope = okResult({
+        entry_id: committedVersion.entryId,
+        episode_id: committedVersion.episodeId,
+        revision: committedVersion.revision,
+        changed: true as const,
+      });
+      return {
+        structuredContent: envelope as unknown as Record<string, unknown>,
+        content: [{ type: "text" as const, text: status === "deprecated" ? `Entry ${id} deprecated — removed from recall, kept for audit.` : `Entry ${id} marked ${status}.` }],
+      };
     })
   );
 
@@ -1300,7 +1323,16 @@ export function buildMcpServer(
             proposalId: null,
           },
         }, env);
-        return { content: [{ type: "text", text: `Entry ${entry_id} transitioned: ${currentStatus} → ${new_status} (revision ${committed.revision}).` }] };
+        const transitionEnvelope = okResult({
+          entry_id: committed.entryId,
+          episode_id: committed.episodeId,
+          revision: committed.revision,
+          changed: true as const,
+        });
+        return {
+          structuredContent: transitionEnvelope as unknown as Record<string, unknown>,
+          content: [{ type: "text" as const, text: `Entry ${entry_id} transitioned: ${currentStatus} → ${new_status} (revision ${committed.revision}).` }],
+        };
       } catch (error) {
         return { isError: true, content: [{ type: "text", text: versionErrorText(error) }] };
       }

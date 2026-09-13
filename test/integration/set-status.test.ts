@@ -32,9 +32,11 @@ describe("applyStatus()", () => {
     });
   });
 
-  it("canonical: returns true and commits a new version-scoped vector projection", async () => {
+  it("canonical: returns the committed version and commits a new version-scoped vector projection", async () => {
     const result = await applyStatus("entry-1", "canonical", env);
-    expect(result).toBe(true);
+    // Direct mutations return the committed version (Section 4.4), not a bare boolean.
+    expect(result).toMatchObject({ entryId: "entry-1", created: false });
+    expect(result?.revision).toBeGreaterThan(0);
 
     const row = db.entries.find((e: any) => e.id === "entry-1");
     const tags: string[] = JSON.parse(row.tags);
@@ -51,7 +53,9 @@ describe("applyStatus()", () => {
 
     // Now set to draft
     const result = await applyStatus("entry-1", "draft", env);
-    expect(result).toBe(true);
+    // Direct mutations return the committed version (Section 4.4), not a bare boolean.
+    expect(result).toMatchObject({ entryId: "entry-1", created: false });
+    expect(result?.revision).toBeGreaterThan(0);
 
     const row = db.entries.find((e: any) => e.id === "entry-1");
     const tags: string[] = JSON.parse(row.tags);
@@ -64,7 +68,9 @@ describe("applyStatus()", () => {
 
   it("deprecated: deletes vectors, clears vector_ids, sets status:deprecated", async () => {
     const result = await applyStatus("entry-1", "deprecated", env);
-    expect(result).toBe(true);
+    // Direct mutations return the committed version (Section 4.4), not a bare boolean.
+    expect(result).toMatchObject({ entryId: "entry-1", created: false });
+    expect(result?.revision).toBeGreaterThan(0);
 
     const row = db.entries.find((e: any) => e.id === "entry-1");
     const tags: string[] = JSON.parse(row.tags);
@@ -75,7 +81,7 @@ describe("applyStatus()", () => {
 
   it("returns false for a missing id", async () => {
     const result = await applyStatus("missing-id", "canonical", env);
-    expect(result).toBe(false);
+    expect(result).toBeNull();
   });
 });
 

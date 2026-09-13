@@ -27,6 +27,7 @@ import { createEdge, inferEdgesOnWrite, neighborsFromVectorQuery } from "./graph
 import {
   commitEntryVersion,
   stageVersionVectors,
+  type CommitEntryVersionResult,
   type PlannedPassage,
 } from "./entry-version-service";
 import { getSystemUserId } from "./db";
@@ -422,7 +423,7 @@ export async function appendToEntry(
   source: string,
   ownerUserId?: string,
   ctx?: ExecutionContext
-): Promise<void> {
+): Promise<CommitEntryVersionResult> {
   const row = await env.DB.prepare(
     `SELECT content, tags, source, owner_user_id, revision
      FROM entries WHERE id = ?`
@@ -442,7 +443,7 @@ export async function appendToEntry(
   const authoritativeSource = (row.source as string) ?? source;
   const newContent = authoritativeContent + separator + addition;
 
-  await commitEntryVersion({
+  const committed = await commitEntryVersion({
     kind: "append",
     actorUserId,
     entryId: id,
@@ -460,6 +461,9 @@ export async function appendToEntry(
   } catch (e) {
     console.error("Append auto-link failed (non-fatal):", e);
   }
+
+  // The committed version is the authoritative outcome for the caller.
+  return committed;
 }
 
 // ─── Shared write path ────────────────────────────────────────────────────────
