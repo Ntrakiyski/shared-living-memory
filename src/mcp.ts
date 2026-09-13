@@ -256,6 +256,12 @@ async function loadOwnedMcpHistory(
   return { projection, episodes, snapshots, episodeTotal, snapshotTotal };
 }
 
+/** The owner of a recall match, when the retrieval row carries it. */
+function entryOwner(match: unknown): string {
+  const value = (match as Record<string, unknown>)?.owner_user_id;
+  return typeof value === "string" ? value : "";
+}
+
 function renderBoundedMcpHistory(history: LoadedMcpHistory): string {
   let projection = { ...history.projection };
   let episodes = [...history.episodes];
@@ -1201,17 +1207,68 @@ export function buildMcpServer(
         hops: z.number().int().min(0).max(3).default(0).describe("Graph expansion depth: 0 = direct matches only (default); 1–2 also surfaces related memories linked in the graph"),
         as_of: z.number().int().optional().describe("Unix millisecond timestamp — when the fact was true (valid time)"),
         known_at: z.number().int().optional().describe("Unix millisecond timestamp — reconstruct what the team knew then (knowledge time)"),
+        include_insight: z.boolean().default(true).describe("Set false to skip insight generation and return raw ranked retrieval only."),
       },
     },
-    audited("recall", async ({ query, topK, tag, after, before, kind, hops, as_of, known_at }) => {
-      const { matches, insight, semanticUnavailable, proposed_edges } = await recallEntries({ query, topK, tag, after, before, kind: kind as MemoryKind | undefined, hops, userId, asOf: as_of, knownAt: known_at }, env, ctx);
+    audited("recall", async ({ query, topK, tag, after, before, kind, hops, as_of, known_at, include_insight }) => {
+      const { matches, insight, semanticUnavailable, proposed_edges } = await recallEntries({
+        query, topK, tag, after, before,
+        kind: kind as MemoryKind | undefined,
+        hops, userId, asOf: as_of, knownAt: known_at,
+        // Exposes the existing raw-retrieval path without a benchmark-only API.
+        skipInsight: !include_insight,
+      }, env, ctx);
 
+      const retrievalMode = semanticUnavailable ? "keyword_fallback" : "hybrid";
       const notice = semanticUnavailable
-        ? `Note: semantic search is unavailable because the Vectorize index is missing, so these are keyword matches only. Fix: ${VECTORIZE_FIX_HINT}.\n\n`
+        ? `Note: dense retrieval was unavailable for this query, so these are keyword matches only. Fix: ${VECTORIZE_FIX_HINT}.\n\n`
         : "";
 
+      // Structured matches carry the EntryDescriptor, bounded current text and
+      // the existing score/hop semantics. Nothing else is added.
+      const ownerIds = [...new Set(matches.map((match) => entryOwner(match)).filter(Boolean))];
+      const ownerMap: Record<string, string> = {};
+      if (ownerIds.length) {
+        const placeholders = ownerIds.map(() => "?").join(",");
+        const { results: owners } = await env.DB.prepare(
+          `SELECT id, username FROM users WHERE id IN (${placeholders})`,
+        ).bind(...ownerIds).all<{ id: string; username: string }>();
+        for (const owner of owners) ownerMap[owner.id] = owner.username;
+      }
+      const actorDescriptor = { actorId: actor.actorId, ownerUserId: userId, isService: false };
+      const structuredMatches = matches.map((match) => {
+        const descriptorRow = match as unknown as Record<string, unknown>;
+        const excerpt = boundContentExcerpt(String(match.content ?? ""));
+        return {
+          entry: buildEntryDescriptor({
+            id: match.id,
+            revision: typeof descriptorRow.revision === "number" ? descriptorRow.revision : null,
+            owner_user_id: String(descriptorRow.owner_user_id ?? ""),
+            visibility: typeof descriptorRow.visibility === "string" ? descriptorRow.visibility : null,
+            tags: JSON.stringify(match.tags ?? []),
+            epistemic_status: match.epistemicStatus ?? null,
+          }, ownerMap[String(descriptorRow.owner_user_id ?? "")] ?? "", actorDescriptor),
+          ...excerpt,
+          score: match.score,
+          hop: match.hop,
+          source: match.source,
+          citations: match.passages ?? [],
+        };
+      });
+
+      const boundedMatches = fitWithinBudget(structuredMatches);
+      const envelope = okResult({
+        matches: boundedMatches.items,
+        insight: include_insight ? (insight || null) : null,
+        semantic_available: !semanticUnavailable,
+        retrieval_mode: retrievalMode,
+      });
+
       if (!matches.length) {
-        return { content: [{ type: "text", text: notice + "Nothing found matching that query." }] };
+        return {
+          structuredContent: envelope as unknown as Record<string, unknown>,
+          content: [{ type: "text" as const, text: notice + "Nothing found matching that query." }],
+        };
       }
 
       let text = notice + renderRecallText(matches, insight, userId);
@@ -1220,7 +1277,10 @@ export function buildMcpServer(
           proposed_edges.map(pe => `  • ${pe.source_id} vs ${pe.target_id} — ${pe.reason}`).join("\n") +
           `\n\nUse \`list-proposals\` to review, or \`approve-proposal\` / \`reject-proposal\` to act.`;
       }
-      return { content: [{ type: "text", text }] };
+      return {
+        structuredContent: envelope as unknown as Record<string, unknown>,
+        content: [{ type: "text" as const, text }],
+      };
     })
   );
 

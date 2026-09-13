@@ -298,3 +298,87 @@ describe("MCP list_recent structured result (E5)", () => {
     expect(item.original_content_bytes).toBe(utf8Bytes("😀".repeat(3_000)));
   });
 });
+
+describe("MCP recall structured result (Section 4.4/11)", () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    harness = makeHarness();
+    seedEntries(harness, 3, "retrieval body");
+  });
+
+  afterEach(() => {
+    harness.db.close();
+  });
+
+  function recall(harnessIn: Harness, input: Record<string, unknown> = {}) {
+    const server = buildMcpServer(harnessIn.env, ctx, ALICE, "full") as any;
+    return server._registeredTools.recall.handler({ query: "retrieval", topK: 5, hops: 0, ...input }, {});
+  }
+
+  it("always reports the retrieval mode and semantic availability", async () => {
+    const result = await recall(harness);
+    const data = result.structuredContent.data;
+    expect(result.structuredContent.ok).toBe(true);
+    expect(["hybrid", "keyword_fallback"]).toContain(data.retrieval_mode);
+    expect(data.semantic_available).toBe(data.retrieval_mode === "hybrid");
+    expect(Array.isArray(data.matches)).toBe(true);
+  });
+
+  it("returns a valid no-results success rather than a failure", async () => {
+    const result = await recall(harness, { query: "zzz-no-such-token-zzz" });
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent.ok).toBe(true);
+    expect(result.structuredContent.data.matches).toEqual([]);
+    expect(result.structuredContent.data.semantic_available).toBeDefined();
+  });
+
+  it("honours include_insight without changing ranked retrieval", async () => {
+    const withInsight = await recall(harness, { include_insight: true });
+    const withoutInsight = await recall(harness, { include_insight: false });
+    expect(withoutInsight.structuredContent.data.insight).toBeNull();
+    // The ranked matches are produced by the same retrieval either way.
+    expect(withoutInsight.structuredContent.data.matches.length)
+      .toBe(withInsight.structuredContent.data.matches.length);
+    expect(withoutInsight.structuredContent.data.retrieval_mode)
+      .toBe(withInsight.structuredContent.data.retrieval_mode);
+  });
+
+  it("clamps the graph hop bound instead of expanding beyond it", async () => {
+    const bounded = await recall(harness, { hops: 3 });
+    const overBound = await recall(harness, { hops: 99 });
+    // recallEntries clamps to GRAPH_MAX_HOPS, so an out-of-range request behaves
+    // as the maximum rather than throwing or expanding unbounded.
+    expect(overBound.isError).toBeUndefined();
+    expect(overBound.structuredContent.data.matches.length)
+      .toBe(bounded.structuredContent.data.matches.length);
+  });
+
+  it("rejects a non-boolean REST include_insight value", async () => {
+    const worker = (await import("../../src/testing")).default;
+    const { hmacKey, AUTH_PEPPER } = await import("../../src/auth");
+    const hash = await hmacKey("alice-secret", AUTH_PEPPER);
+    harness.db.exec(`UPDATE users SET auth_key_hash = '${hash}' WHERE id = 'user-alice'`);
+    for (const value of ["maybe", "1", "TRUE", ""]) {
+      const response = await worker.fetch(new Request(
+        `http://localhost/recall?query=retrieval&include_insight=${encodeURIComponent(value)}`,
+        { method: "GET", headers: { Authorization: "Bearer slm_user-alice.alice-secret" } },
+      ), harness.env, ctx);
+      expect({ value, status: response.status }).toEqual({ value, status: 400 });
+      expect((await response.json() as any).error.code).toBe("invalid_request");
+    }
+  });
+
+  it("carries a descriptor with bounded content on every match", async () => {
+    const result = await recall(harness);
+    for (const match of result.structuredContent.data.matches) {
+      expect(match.entry.entry_id).toBeTruthy();
+      expect(match.entry.permissions.read_current).toBe(true);
+      expect(utf8Bytes(match.content)).toBeLessThanOrEqual(CONTENT_EXCERPT_MAX_BYTES);
+      expect(typeof match.original_content_bytes).toBe("number");
+      expect(match).toHaveProperty("score");
+      expect(match).toHaveProperty("hop");
+      expect(match).toHaveProperty("citations");
+    }
+  });
+});

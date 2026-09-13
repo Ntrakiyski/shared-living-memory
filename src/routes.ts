@@ -1875,8 +1875,22 @@ export const defaultHandler = {
       if ((asOf !== undefined && !Number.isFinite(asOf)) || (knownAt !== undefined && !Number.isFinite(knownAt))) {
         return json({ ok: false, error: "as_of and known_at must be Unix millisecond timestamps" }, 400);
       }
+      // Exact true/false strings only: a typo must not silently change behavior.
+      const includeInsightParam = url.searchParams.get("include_insight");
+      if (includeInsightParam !== null
+          && includeInsightParam !== "true"
+          && includeInsightParam !== "false") {
+        return json({
+          ok: false,
+          error: { code: "invalid_request", message: "include_insight must be true or false", retryable: false },
+          request_id: crypto.randomUUID(),
+        }, 400);
+      }
 
-      const { matches, insight, semanticUnavailable, proposed_edges } = await recallEntries({ query, topK, tag, after, before, kind, hops, userId: user_id, asOf, knownAt }, env, ctx);
+      const { matches, insight, semanticUnavailable, proposed_edges } = await recallEntries({
+        query, topK, tag, after, before, kind, hops, userId: user_id, asOf, knownAt,
+        skipInsight: includeInsightParam === "false",
+      }, env, ctx);
 
       if (!matches.length) {
         return json({
