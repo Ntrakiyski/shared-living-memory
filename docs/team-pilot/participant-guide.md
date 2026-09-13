@@ -34,6 +34,37 @@ was known at a past point in time.
 - **Permanently delete** is a compliance operation — never use it for
   ordinary corrections.
 
+## Proposing changes with a designated reviewer
+
+When you want to change another account's public entry, or make a change that
+deserves independent review, submit a **governed action proposal** through MCP.
+There is no dashboard proposal editor: this flow is an MCP recipe. A proposal
+with a designated reviewer is visible only to the proposer, the subject owner,
+and that one reviewer, and only that reviewer may approve or reject it. A
+proposal with no designated reviewer keeps the legacy behaviour and may be
+reviewed by the broader team.
+
+```text
+1. Owner captures a public candidate and reads back its entry_id E and revision R.
+2. Owner calls create_action_proposal:
+   action_type: "entry.epistemic-status.set"
+   payload_json: {"entryId": E, "status": "reviewed"}
+   target_ids: [E]
+   expected_revision: R
+   reviewer_username: "jarvis"
+   visibility_scope: "team"
+   reason: "evidence reviewed; ready for review"
+   idempotency_key: "propose-reviewed-<E>"
+3. The designated reviewer lists only proposals they may see, checks the
+   evidence, then approves or rejects with a reason and executes the approved action.
+   Ownership stays with the original owner.
+4. To promote from reviewed to canonical, repeat at the newly returned revision.
+```
+
+A bound reviewer is resolved once to its account ID and is fixed for the life
+of the proposal. Selecting yourself or the subject owner as reviewer is
+rejected — this path requires a separate reviewing account.
+
 ## Rating recall
 
 After a recall, you'll see a recall event ID. Rate it as helpful or

@@ -88,9 +88,9 @@ Status legend: **PASS** = behaviour asserted by a test that was observed to fail
 | ID | Status | Evidence |
 | --- | --- | --- |
 | M1 reason recorded correctly; omitted stays null; invalid reason rejected before mutation | **PASS** | `status-metadata.test.ts` — from/to/axis/actor/reviewer/proposal/revision/timestamp asserted from the persisted `status_change_json`; empty, whitespace-only, 2,001-code-point and secret-looking reasons all throw with the entry revision and episode count unchanged; exactly 2,000 code points is accepted; `""` and absent are distinguished by `reason_status`. |
-| M2 proposal status links submission/review metadata without substituting the owner | **PARTIAL** | the executor path is unchanged and passes its existing suite; the new direct path records `reviewer: null` explicitly and never substitutes the owner as reviewer. Full proposal-metadata linkage was not re-verified. |
+| M2 proposal status links submission/review metadata without substituting the owner | **PASS** | `reviewer-binding.test.ts` — a proposal-executed epistemic transition persists `status_change_json` with the ACTUAL executor as `actor`, the stored approving account as `reviewer`, the stored review reason as `reason`, `proposal_id` linking the submission rationale, and a `revision` matching the entry's committed revision. The owner appears as neither actor nor reviewer, and a pre-release episode stays explicitly `null`. |
 | M3 two same-revision edits: one accepted, one stale, no partial rows | **PASS** | `status-metadata.test.ts` — the stale edit returns `revision_conflict`, and a raced guarded commit rolls back leaving zero new snapshots and zero rows with non-null `status_change_json`. |
-| M4 real SQL failure is `isError`, empty searches succeed, cleanup trouble is success-with-warning | **PARTIAL** | `mapDomainError`, `committedWithWarning` and the `isError: true` tool shape exist in `src/mcp-results.ts` and are exercised by the new cursor, status and batch suites (a stale revision, a bad cursor and a rejected batch all return explicit tool errors). A dedicated failure-injection scenario for *every* tool was not written. |
+| M4 real SQL failure is `isError`, empty searches succeed, cleanup trouble is success-with-warning | **PASS** | `test/integration/tool-failure-contract.test.ts`. This closes a real defect: the `audited` wrapper used to return a thrown failure as a bare text string with **no** `isError` and the **raw** exception message attached. It now sets `isError: true` and reports a safe code, and the audit record stores the mapped code rather than the raw message. Verified: a real database failure returns an `isError` tool result containing no SQL, table name or file path; an unrecognized failure maps to *retryable* `storage_unavailable` (it was previously mis-classified non-retryable); an empty search stays an `ok:true` success; and a committed deletion whose vector cleanup or audit finalization did not finish reports `ok:true` with `retry:false` and the authoritative deletion intact. |
 | M5 bounded history stays bounded and private; export/erasure handles new metadata | **PASS** | `status-metadata.test.ts` — the history tool returns `{projection, episodes, snapshots, truncated, counts, guidance}` rendered from the already-bounded data; each authorized episode carries `status_change` (null for pre-release episodes rather than a guess); an over-long reason is truncated explicitly with `reason_truncated` and `reason_original_code_points`; counts and the byte budget are asserted; and a non-owner learns nothing. Erasure of the metadata follows from `DELETE FROM episodes` and is covered by the erasure suites. |
 
 ### C — Idempotency and batching
@@ -133,13 +133,13 @@ All commands run from the project directory.
 | --- | --- |
 | `npm ci` | exit 0 |
 | `npm test` (baseline, before any edit) | exit 0 — 1124 passed / 106 files |
-| `npm test` (final) | exit 0 — **1391 passed / 123 files** |
+| `npm test` (final) | exit 0 — **1400 passed / 124 files** |
 | `npm run typecheck` (final, runs `wrangler types` then `tsc --noEmit`) | exit 0, zero errors |
 | `npx tsc --noEmit` | exit 0; zero errors under `src/` |
 | `npm run smoke:workerd` | **exit 1, blocked** — `setsid: command not found` (see §7) |
 | `node --check scripts/*.mjs` | exit 0 for each script delivered by WP8/WP9 |
 
-Net change on the branch: **62 files changed, ~14,000 insertions, ~300 deletions** relative to `origin/main` (tracked files; `tasks/` agent notes remain untracked). The release specification itself is committed on the branch so it is preserved with the work; `tasks/` (agent working notes) remains untracked.
+Net change on the branch: **63 files changed, ~14,500 insertions, ~300 deletions** relative to `origin/main` (tracked files; `tasks/` agent notes remain untracked). The release specification itself is committed on the branch so it is preserved with the work; `tasks/` (agent working notes) remains untracked.
 
 Secret scan of the committed diff: one match, and it is a **synthetic test vector** for the secret detector (`sk_live_0123…` inside `status-metadata.test.ts`). No live key, hash, prefix or credential appears anywhere in the diff.
 
