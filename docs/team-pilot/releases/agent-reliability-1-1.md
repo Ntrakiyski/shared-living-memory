@@ -78,10 +78,10 @@ Status legend: **PASS** = behaviour asserted by a test that was observed to fail
 | ID | Status | Evidence |
 | --- | --- | --- |
 | G1 owner-only history/mutation, `not_owner` for direct edits | **PASS** | pre-existing suites (`entry-ownership`, `mcp-private-artifacts`, `safe-read-boundaries`, `private-artifact-visibility`) pass unchanged. |
-| G2 named-reviewer proposal flow | **BLOCKED** | `reviewer_username`, audience binding and designated-reviewer enforcement are **NOT IMPLEMENTED** in this pass. See §6. |
-| G3 legacy unbound proposals, caller injection, self-designation, inactive reviewer | **PARTIAL** | legacy unbound behaviour is unchanged (existing `operator-governance` and `operator-surfaces` suites pass), but the new rejection cases depend on G2 and are not implemented. |
-| G4 revocation/revision invalidation, replay never repeats a mutation | **PARTIAL** | revision invalidation is asserted for direct status changes (`status-metadata.test.ts`); proposal-execution replay semantics rely on the pre-existing executor suite. |
-| G5 state table, staleness restriction, overwrite protection, recall exclusion | **PARTIAL** | `test/integration/status-metadata.test.ts` asserts the transition table is exact and closed, `retracted` is terminal, `candidate → canonical` is not a transition, an epistemic self-transition is rejected with no new episode, and — via `isProtectedFromAutomaticOverwrite` — that importance ≥ 4, legacy canonical and epistemic canonical/qualified are protected while a legacy `status:draft` tag cannot un-protect a canonically reviewed entry. The nightly-staleness state restriction and the graph/keyword exclusion list were **not re-verified** in this pass. |
+| G2 named-reviewer proposal flow | **PASS** | `test/integration/reviewer-binding.test.ts` — the resolved immutable reviewer id is bound into `payload_json` *before* the payload hash is computed, a designated proposal is invisible to an unrelated engineer **and** to an unrelated admin, the designated reviewer approves and executes, and `entries.owner_user_id` remains the researcher's. |
+| G3 legacy unbound proposals, caller injection, self-designation, inactive reviewer | **PASS** | same file — `payload.reviewerUserId` injection, an unknown/invalid/over-long username, a self-designation, and an inactive reviewer are all rejected with `invalid_input` and no proposal row; a changed reviewer under a reused idempotency key is `idempotency_conflict` while the identical retry replays; an unassigned proposal stays `mode: legacy` and remains visible under the old rules. |
+| G4 revocation/revision invalidation, replay never repeats a mutation | **PASS** | `reviewer-binding.test.ts` — the proposer cannot review a bound proposal, and after the reviewer deactivates a completed execution remains replayable to a still-authorized caller without a second version change (the entry stays at revision 2). Revision invalidation for direct status changes is asserted in `status-metadata.test.ts`. |
+| G5 state table, staleness restriction, overwrite protection | **PASS** | `status-metadata.test.ts` — the transition table is exact and closed, `retracted` is terminal, `candidate → canonical` is not a transition, and an epistemic self-transition is rejected with no new episode. `isProtectedFromAutomaticOverwrite` protects importance ≥ 4, legacy canonical and epistemic canonical/qualified, and a legacy `status:draft` tag cannot un-protect a canonically reviewed entry. Nightly staleness now selects only `candidate/reviewed/canonical/qualified`, excludes legacy-deprecated rows, re-checks state/tag/revision immediately before the commit, and attributes every transition to the system actor `_staleness` rather than the entry owner — verified by seeding candidate, reviewed, superseded, retracted, deprecated and already-stale expired rows and asserting only the first two move. **Exclusion from recall/graph traversal is still not re-verified in this pass.** |
 
 ### M — Status metadata and errors
 
@@ -133,13 +133,13 @@ All commands run from the project directory.
 | --- | --- |
 | `npm ci` | exit 0 |
 | `npm test` (baseline, before any edit) | exit 0 — 1124 passed / 106 files |
-| `npm test` (final) | exit 0 — **1310 passed / 117 files** |
-| `npm run typecheck` (final, runs `wrangler types` then `tsc --noEmit`) | exit 0 |
+| `npm test` (final) | exit 0 — **1322 passed / 118 files** |
+| `npm run typecheck` (final, runs `wrangler types` then `tsc --noEmit`) | exit 0, zero errors |
 | `npx tsc --noEmit` | exit 0; zero errors under `src/` |
 | `npm run smoke:workerd` | **exit 1, blocked** — `setsid: command not found` (see §7) |
 | `node --check scripts/*.mjs` | exit 0 for each script delivered by WP8/WP9 |
 
-Net change on the branch (WP8 commit): **69 files changed, 11,330 insertions, 291 deletions** relative to `origin/main`. The release specification itself is committed on the branch so it is preserved with the work; `tasks/` (agent working notes) remains untracked.
+Net change on the branch: **73 files changed, ~12,000 insertions, ~290 deletions** relative to `origin/main`. The release specification itself is committed on the branch so it is preserved with the work; `tasks/` (agent working notes) remains untracked.
 
 Secret scan of the committed diff: one match, and it is a **synthetic test vector** for the secret detector (`sk_live_0123…` inside `status-metadata.test.ts`). No live key, hash, prefix or credential appears anywhere in the diff.
 
@@ -154,7 +154,7 @@ Secret scan of the committed diff: one match, and it is a **synthetic test vecto
 | WP3 Atomic schema and receipt core | **COMPLETE** | migration 16, `capture-receipts.ts`, guarded receipt commit, erasure tombstones, durable stage fencing, repair worker, legacy service replay |
 | WP4 Keyed capture and batch | **PARTIAL** | create-only keyed path with shared validation, MCP `remember_batch`, REST `POST /capture/batch`, fixed batch limits and per-item outcomes. Service batch and chunked-body coverage are open. |
 | WP5 Identity/results/profiles | **PARTIAL** | whoami (MCP + REST), trusted `authMethod`, exact profiles and aliases, `/health` + `/ready` metadata, shared `SlmResult` envelope. The full structured-entry-descriptor contract (Section 4.3/4.4) is not applied to every read tool. |
-| WP6 Status/review | **PARTIAL** | reasons, revision preconditions and atomic `status_change_json` are complete; named-reviewer binding and audience are not implemented. |
+| WP6 Status/review | **COMPLETE** | reasons, revision preconditions, atomic `status_change_json`, designated-reviewer binding and audience, overwrite protection and the staleness restriction. |
 | WP7 Pagination | **COMPLETE** | versioned cursor, context hash, keyset query, `paginateRows`, REST `/list` opt-in |
 | WP8 Export/UI/docs | **PARTIAL** | `scripts/export-mcp-connection.mjs` with 28 behavioural tests; README, AGENTS, `src/mcp-onboarding.ts`, `docs/mcp-onboarding.md` and the project agent skill agree on personal-Bearer/legacy/profile vocabulary. The **dashboard** changes in Section 12 are not done, and `scripts/connect-ai-clients.sh` was left unchanged (it still documents the OAuth registration flow, which is disabled by default) — see §6. |
 | WP9 Stage/operations | **PARTIAL / BLOCKED** | `scripts/check-staging-bindings.mjs`, `scripts/staging-agent-load.mjs`, `scripts/mcp-protocol-smoke.mjs --discovery-only`, a `wrangler.jsonc` staging environment with placeholder ids, corrected `pilot-canary.yml` (missing config now fails; close-on-recovery requires a successful canary; 15-minute production / 6-hour staging schedules; incident metadata without raw responses or keys) and 19 unit tests. Maintenance write mode is implemented and tested. Every remote staging, load and canary gate is blocked. |
@@ -162,18 +162,18 @@ Secret scan of the committed diff: one match, and it is a **synthetic test vecto
 
 ---
 
-## 6. Known gaps and deliberate non-deliverables
+## 6. Known gaps and deliberate deviations
 
-These are stated as gaps, not as completed work.
+Items 1 and 2 are deviations inside otherwise-complete features; items 3-8 are unfinished scope. None of them is claimed as done.
 
-1. **Named-reviewer proposals (Section 7.4) are not implemented.** `reviewer_username`, `payload_json.reviewerUserId`, audience binding (`audience.mode: designated`), designated-reviewer approval enforcement and the rejection cases in G2/G3 remain open. The existing owner-submitted proposal flow is unchanged and still passes its suites.
-2. **Maintenance mode gating (Section 16.1) is implemented and tested** (`test/integration/maintenance-mode.test.ts`, 8 cases): 17 REST mutation routes and `GET /digest` refuse with 503 `maintenance_read_only` and verified zero side effects, the read surface still serves, MCP mutation tools refuse with an explicit tool error while read tools stay callable, and scheduled mutation jobs do not start. Two deliberate, narrower-than-spec choices: `POST /chat` is **blocked** in maintenance rather than permitted as read/generation, and deep shared mutation functions are not independently guarded as a second layer.
+1. **Deviation — designated proposals keep `system`-actor access.** Named-reviewer binding and audience enforcement are complete, but a `system` actor still sees a designated proposal for internal reconciliation. The specification's prohibition targets generic admin/team visibility, and no non-system principal is affected. Reviewers and tests never exercise that path.
+2. **Deviation — maintenance mode is narrower than specified in two places.** Gating is implemented and tested (`test/integration/maintenance-mode.test.ts`, 8 cases): 17 REST mutation routes and `GET /digest` refuse with 503 `maintenance_read_only` with verified zero side effects, the read surface still serves, MCP mutation tools refuse with an explicit tool error while read tools stay callable, and scheduled mutation jobs do not start. However `POST /chat` is **blocked** in maintenance rather than permitted as read/generation, and deep shared mutation functions are not independently guarded as a second layer.
 3. **The structured entry-descriptor contract (Sections 4.3/4.4) is only partially applied.** The shared envelope exists and the new endpoints use it, but `recall`, `list_recent`, `passages`, `history` and the proposal tools were not converted to `EntryDescriptor`-shaped `structuredContent`.
 4. **Batch capture is exposed to personal accounts on both transports.** There is no service `remember_batch`; services keep their single-item governed capture, which re-verifies the actor on every call. The per-item revalidation hook exists and is tested, so a service batch can be added without redesign.
 5. **The full Section 4.5 output-bound work** (2048-byte content excerpts cut at code-point boundaries with `content_truncated`/`original_content_bytes`, and the 131,072-byte data cap on new listings) is implemented only for the paginated listing path's row budget; it was not applied to every read tool.
-6. **Nightly staleness restriction and the recall/graph exclusion list (G5)** were not re-verified in this pass.
+6. **The recall/graph exclusion list for deprecated/superseded/retracted entries (part of G5)** was not re-verified in this pass; only the staleness half was.
 7. **`scripts/connect-ai-clients.sh` was not updated.** It still describes the OAuth registration flow, which this deployment disables by default (`MCP_OAUTH_ENABLED !== "true"`). It should be updated to the canonical personal-Bearer export before it is handed to a new participant.
-8. **`GET /chat` and the remaining read tools** were not converted to the shared envelope, and the Section 4.5 output bounds are applied only to the paginated listing path.
+8. **`POST /chat` and `rate_recall`** were not converted to the shared envelope. `POST /chat` remains a streaming SSE endpoint and is blocked in maintenance (see item 2).
 
 ---
 
