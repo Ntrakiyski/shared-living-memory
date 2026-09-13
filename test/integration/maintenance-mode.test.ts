@@ -281,3 +281,58 @@ describe("MCP transport stays reachable in maintenance", () => {
     expect(response.status).not.toBe(503);
   });
 });
+
+describe("deep shared writes refuse in maintenance (second guard)", () => {
+  it("blocks commitEntryVersion even when the request-level gate is bypassed", async () => {
+    const { commitEntryVersion } = await import("../../src/entry-version-service");
+    const harnessIn = makeHarness("read-only");
+    await seedAlice(harnessIn);
+    try {
+      // A scheduled job or internal caller reaches this function directly, so the
+      // gate cannot rely on the route allowlist or the MCP tool wrapper.
+      await expect(commitEntryVersion({
+        kind: "capture",
+        actorUserId: "user-alice",
+        entryId: "deep-guard",
+        rawContent: "should not land",
+        materializedContent: "should not land",
+        tags: [],
+        source: "api:alice",
+      }, harnessIn.env)).rejects.toBeInstanceOf(Error);
+      expect(harnessIn.db.count("entries")).toBe(0);
+      expect(harnessIn.db.count("episodes")).toBe(0);
+      // Nothing was staged in Vectorize either.
+      expect(harnessIn.env.VECTORIZE.upsert as never).not.toHaveProperty("mock.calls.length", 1);
+    } finally {
+      harnessIn.db.close();
+    }
+  });
+
+  it("blocks a direct erasure call in maintenance", async () => {
+    const { eraseEntryArtifacts } = await import("../../src/erasure");
+    const writable = makeHarness("enabled");
+    await seedAlice(writable);
+    writable.db.exec(
+      `INSERT INTO entries (id, content, tags, source, created_at, vector_ids, owner_user_id, visibility)
+       VALUES ('deep-entry', 'still here', '[]', 'api', 1, '[]', 'user-alice', 'private')`,
+    );
+    try {
+      const actor = {
+        kind: "human" as const, actorId: "user-alice", userId: "user-alice",
+        role: "member" as const, authMethod: "personal_api_key", scopes: new Set<never>(),
+      };
+      // Same store, read-only switch flipped: the deletion must not proceed.
+      const readOnlyEnv = { ...writable.env, SLM_WRITE_MODE: "read-only" } as Env;
+      await expect(eraseEntryArtifacts("deep-entry", actor as never, readOnlyEnv)).rejects.toBeTruthy();
+      expect(writable.db.count("entries")).toBe(1);
+
+      // With writes enabled the same call succeeds, so the guard is the mode and
+      // not a broken path.
+      const erased = await eraseEntryArtifacts("deep-entry", actor as never, writable.env);
+      expect(erased.status).toBe("complete");
+      expect(writable.db.count("entries")).toBe(0);
+    } finally {
+      writable.db.close();
+    }
+  });
+});

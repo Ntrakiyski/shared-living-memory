@@ -19,6 +19,7 @@ import {
   type EpistemicStatus,
 } from "./types";
 import { getStatus } from "./tags";
+import { isMaintenanceReadOnly } from "./config";
 import {
   abandonCaptureAttempt,
   assertCaptureStageIntact,
@@ -737,6 +738,15 @@ export async function commitEntryVersion(
   env: Env,
 ): Promise<CommitEntryVersionResult> {
   validateInput(input);
+
+  // Second guard for background and internal callers: the request-level gate in
+  // routes.ts and the MCP tool gate cannot cover a scheduled job, so the deepest
+  // shared write refuses on its own while maintenance is read-only.
+  if (isMaintenanceReadOnly(env)) {
+    throw new EntryVersionValidationError(
+      "Writes are disabled: Shared Living Memory is in read-only maintenance",
+    );
+  }
 
   const now = input.now ?? Date.now();
   const mutationId = input.mutationId ?? uuid();

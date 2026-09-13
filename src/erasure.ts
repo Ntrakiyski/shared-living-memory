@@ -17,6 +17,7 @@ import type { ActorContext, Env } from "./types";
 import { INTEGRATION_PROVIDERS, loadIntegration, saveIntegration } from "./integrations";
 import { sqlChanges } from "./governance-utils";
 import { captureReceiptTombstoneStatement } from "./capture-receipts";
+import { isMaintenanceReadOnly } from "./config";
 
 export const ERASURE_CLEANUP_REASON_PREFIX = "erasure:";
 
@@ -438,6 +439,11 @@ export async function eraseEntryArtifacts(
     deleteEntry?: { ownerUserId?: string; excludePublic?: boolean };
   } = {},
 ): Promise<EraseEntryResult> {
+  // Second guard for background and internal callers: an erasure scheduled by a
+  // job must not run while maintenance is read-only.
+  if (isMaintenanceReadOnly(env)) {
+    throw new Error("Writes are disabled: Shared Living Memory is in read-only maintenance");
+  }
   const now = opts.now ?? Date.now();
   const row = await env.DB.prepare(
     `SELECT id, owner_user_id, vector_ids FROM entries WHERE id = ?`,
