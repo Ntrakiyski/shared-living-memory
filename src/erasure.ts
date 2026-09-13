@@ -110,10 +110,13 @@ export async function collectEntryArtifactIds(
   env: Pick<Env, "DB">,
   entryId: string,
 ): Promise<Set<string>> {
+  // Workerd configures SQLITE_LIMIT_COMPOUND_SELECT to five, so this query must
+  // never exceed five top-level terms. The entry's own id is already known, so
+  // it is seeded into the result set instead of being selected again. Entry
+  // existence and ownership stay with the caller's erasure authority checks;
+  // this helper only enumerates artifacts.
   const { results } = await env.DB.prepare(
-    `SELECT id FROM entries WHERE id = ?
-     UNION
-     SELECT id FROM episodes WHERE entry_id = ?
+    `SELECT id FROM episodes WHERE entry_id = ?
      UNION
      SELECT id FROM entry_snapshots WHERE entry_id = ?
      UNION
@@ -143,9 +146,8 @@ export async function collectEntryArtifactIds(
     entryId,
     entryId,
     entryId,
-    entryId,
   ).all<{ id: string }>();
-  return new Set(results.map((row) => row.id));
+  return new Set([entryId, ...results.map((row) => row.id)]);
 }
 
 function payloadContainsArtifact(value: unknown, artifactIds: ReadonlySet<string>): boolean {
