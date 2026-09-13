@@ -87,6 +87,7 @@ export interface CaptureReplayDescriptor {
   episodeId: string | null;
   mutationId: string | null;
   revision: number | null;
+  currentRevision: number;
   requestHash: string;
   committedAt: number;
 }
@@ -291,6 +292,7 @@ export async function lookupCaptureReceipt(
       episodeId: row.episode_id,
       mutationId: row.mutation_id,
       revision: row.revision === null ? null : Number(row.revision),
+      currentRevision: Number(row.live_revision),
       requestHash: row.request_hash ?? requestHash,
       committedAt: Number(row.created_at),
     },
@@ -396,12 +398,17 @@ function intactStagePredicate(attemptId: string): string {
 }
 
 /** SQL predicate matching this attempt's committed receipt. */
-function committedReceiptPredicate(descriptor: CaptureReceiptCommitDescriptor): string {
+function committedReceiptPredicate(
+  descriptor: CaptureReceiptCommitDescriptor,
+  attempt: { entryId: string; episodeId: string },
+): string {
   const quote = (value: string) => `'${value.replace(/'/g, "''")}'`;
   return `EXISTS (SELECT 1 FROM capture_receipts
             WHERE actor_kind = ${quote(descriptor.actorKind)}
               AND actor_id = ${quote(descriptor.actorId)}
               AND key_hash = ${quote(descriptor.keyHash)}
+              AND entry_id = ${quote(attempt.entryId)}
+              AND episode_id = ${quote(attempt.episodeId)}
               AND state = 'committed')`;
 }
 
@@ -435,8 +442,11 @@ export function captureReceiptInsertStatement(
 }
 
 /** Guards a fresh artifact insert on this attempt's committed receipt. */
-export function captureArtifactGuard(descriptor: CaptureReceiptCommitDescriptor): string {
-  return committedReceiptPredicate(descriptor);
+export function captureArtifactGuard(
+  descriptor: CaptureReceiptCommitDescriptor,
+  attempt: { entryId: string; episodeId: string },
+): string {
+  return committedReceiptPredicate(descriptor, attempt);
 }
 
 /**
@@ -524,6 +534,7 @@ export async function loadLegacyCaptureProvenance(
   entryId: string;
   ownerUserId: string;
   revision: number;
+  currentRevision: number;
   episodeId: string;
   mutationId: string | null;
   content: string;
@@ -557,7 +568,10 @@ export async function loadLegacyCaptureProvenance(
   return {
     entryId: row.entry_id,
     ownerUserId: row.owner_user_id,
-    revision: Number(row.revision),
+    // The legacy writer used kind=capture, which only creates a new entry at
+    // revision 1. Later projection edits cannot change that capture revision.
+    revision: 1,
+    currentRevision: Number(row.revision),
     episodeId: row.episode_id,
     mutationId: row.mutation_id,
     content: row.content,
@@ -609,6 +623,7 @@ export interface CommittedCaptureView {
   episodeId: string | null;
   mutationId: string | null;
   revision: number;
+  currentRevision: number;
   vectorIds: string[];
   documentId: string | null;
   sectionIds: string[];
@@ -650,6 +665,7 @@ export async function loadCommittedCaptureView(
     episodeId: receipt.episodeId,
     mutationId: receipt.mutationId,
     revision: receipt.revision ?? Number(entry.revision),
+    currentRevision: Number(entry.revision),
     vectorIds: parseStringArray(entry.vector_ids),
     documentId,
     sectionIds: sections.results.map(({ id }) => id),

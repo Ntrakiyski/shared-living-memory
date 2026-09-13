@@ -193,7 +193,7 @@ describe("canary workflow structure", () => {
     expect(workflow.triggers).toContain("schedule");
     expect(job("production-canary")).toBeTruthy();
     expect(job("staging-canary")).toBeTruthy();
-    expect(job("close-on-recovery")).toBeTruthy();
+    expect(workflow.jobs.some((job) => job.id === "close-on-recovery")).toBe(false);
     // Production every 15 minutes; staging every 6 hours.
     expect(workflow.schedules).toContain("*/15 * * * *");
     expect(workflow.schedules).toContain("0 */6 * * *");
@@ -216,13 +216,14 @@ describe("canary workflow structure", () => {
     expect(source).toMatch(/-z "\$\{?[A-Z_]+/);
   });
 
-  it("requires the canary before an incident may be closed", () => {
-    const closer = job("close-on-recovery");
-    expect(closer.needs).toContain("production-canary");
-    expect(closer.needs).toContain("staging-canary");
-    // `needs` alone is not enough: without a success condition the closer can
-    // still run after a failed dependency.
-    expect(closer.condition ?? "").toMatch(/success\(\)/);
+  it("closes only after success of the stage that actually ran", () => {
+    for (const id of ["production-canary", "staging-canary"]) {
+      const stageJob = job(id);
+      expect(stageJob.needs).toEqual([]);
+      const closer = stepMatching(stageJob, /Close recovered stage/);
+      expect(closer.condition).toBe("success()");
+      expect(stageJob.steps.at(-1)).toBe(closer);
+    }
   });
 
   it("authenticates the monitoring principal and asserts the tool list", () => {
@@ -237,6 +238,19 @@ describe("canary workflow structure", () => {
     // The production canary is read-only: it must never delete or rotate.
     const productionRuns = job("production-canary").steps.map((s) => s.run ?? "").join("\n");
     expect(productionRuns).not.toMatch(/confirm_entry_id|\/forget|rotate-key/);
+  });
+
+  it("requires authenticated binding proof before either staging writer", () => {
+    const stage = job("staging-canary");
+    const preflight = stepMatching(stage, /Verify deployed staging bindings/);
+    expect(preflight.condition).toBeNull();
+    expect(preflight.run).toContain("node scripts/check-staging-bindings.mjs");
+    expect(preflight.run).toContain("umask 077");
+    for (const name of [/Staging semantic canary/, /Staging MCP full lifecycle/]) {
+      expect(stage.steps.indexOf(preflight)).toBeLessThan(stage.steps.indexOf(stepMatching(stage, name)));
+    }
+    expect(source).toContain("SLM_EXPECTED_RELEASE_ID: ${{ vars.SLM_STAGING_RELEASE_ID }}");
+    expect(source).toContain("SLM_MANIFEST_FILE:");
   });
 
   it("records incident metadata without raw responses or keys", () => {
@@ -254,11 +268,30 @@ describe("canary workflow structure", () => {
     }
   });
 
-  it("only ever closes an incident opened by this workflow", () => {
-    const closer = job("close-on-recovery");
-    const close = stepMatching(closer, /close incident/i);
-    const body = close.run ?? "";
-    expect(body).toMatch(/\[Pilot Canary\]/);
-    expect(body).not.toMatch(/secrets\.[A-Z_]+/);
+  it.each(["production", "staging"])("%s recovery leaves the other stage and legacy incidents open", async (stage) => {
+    const closer = stepMatching(job(`${stage}-canary`), /Close recovered stage/);
+    const updates: number[] = [];
+    const issues = [
+      { number: 1, title: "[Pilot Canary][production] Failure" },
+      { number: 2, title: "[Pilot Canary][staging] Failure" },
+      { number: 3, title: "[Pilot Canary] Legacy mixed-stage incident" },
+      { number: 4, title: "Unrelated issue" },
+    ];
+    const github = {
+      paginate: async () => issues,
+      rest: { issues: {
+        listForRepo: () => {},
+        update: async (args: {issue_number: number; state: string}) => {
+          expect(args.state).toBe("closed");
+          updates.push(args.issue_number);
+        },
+      } },
+    };
+    // Execute the workflow's real script against an in-memory GitHub boundary.
+    const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+    await new AsyncFunction("github", "context", "process", closer.run)(
+      github, { repo: { owner: "fixture", repo: "slm" } }, { env: { CANARY_STAGE: stage } },
+    );
+    expect(updates).toEqual(stage === "production" ? [1] : [2]);
   });
 });

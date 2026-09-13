@@ -41,14 +41,15 @@
 			"0 1 * * *"
 		]
 	},
-	"envs": {
+	"env": {
 		"staging": {
 			"name": "shared-living-memory-staging",
+			"secrets": { "required": ["AUTH_TOKEN"] },
 			"d1_databases": [
 				{
 					"binding": "DB",
 					"database_name": "shared-living-memory-staging-db",
-					"database_id": "REPLACE_WITH_STAGING_D1_ID"
+					"database_id": "a8f3a16c-b9e9-4c4f-bfe6-262344d142a0"
 				}
 			],
 			"vectorize": [
@@ -60,7 +61,7 @@
 			"kv_namespaces": [
 				{
 					"binding": "OAUTH_KV",
-					"id": "REPLACE_WITH_STAGING_KV_ID"
+					"id": "de7e0490e13e4e7685969b4c883eb0ef"
 				}
 			],
 			"ai": {
@@ -71,7 +72,7 @@
 				"MCP_OAUTH_ENABLED": "false",
 				"SLM_DEPLOYMENT_ID": "slm-fractals-staging",
 				"SLM_ENVIRONMENT": "staging",
-				"SLM_PUBLIC_BASE_URL": "REPLACE_WITH_STAGING_WORKER_URL",
+				"SLM_PUBLIC_BASE_URL": "https://shared-living-memory-staging.nikolay-trakiyski.workers.dev",
 				"SLM_RELEASE_ID": "REPLACE_WITH_CANDIDATE_SHA",
 				"SLM_WRITE_MODE": "enabled"
 			},

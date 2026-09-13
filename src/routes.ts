@@ -58,9 +58,17 @@ import {
 import {
   mapDomainError,
   okResult,
+  captureServiceBatch,
+  descriptorActor,
+  fitDataPage,
+  serializeCaptureBatch,
+  listingEntry,
+  principalCapabilities,
   readDeploymentMetadata,
 } from "./mcp-results";
 import { readToolProfile, resolveRestActorContext } from "./api-handler";
+import { captureServicePrivateDraft } from "./operator-memory";
+import { verifyServiceActor } from "./service-actor";
 import {
   isMaintenanceReadOnly,
   isReadOnlySafeRequest,
@@ -573,36 +581,21 @@ export const defaultHandler = {
         ).bind(actor.serviceIdentityId).first<{ name: string }>()
         : null;
 
+      const verified = actor.kind === "service" ? await verifyServiceActor(env, actor) : null;
       const data = {
         principal: {
           id: actor.actorId,
           name: actor.kind === "service"
             ? serviceName?.name ?? actor.actorId
             : nameRow?.username ?? ownerUserId,
-          kind: "human" as const,
+          kind: actor.kind,
         },
         credential_type: actor.kind === "service" ? "service_api_key" : "personal_api_key",
         auth_method: actor.authMethod,
         owner: serviceRow ? { id: serviceRow.id, username: serviceRow.username } : null,
         role: actor.kind === "human" ? actor.role : null,
         scopes: actor.kind === "service" ? [...actor.scopes].sort() : [],
-        capabilities: actor.kind === "service"
-          ? {
-            read_public: true,
-            read_owner_private: true,
-            direct_mutation_scope: "private_drafts",
-            proposal_review: "none",
-            erase_owned_entries: false,
-          }
-          : {
-            read_public: true,
-            read_owner_private: true,
-            direct_mutation_scope: "owned_entries",
-            proposal_review: actor.kind === "human" && actor.role === "admin"
-              ? "account_policy"
-              : "none",
-            erase_owned_entries: true,
-          },
+        capabilities: principalCapabilities(verified?.actor ?? actor, verified?.autonomyProfile),
         tool_profile: toolProfile,
         effective_tools: toolsRegisteredForProfile(toolProfile, actor.kind).sort(),
         default_visibility: "private" as const,
@@ -1142,8 +1135,15 @@ export const defaultHandler = {
     // Envelope failures reject the whole request with zero writes; per-item
     // validation failures are reported in place and later items still run.
     if (url.pathname === "/capture/batch" && request.method === "POST") {
-      const { error: authErr, user_id, username } = await requireAuthAsync(request, env);
-      if (authErr) return authErr;
+      const profile = readToolProfile(request);
+      if ("error" in profile) return json({ ok: false, error: { code: "invalid_profile", message: profile.error, retryable: false }, request_id: crypto.randomUUID() }, 400);
+      let actor;
+      try { actor = await resolveRestActorContext(request, env); } catch (error) {
+        const mapped = mapDomainError(error);
+        const invalid = mapped.code === "invalid_credentials";
+        return json({ ok: false, error: { code: invalid ? "invalid_credentials" : "storage_unavailable", message: "Authentication could not be completed.", retryable: !invalid }, request_id: crypto.randomUUID() }, invalid ? 401 : 503);
+      }
+      if (!actor || actor.kind === "system") return json({ ok: false, error: { code: "invalid_credentials", message: "Authenticated account required", retryable: false }, request_id: crypto.randomUUID() }, 401);
 
       const encoder = new TextEncoder();
       const declaredLength = Number(request.headers.get("content-length") ?? "");
@@ -1186,14 +1186,27 @@ export const defaultHandler = {
         throw error;
       }
 
+      if (actor.kind === "service") {
+        const verified = await verifyServiceActor(env, actor);
+        const serviceActor = actor;
+        return json(await captureServiceBatch(env, descriptorActor(verified.actor, verified.autonomyProfile), items,
+          item => captureServicePrivateDraft(env, {
+            actor: serviceActor, content: item.content, tags: item.tags, source: item.source,
+            sourceUrl: item.source_url, title: item.source_title, idempotencyKey: item.idempotency_key,
+          })));
+      }
+      const account = actor;
+      const user = await env.DB.prepare(`SELECT username FROM users WHERE id = ?`).bind(account.userId).first<{ username: string }>();
       const result = await captureEntryBatch(env, {
-        kind: "human",
-        actorId: user_id!,
-        ownerUserId: user_id!,
-        defaultSource: `api:${username ?? user_id}`,
-      }, items);
-
-      return json(okResult(result));
+        kind: "human", actorId: account.actorId, ownerUserId: account.userId,
+        defaultSource: `api:${user?.username ?? account.userId}`,
+      }, items, async () => {
+        const current = await resolveRestActorContext(request, env);
+        if (!current || current.kind !== "human" || current.actorId !== account.actorId) {
+          throw Object.assign(new Error("Credential is no longer active"), { code: "invalid_credentials" });
+        }
+      });
+      return json(await serializeCaptureBatch(env, descriptorActor(account), result));
     }
 
     // POST /append
@@ -1201,10 +1214,11 @@ export const defaultHandler = {
       const { error: authErr, user_id } = await requireAuthAsync(request, env);
       if (authErr) return authErr;
 
-      let body: { id?: string; addition?: string };
+      let body: { id?: string; addition?: string; expected_revision?: number };
       try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
       if (!body.id?.trim()) return json({ ok: false, error: "id is required" }, 400);
       if (!body.addition?.trim()) return json({ ok: false, error: "addition is required" }, 400);
+      if (body.expected_revision !== undefined && (!Number.isSafeInteger(body.expected_revision) || body.expected_revision < 0)) return json({ ok: false, error: "expected_revision must be a nonnegative integer", code: "invalid_request" }, 400);
 
       const id = body.id.trim();
       const addition = body.addition.trim();
@@ -1231,9 +1245,9 @@ export const defaultHandler = {
       }
 
       try {
-        await appendToEntry(env, id, existingContent, addition, tags, source, existingOwnerId || user_id, ctx);
+        await appendToEntry(env, id, existingContent, addition, tags, source, existingOwnerId || user_id, ctx, body.expected_revision);
       } catch (e) {
-        return json({ ok: false, error: `Append failed: ${(e as Error).message}` }, 500);
+        return versionWriteError(e);
       }
 
       return json({
@@ -1248,10 +1262,11 @@ export const defaultHandler = {
       const { error: authErr, user_id } = await requireAuthAsync(request, env);
       if (authErr) return authErr;
 
-      let body: { id?: string; content?: string; source_url?: unknown; source_title?: unknown };
+      let body: { id?: string; content?: string; source_url?: unknown; source_title?: unknown; expected_revision?: number };
       try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
       if (!body.id?.trim()) return json({ ok: false, error: "id is required" }, 400);
       if (!body.content?.trim()) return json({ ok: false, error: "content is required" }, 400);
+      if (body.expected_revision !== undefined && (!Number.isSafeInteger(body.expected_revision) || body.expected_revision < 0)) return json({ ok: false, error: "expected_revision must be a nonnegative integer", code: "invalid_request" }, 400);
       if (body.source_url !== undefined && typeof body.source_url !== "string") {
         return json({ ok: false, error: "source_url must be a string" }, 400);
       }
@@ -1302,7 +1317,7 @@ export const defaultHandler = {
           kind: "update",
           actorUserId: existingOwnerId || user_id!,
           entryId: id,
-          expectedRevision: Number(row.revision ?? 0),
+          expectedRevision: body.expected_revision ?? Number(row.revision ?? 0),
           rawContent: body.content,
           materializedContent: finalContent,
           tags: mergedTags,
@@ -1434,7 +1449,7 @@ export const defaultHandler = {
 
       if (pageRequested) {
         try {
-          pageSize = boundsCheckPageSize(url.searchParams.has("n") ? n : BROWSE_DEFAULT_PAGE_SIZE);
+          pageSize = boundsCheckPageSize(url.searchParams.has("n") ? Number(url.searchParams.get("n")) : BROWSE_DEFAULT_PAGE_SIZE);
           contextHash = await browseContextHash({
             actorKind: "human",
             actorId: user_id!,
@@ -1445,7 +1460,7 @@ export const defaultHandler = {
             user: user ?? null,
             visibility: visibility ?? null,
           });
-          if (cursorToken) cursor = decodeBrowseCursor(cursorToken, contextHash);
+          if (cursorToken !== null) cursor = decodeBrowseCursor(cursorToken, contextHash);
         } catch (error) {
           if (error instanceof InvalidBrowseCursorError) {
             return json({
@@ -1488,18 +1503,21 @@ export const defaultHandler = {
 
       if (!pageRequested) return json(enriched);
 
-      // Emit at most the page size; the cursor comes from the FINAL EMITTED row
-      // and is omitted entirely when no further row exists.
       const { rows, nextCursor } = paginateRows(enriched, pageSize);
-      const next = nextCursor && contextHash
-        ? encodeBrowseCursor({
-          v: BROWSE_CURSOR_VERSION,
-          last_created_at: nextCursor.last_created_at,
-          last_id: nextCursor.last_id,
-          context_hash: contextHash,
-        })
-        : null;
-      return json(okResult({ entries: rows, next_cursor: next }));
+      const excerpts = rows.map(row => listingEntry(row as never, ownerMap[row.owner_user_id] ?? "", {
+        actorId: user_id!, ownerUserId: user_id!, isService: false,
+      }));
+      const data = fitDataPage(excerpts, (emitted, omitted) => {
+        const last = emitted.at(-1);
+        const boundary = omitted && last ? { last_created_at: Number(last.created_at), last_id: last.entry_id } : nextCursor;
+        return {
+          entries: emitted,
+          next_cursor: boundary && contextHash ? encodeBrowseCursor({
+            v: BROWSE_CURSOR_VERSION, ...boundary, context_hash: contextHash,
+          }) : null,
+        };
+      });
+      return json(okResult(data));
     }
 
     // GET /team-activity — recent public entries from all team members

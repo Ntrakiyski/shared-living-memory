@@ -541,7 +541,8 @@ describe("mandatory operator audit", () => {
     const created = await captureServicePrivateDraft(harness.env, { ...request, now: 300 });
     const retried = await captureServicePrivateDraft(harness.env, { ...request, now: 400 });
 
-    expect(retried).toEqual(created);
+    expect(created.outcome).toBe("created");
+    expect(retried).toEqual({ ...created, outcome: "replayed" });
     expect(one<{ count: number }>(harness.db, `SELECT COUNT(*) AS count FROM entries`).count).toBe(1);
     expect(one<{ count: number }>(harness.db, `SELECT COUNT(*) AS count FROM episodes`).count).toBe(1);
     expect(many<{ status: string }>(harness.db, `SELECT status FROM agent_runs`))

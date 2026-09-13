@@ -30,6 +30,7 @@ import {
   captureReceiptInsertStatement,
   captureStageReleaseStatement,
   captureReceiptInserted,
+  captureReceiptError,
   loadCommittedCaptureView,
   reloadCommittedReceipt,
   type CaptureReceiptCommitDescriptor,
@@ -104,6 +105,9 @@ export interface CommitEntryVersionResult {
   episodeId: string;
   mutationId: string;
   revision: number;
+  currentRevision: number;
+  captureOutcome?: "created" | "replayed";
+  warnings?: string[];
   created: boolean;
   snapshotId: string | null;
   documentId: string | null;
@@ -697,30 +701,55 @@ async function recoverLostCaptureRace(
   descriptor: CaptureReceiptCommitDescriptor,
   ownerUserId: string,
   stagedVectorIds: readonly string[],
+  attempted: CommitEntryVersionResult,
 ): Promise<CommitEntryVersionResult | null> {
   let lookup: Awaited<ReturnType<typeof reloadCommittedReceipt>>;
   try {
     lookup = await reloadCommittedReceipt(env, descriptor, ownerUserId);
-  } catch {
+  } catch (cause) {
+    // A failed lookup cannot prove that this attempt rolled back. Its durable
+    // intent, if still present, owns reconciliation once authority is readable.
+    throw new EntryVersionCommitError(cause);
+  }
+  if (lookup.status === "unavailable") throw captureReceiptError(lookup)!;
+  if (lookup.status !== "replayed") {
+    await abandonCaptureAttempt(env, descriptor, stagedVectorIds);
+    const error = captureReceiptError(lookup);
+    if (error) throw error;
     return null;
   }
-  if (lookup.status !== "replayed") return null;
 
-  const view = await loadCommittedCaptureView(env, lookup.descriptor);
-  if (!view) return null;
+  if (lookup.descriptor.entryId === attempted.entryId) {
+    if (lookup.descriptor.episodeId !== attempted.episodeId
+        || lookup.descriptor.mutationId !== attempted.mutationId) {
+      throw new EntryVersionCommitError(new Error("Capture receipt does not match the attempted episode"));
+    }
+    // This attempt committed before the response was lost. Its planned
+    // artifacts are now authoritative and must never enter losing cleanup.
+    return { ...attempted, currentRevision: lookup.descriptor.currentRevision };
+  }
 
   await abandonCaptureAttempt(env, descriptor, stagedVectorIds);
+  let view: Awaited<ReturnType<typeof loadCommittedCaptureView>> = null;
+  try {
+    view = await loadCommittedCaptureView(env, lookup.descriptor);
+  } catch {
+    // The receipt still proves success even if optional metadata cannot load.
+  }
   return {
-    entryId: view.entryId,
-    episodeId: view.episodeId ?? "",
-    mutationId: view.mutationId ?? "",
-    revision: view.revision,
+    entryId: lookup.descriptor.entryId,
+    episodeId: lookup.descriptor.episodeId ?? "",
+    mutationId: lookup.descriptor.mutationId ?? "",
+    revision: lookup.descriptor.revision ?? lookup.descriptor.currentRevision,
+    currentRevision: view?.currentRevision ?? lookup.descriptor.currentRevision,
+    captureOutcome: "replayed",
+    warnings: view ? [] : ["metadata_unavailable: the committed capture metadata is temporarily unavailable"],
     created: true,
     snapshotId: null,
-    documentId: view.documentId,
-    sectionIds: view.sectionIds,
-    passageIds: view.passageIds,
-    vectorIds: view.vectorIds,
+    documentId: view?.documentId ?? null,
+    sectionIds: view?.sectionIds ?? [],
+    passageIds: view?.passageIds ?? [],
+    vectorIds: view?.vectorIds ?? [],
     cleanupQueueId: null,
     cleanupPending: false,
   };
@@ -940,11 +969,14 @@ export async function commitEntryVersion(
     await assertCaptureStageIntact(env, captureReceipt.attemptId);
   }
 
+  const artifactGuard = captureReceipt
+    ? captureArtifactGuard(captureReceipt, { entryId: targetEntryId, episodeId })
+    : "";
   const artifactGuardSuffix = captureReceipt
-    ? ` WHERE ${captureArtifactGuard(captureReceipt)}`
+    ? ` WHERE ${artifactGuard}`
     : "";
   const artifactGuardAnd = captureReceipt
-    ? ` AND ${captureArtifactGuard(captureReceipt)}`
+    ? ` AND ${artifactGuard}`
     : "";
 
   const statements: D1PreparedStatement[] = [];
@@ -1257,6 +1289,22 @@ export async function commitEntryVersion(
     statements.push(captureStageReleaseStatement(env, captureReceipt.attemptId));
   }
 
+  const committedResult: CommitEntryVersionResult = {
+    entryId: targetEntryId,
+    episodeId,
+    mutationId,
+    revision: newRevision,
+    currentRevision: newRevision,
+    ...(captureReceipt ? { captureOutcome: "created" as const } : {}),
+    created,
+    snapshotId,
+    documentId,
+    sectionIds: sections.map(section => section.id),
+    passageIds: passages.map(passage => passage.id),
+    vectorIds: staged.entryVectorIds,
+    cleanupQueueId,
+    cleanupPending: false,
+  };
   let results: D1Result<unknown>[];
   try {
     results = await env.DB.batch(statements);
@@ -1264,13 +1312,13 @@ export async function commitEntryVersion(
     if (captureReceipt) {
       // A concurrent same-key attempt may have won the receipt race. The loser
       // reports the winner's committed capture and cleans only its own work.
-      const winner = await recoverLostCaptureRace(env, captureReceipt, input.actorUserId, staged.allVectorIds);
+      const winner = await recoverLostCaptureRace(
+        env, captureReceipt, input.actorUserId, staged.allVectorIds, committedResult,
+      );
       if (winner) return winner;
+      throw new EntryVersionCommitError(cause);
     }
     const cleanupError = await cleanupStagedVectors(env, staged.allVectorIds);
-    if (captureReceipt) {
-      await abandonCaptureAttempt(env, captureReceipt, staged.allVectorIds);
-    }
     throw new EntryVersionCommitError(cause, cleanupError);
   }
 
@@ -1313,18 +1361,5 @@ export async function commitEntryVersion(
     }
   }
 
-  return {
-    entryId: targetEntryId,
-    episodeId,
-    mutationId,
-    revision: newRevision,
-    created,
-    snapshotId,
-    documentId,
-    sectionIds: sections.map((section) => section.id),
-    passageIds: passages.map((passage) => passage.id),
-    vectorIds: staged.entryVectorIds,
-    cleanupQueueId,
-    cleanupPending,
-  };
+  return { ...committedResult, cleanupPending };
 }

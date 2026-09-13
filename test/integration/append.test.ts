@@ -170,7 +170,7 @@ describe("POST /append", () => {
       ctx,
     );
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ ok: false });
     expect((db.entries[0] as any).content).toBe(LONG_CONTENT);
     expect((db.entries[0] as any).vector_ids).toBe('["last-known-good"]');

@@ -422,7 +422,8 @@ export async function appendToEntry(
   tags: string[],
   source: string,
   ownerUserId?: string,
-  ctx?: ExecutionContext
+  ctx?: ExecutionContext,
+  expectedRevision?: number,
 ): Promise<CommitEntryVersionResult> {
   const row = await env.DB.prepare(
     `SELECT content, tags, source, owner_user_id, revision
@@ -447,7 +448,7 @@ export async function appendToEntry(
     kind: "append",
     actorUserId,
     entryId: id,
-    expectedRevision: Number(row.revision ?? 0),
+    expectedRevision: expectedRevision ?? Number(row.revision ?? 0),
     rawContent: addition,
     materializedContent: newContent,
     tags: authoritativeTags,
@@ -1095,13 +1096,13 @@ export async function captureEntryKeyed(
   );
 
   if (lookup.status === "replayed") {
-    const view = await loadCommittedCaptureView(env, lookup.descriptor);
+    const view = await loadCommittedCaptureView(env, lookup.descriptor).catch(() => null);
     return {
       outcome: "replayed",
       captureMode: CAPTURE_MODE_CREATE_ONLY,
       entryId: lookup.descriptor.entryId,
       episodeId: lookup.descriptor.episodeId,
-      currentRevision: view?.revision ?? lookup.descriptor.revision ?? 0,
+      currentRevision: view?.currentRevision ?? lookup.descriptor.currentRevision,
       committedRevision: lookup.descriptor.revision,
       visibility: normalized.visibility,
       source: input.source ?? actor.defaultSource,
@@ -1137,17 +1138,19 @@ export async function captureEntryKeyed(
     }, env);
 
     return {
-      outcome: "created",
+      outcome: committed.captureOutcome ?? "created",
       captureMode: CAPTURE_MODE_CREATE_ONLY,
       entryId: committed.entryId,
       episodeId: committed.episodeId,
-      currentRevision: committed.revision,
+      currentRevision: committed.currentRevision,
       committedRevision: committed.revision,
       visibility: normalized.visibility,
       source,
-      warnings: committed.cleanupPending
-        ? ["vector_cleanup_pending: stale vectors will be removed by the repair schedule"]
-        : [],
+      warnings: [
+        ...(committed.warnings ?? []),
+        ...(committed.cleanupPending
+          ? ["vector_cleanup_pending: stale vectors will be removed by the repair schedule"] : []),
+      ],
     };
   } catch (error) {
     if (error instanceof CaptureReceiptError) throw error;

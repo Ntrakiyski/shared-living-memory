@@ -325,7 +325,8 @@ describe("safe read boundaries with real SQLite", () => {
       "history",
       { entry_id: "alice-history" },
     );
-    expect(deniedHistory.content[0].text).toBe("No history found for entry alice-history.");
+    expect(deniedHistory.isError).toBe(true);
+    expect(deniedHistory.structuredContent).toMatchObject({ ok: false, error: { code: "not_found_or_inaccessible" } });
 
     const deniedRestore = await defaultHandler.fetch(req("POST", "/restore", {
       body: { entry_id: "alice-history", snapshot_id: "snapshot-historical" },

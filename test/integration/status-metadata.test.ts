@@ -478,12 +478,12 @@ describe("M5: status metadata in MCP history", () => {
     expect(data.counts.episodes.returned).toBe(data.episodes.length);
     expect(data.counts.episodes.total).toBeGreaterThanOrEqual(data.episodes.length);
     expect(typeof data.truncated).toBe("boolean");
-    expect(new TextEncoder().encode(JSON.stringify(data)).byteLength).toBeLessThanOrEqual(16_384);
+    expect(new TextEncoder().encode(JSON.stringify(data)).byteLength).toBeLessThanOrEqual(4_096);
   });
 
   it("returns nothing for an entry the caller does not own", async () => {
     const result = await historyOf(harness, "does-not-exist");
-    expect(result.structuredContent).toBeUndefined();
-    expect(result.content[0].text).toContain("No history found");
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ ok: false, error: { code: "not_found_or_inaccessible" } });
   });
 });

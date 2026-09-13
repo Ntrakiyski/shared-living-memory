@@ -220,6 +220,10 @@ describe("legacy service capture replay", () => {
     expect(replayed.entryId).toBe(legacy.entryId);
     // The receipt points at the ORIGINAL capture episode, not the edit.
     expect(replayed.episodeId).toBe(legacy.episodeId);
+    expect(replayed).toMatchObject({ outcome: "replayed", revision: 1, committedRevision: 1, currentRevision: 2 });
+    expect(harness.db.one<{ revision: number }>(
+      "SELECT revision FROM capture_receipts WHERE entry_id = ?", legacy.entryId,
+    ).revision).toBe(1);
     expect(harness.db.count("entries")).toBe(1);
     expect(harness.db.count("episodes")).toBe(2);
   });
@@ -289,16 +293,25 @@ describe("legacy service capture replay", () => {
     );
 
     expect(created.entryId.startsWith("opdraft:")).toBe(false);
+    expect(created).toMatchObject({ outcome: "created", currentRevision: 1, committedRevision: 1 });
     expect(harness.db.count("entries")).toBe(1);
     expect(harness.db.one<{ state: string }>(
       "SELECT state FROM capture_receipts WHERE entry_id = ?", created.entryId,
     ).state).toBe("committed");
 
+    await commitEntryVersion({
+      kind: "update", actorUserId: "user-owner", entryId: created.entryId,
+      rawContent: "Owner-edited fresh plan", materializedContent: "Owner-edited fresh plan",
+    }, harness.env);
     const retried = await captureServicePrivateDraft(
       harness.env,
       draftRequest("fresh-key", "Fresh private plan"),
     );
     expect(retried.entryId).toBe(created.entryId);
+    expect(retried).toMatchObject({
+      outcome: "replayed", currentRevision: 2, committedRevision: 1,
+      episodeId: created.episodeId, revision: 1,
+    });
     expect(harness.db.count("entries")).toBe(1);
     expect(harness.db.count("capture_receipts")).toBe(1);
   });
@@ -310,6 +323,7 @@ describe("legacy service capture replay", () => {
       captureServicePrivateDraft(harness.env, request),
     ]);
     expect(first.entryId).toBe(second.entryId);
+    expect([first.outcome, second.outcome].sort()).toEqual(["created", "replayed"]);
     expect(harness.db.count("entries")).toBe(1);
     expect(harness.db.count("episodes")).toBe(1);
     expect(harness.db.count("capture_receipts")).toBe(1);

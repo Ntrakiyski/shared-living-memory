@@ -371,6 +371,7 @@ function isReadOnlyStaticOrSession(pathname: string): boolean {
  */
 export function isReadOnlySafeRequest(method: string, pathname: string): boolean {
   if (method === "OPTIONS") return true;
+  if (method === "POST" && pathname === "/chat") return true;
   if (isReadOnlyStaticOrSession(pathname)) return true;
   if (method !== "GET" && method !== "HEAD") return false;
   if (READ_ONLY_SAFE_GET_PATHS.has(pathname)) return true;

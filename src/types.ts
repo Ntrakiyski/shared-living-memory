@@ -9,10 +9,13 @@
 
 // ─── Cloudflare Worker environment bindings ────────────────────────────────────
 // Bindings come from the generated Cloudflare.Env (see `wrangler types`);
-// VECTORIZE_GRACE_MS is widened from its generated literal default so tests
-// and per-deploy vars can override it.
+// Deployment variables are widened from generated environment-specific literals
+// so production overrides and test fixtures retain their runtime validation.
 
-export interface Env extends Omit<Cloudflare.Env, "VECTORIZE_GRACE_MS"> {
+export interface Env extends Omit<Cloudflare.Env,
+  "VECTORIZE_GRACE_MS" | "SLM_DEPLOYMENT_ID" | "SLM_ENVIRONMENT"
+  | "SLM_PUBLIC_BASE_URL" | "SLM_RELEASE_ID" | "SLM_WRITE_MODE"
+> {
   VECTORIZE_GRACE_MS?: string;
   // Deployment metadata. These identify WHERE and WHICH release is running and
   // are surfaced by /health, /ready and whoami. They are configured per deployed

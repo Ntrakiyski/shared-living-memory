@@ -86,20 +86,20 @@ describe("entry descriptor contract", () => {
       read_current: true,
       read_history: true,
       mutate_directly: true,
-      // The owner does not propose to itself; it corrects directly.
-      submit_change_proposal: false,
+      // Owners can submit a proposed change for a designated reviewer.
+      submit_change_proposal: true,
     });
     expect(entryPermissions(owner, "user-bob")).toEqual({
       read_current: true,
       read_history: false,
       mutate_directly: false,
-      submit_change_proposal: true,
+      submit_change_proposal: false,
     });
     // A service never gains history on someone else's entry.
     expect(entryPermissions({ ...owner, isService: true }, "user-bob")).toMatchObject({
       read_history: false,
       mutate_directly: false,
-      submit_change_proposal: true,
+      submit_change_proposal: false,
     });
   });
 
@@ -223,7 +223,7 @@ describe("MCP list_recent structured result (E5)", () => {
     expect(data.next_cursor).toBeTruthy();
 
     const first = data.entries[0];
-    expect(first.entry).toMatchObject({
+    expect(first).toMatchObject({
       entry_id: "entry-011",
       revision: 3,
       owner: { id: "user-alice", username: "alice" },
@@ -234,7 +234,7 @@ describe("MCP list_recent structured result (E5)", () => {
         read_current: true,
         read_history: true,
         mutate_directly: true,
-        submit_change_proposal: false,
+        submit_change_proposal: true,
       },
     });
     expect(first.content_truncated).toBe(false);
@@ -251,7 +251,7 @@ describe("MCP list_recent structured result (E5)", () => {
     do {
       const result = await listRecent(harness, cursor ? { n: 5, cursor } : { n: 5 });
       const data = result.structuredContent.data;
-      seen.push(...data.entries.map((item: any) => item.entry.entry_id));
+      seen.push(...data.entries.map((item: any) => item.entry_id));
       cursor = data.next_cursor;
       pages++;
       expect(pages).toBeLessThan(10);
@@ -292,7 +292,7 @@ describe("MCP list_recent structured result (E5)", () => {
     );
     const result = await listRecent(harness, { n: 1 });
     const item = result.structuredContent.data.entries[0];
-    expect(item.entry.entry_id).toBe("entry-huge");
+    expect(item.entry_id).toBe("entry-huge");
     expect(item.content_truncated).toBe(true);
     expect(utf8Bytes(item.content)).toBeLessThanOrEqual(CONTENT_EXCERPT_MAX_BYTES);
     expect(item.original_content_bytes).toBe(utf8Bytes("😀".repeat(3_000)));

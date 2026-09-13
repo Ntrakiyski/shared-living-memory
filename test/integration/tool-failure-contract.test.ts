@@ -98,7 +98,7 @@ describe("failed tool contract", () => {
     expect(text).not.toContain("no such table");
     expect(text).not.toContain("raw internal detail");
     // A safe code is reported instead.
-    expect(text).toMatch(/Error [a-z_]+:/);
+    expect(result.structuredContent).toMatchObject({ ok: false, error: { code: "storage_unavailable", retryable: true } });
   });
 
   it("maps an unknown failure to a retryable storage_unavailable rather than leaking it", () => {

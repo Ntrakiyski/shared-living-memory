@@ -47,12 +47,11 @@ import {
   EntryVersionError,
   loadOwnedRestoreSnapshot,
 } from "./entry-version-service";
-import { recallEntries, renderRecallText } from "./recall";
-import type { RecallMatch } from "./recall";
+import { recallEntries } from "./recall";
 import { reinforceOwnedEntry } from "./reinforcement";
 import { applyStatus } from "./lifecycle";
 import { eraseEntryArtifacts } from "./erasure";
-import { buildEntryFilterQuery, getStatus, withKind, withStatus, buildVisibilityClause } from "./tags";
+import { buildVisibilityClause } from "./tags";
 import { createEdge, deleteEdge, getConnections, EDGE_TYPES, isValidEdgeType, edgeLabel } from "./graph";
 import { EPISTEMIC_STATUS_VALUES, isValidTransition, VALID_EPISTEMIC_TRANSITIONS, type EpistemicStatus } from "./types";
 import { isManagedMirror, mirrorEditError } from "./integrations-mirror";
@@ -73,7 +72,6 @@ import {
 } from "./config";
 import {
   BROWSE_CURSOR_VERSION,
-  boundsCheckPageSize,
   browseContextHash,
   buildEntryPageQuery,
   decodeBrowseCursor,
@@ -82,12 +80,18 @@ import {
 } from "./tags";
 import {
   boundContentExcerpt,
-  buildEntryDescriptor,
+  captureResult,
+  captureServiceBatch,
+  descriptorActor,
+  fitDataPage,
+  loadEntryDescriptor,
+  listingEntry,
+  principalCapabilities,
+  serializeCaptureBatch,
+  toToolSuccess,
   failResult,
-  fitWithinBudget,
   mapDomainError,
   okResult,
-  pageCounts,
   readDeploymentMetadata,
   toToolError,
 } from "./mcp-results";
@@ -258,12 +262,6 @@ async function loadOwnedMcpHistory(
   return { projection, episodes, snapshots, episodeTotal, snapshotTotal };
 }
 
-/** The owner of a recall match, when the retrieval row carries it. */
-function entryOwner(match: unknown): string {
-  const value = (match as Record<string, unknown>)?.owner_user_id;
-  return typeof value === "string" ? value : "";
-}
-
 /**
  * Status metadata attached to an episode. Permissioned memory content, so it is
  * bounded and its truncation is explicit; a pre-release episode has none.
@@ -292,7 +290,7 @@ function boundStatusChange(raw: unknown): Record<string, unknown> | null {
   };
 }
 
-function renderBoundedMcpHistory(history: LoadedMcpHistory): string {
+function boundedMcpHistory(history: LoadedMcpHistory): McpHistoryPayload {
   let projection = { ...history.projection };
   let episodes = [...history.episodes];
   let snapshots = [...history.snapshots];
@@ -327,7 +325,7 @@ function renderBoundedMcpHistory(history: LoadedMcpHistory): string {
     const rendered = compactSerialization
       ? JSON.stringify(payload)
       : JSON.stringify(payload, null, 2);
-    if (encoder.encode(rendered).byteLength <= MCP_HISTORY_MAX_BYTES) return rendered;
+    if (encoder.encode(rendered).byteLength <= MCP_HISTORY_MAX_BYTES) return payload;
 
     const canDropEpisode = episodes.length > 1;
     const canDropSnapshot = snapshots.length > 1;
@@ -374,7 +372,7 @@ function renderBoundedMcpHistory(history: LoadedMcpHistory): string {
       // contract. UUID-sized identifiers keep this terminal form far below
       // the byte ceiling even when every optional field was pathological.
       const terminal = JSON.stringify(payload);
-      if (encoder.encode(terminal).byteLength <= MCP_HISTORY_MAX_BYTES) return terminal;
+      if (encoder.encode(terminal).byteLength <= MCP_HISTORY_MAX_BYTES) return payload;
       throw new Error("MCP history stable identifiers exceed the 4 KiB response limit");
     }
 
@@ -402,6 +400,17 @@ function renderBoundedMcpHistory(history: LoadedMcpHistory): string {
       else snapshots.pop();
     }
   }
+}
+
+function historyToolResult(history: LoadedMcpHistory | null) {
+  if (!history) return toToolError(failResult("not_found_or_inaccessible", "No history is available to this account.", false));
+  const data = boundedMcpHistory(history);
+  return toToolSuccess(okResult(data), JSON.stringify(data));
+}
+
+function domainToolError(error: unknown) {
+  const mapped = mapDomainError(error);
+  return toToolError(failResult(mapped.code, mapped.message, mapped.retryable, mapped.details));
 }
 
 export function buildMcpServer(
@@ -510,29 +519,14 @@ export function buildMcpServer(
         ).bind(actor.serviceIdentityId).first<{ name: string }>()
         : null;
 
-      const capabilities = actor.kind === "service"
-        ? {
-          read_public: true,
-          read_owner_private: true,
-          direct_mutation_scope: "private_drafts",
-          proposal_review: "none",
-          erase_owned_entries: false,
-        }
-        : {
-          read_public: true,
-          read_owner_private: true,
-          direct_mutation_scope: "owned_entries",
-          proposal_review: actor.kind === "human" && actor.role === "admin"
-            ? "account_policy"
-            : "none",
-          erase_owned_entries: true,
-        };
+      const verified = actor.kind === "service" ? await verifyServiceActor(env, actor) : null;
+      const capabilities = principalCapabilities(verified?.actor ?? actor, verified?.autonomyProfile);
 
       const data = {
         principal: {
           id: actor.actorId,
           name: actor.kind === "service" ? serviceName?.name ?? actor.actorId : name,
-          kind: "human" as const,
+          kind: actor.kind,
         },
         credential_type: actor.kind === "service" ? "service_api_key" : "personal_api_key",
         auth_method: actor.authMethod,
@@ -568,8 +562,7 @@ export function buildMcpServer(
       try {
         return await handler(input);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Governed operator request failed.";
-        return { isError: true, content: [{ type: "text" as const, text: `Error: ${message}` }] };
+        return domainToolError(error);
       }
     };
 
@@ -605,18 +598,22 @@ export function buildMcpServer(
           content: z.string().describe("Content to capture as a private draft candidate"),
           tags: z.array(z.string()).optional(),
           source: z.string().optional(),
+          source_url: z.string().optional(),
+          source_title: z.string().optional(),
           idempotency_key: z.string().optional().describe("Stable retry key"),
         },
       },
-      safe(async ({ content, tags, source, idempotency_key }) => {
+      safe(async ({ content, tags, source, source_url, source_title, idempotency_key }) => {
         const result = await captureServicePrivateDraft(env, {
           actor: serviceActor,
           content,
           tags,
-          source,
+          source, sourceUrl: source_url, title: source_title,
           idempotencyKey: idempotency_key,
         });
-        return { content: [{ type: "text", text: `Stored private draft candidate ${result.entryId} at revision ${result.revision}.` }] };
+        const verified = await verifyServiceActor(env, serviceActor).catch(() => null);
+        const envelope = await captureResult(env, descriptorActor(verified?.actor ?? serviceActor, verified?.autonomyProfile), result);
+        return toToolSuccess(envelope, `${result.outcome === "replayed" ? "Replayed" : "Stored"} private draft candidate ${result.entryId}.`);
       }),
     );
 
@@ -635,6 +632,9 @@ export function buildMcpServer(
             content: z.string(),
             tags: z.array(z.string()).optional(),
             source: z.string().optional(),
+            source_url: z.string().optional(),
+            source_title: z.string().optional(),
+            visibility: z.enum(["private", "public"]).optional(),
           }).passthrough()).describe("Ordered items, 1-10"),
         },
       },
@@ -651,49 +651,14 @@ export function buildMcpServer(
           };
         }
 
-        const results: Record<string, unknown>[] = [];
-        let created = 0;
-        let failed = 0;
-        for (const item of items) {
-          try {
-            const committed = await captureServicePrivateDraft(env, {
-              actor: serviceActor,
-              content: item.content,
-              tags: item.tags,
-              source: item.source,
-              idempotencyKey: item.idempotency_key,
-            });
-            created++;
-            results.push({
-              client_item_id: item.client_item_id,
-              status: "created",
-              data: {
-                outcome: "created",
-                capture_mode: "create-only",
-                entry_id: committed.entryId,
-                episode_id: committed.episodeId,
-                current_revision: committed.revision,
-              },
-            });
-          } catch (error) {
-            failed++;
-            const mapped = mapDomainError(error);
-            results.push({
-              client_item_id: item.client_item_id,
-              status: "failed",
-              error: { code: mapped.code, message: mapped.message, retryable: mapped.retryable },
-            });
-          }
-        }
-
-        const envelope = okResult({ items: results, summary: { created, replayed: 0, failed } });
-        return {
-          structuredContent: envelope as unknown as Record<string, unknown>,
-          content: [{
-            type: "text" as const,
-            text: `Batch processed: ${created} created, 0 replayed, ${failed} failed.`,
-          }],
-        };
+        const verified = await verifyServiceActor(env, serviceActor);
+        const envelope = await captureServiceBatch(env, descriptorActor(verified.actor, verified.autonomyProfile), items,
+          item => captureServicePrivateDraft(env, {
+            actor: serviceActor, content: item.content, tags: item.tags, source: item.source,
+            sourceUrl: item.source_url, title: item.source_title, idempotencyKey: item.idempotency_key,
+          }));
+        const { created, replayed, failed } = envelope.data.summary;
+        return toToolSuccess(envelope, `Batch processed: ${created} created, ${replayed} replayed, ${failed} failed.`);
       }),
     );
 
@@ -711,26 +676,15 @@ export function buildMcpServer(
           hops: z.number().int().min(0).max(3).default(0),
           as_of: z.number().int().optional(),
           known_at: z.number().int().optional(),
+          include_insight: z.boolean().default(true),
         },
       },
-      safe(async ({ query, topK, tag, after, before, kind, hops, as_of, known_at }) => {
-        const result = await governedRead(
-          "memory.read",
-          { queryLength: query.length, topK, hasTag: Boolean(tag), hops, temporal: as_of != null || known_at != null },
-          () => recallEntries({
-            query, topK, tag, after, before,
-            kind: kind as MemoryKind | undefined,
-            hops, userId, asOf: as_of, knownAt: known_at,
-          }, env, ctx),
-          (value) => ({ matchCount: value.matches.length, semanticUnavailable: value.semanticUnavailable }),
+      safe(async ({ query, topK, tag, after, before, kind, hops, as_of, known_at, include_insight }) => {
+        return governedRead(
+          "memory.read", { queryLength: query.length, topK, hops },
+          () => readRecallTool({ query, topK, tag, after, before, kind, hops, as_of, known_at, include_insight }),
+          value => ({ matchCount: value.structuredContent ? (value.structuredContent as any).data.matches.length : 0 }),
         );
-        const notice = result.semanticUnavailable
-          ? `Semantic search unavailable; keyword results only. ${VECTORIZE_FIX_HINT}\n\n`
-          : "";
-        const text = result.matches.length
-          ? renderRecallText(result.matches, result.insight, userId)
-          : "Nothing found matching that query.";
-        return { content: [{ type: "text", text: notice + text }] };
       }),
     );
 
@@ -743,23 +697,12 @@ export function buildMcpServer(
           tag: z.string().optional(),
           after: z.number().int().optional(),
           before: z.number().int().optional(),
+          cursor: z.string().optional(),
         },
       },
-      safe(async ({ n, tag, after, before }) => {
-        const rows = await governedRead(
-          "memory.read",
-          { limit: n, hasTag: Boolean(tag), temporal: after != null || before != null },
-          async () => {
-            const { sql, bindings } = buildEntryFilterQuery({ n, tag, after, before, userId });
-            const { results } = await env.DB.prepare(sql).bind(...bindings).all();
-            return results as Record<string, any>[];
-          },
-          (value) => ({ resultCount: value.length }),
-        );
-        const text = rows.length
-          ? rows.map((row, index) => `${index + 1}. ID: ${row.id}\n${row.content}`).join("\n\n")
-          : "No entries found.";
-        return { content: [{ type: "text", text }] };
+      safe(async ({ n, tag, after, before, cursor }) => {
+        return governedRead("memory.read", { limit: n, hasTag: Boolean(tag) },
+          () => readRecentTool({ n, tag, after, before, cursor }), () => ({}));
       }),
     );
 
@@ -807,12 +750,7 @@ export function buildMcpServer(
           }),
           [entry_id],
         );
-        return {
-          content: [{
-            type: "text",
-            text: history ? renderBoundedMcpHistory(history) : `No history found for entry ${entry_id}.`,
-          }],
-        };
+        return historyToolResult(history);
       }),
     );
 
@@ -837,8 +775,8 @@ export function buildMcpServer(
       },
       safe(async ({ action_type, payload_json, target_ids, expected_revision, visibility_scope, risk_level, reason, idempotency_key, expires_at, reviewer_username }) => {
         let payload: unknown;
-        try { payload = JSON.parse(payload_json); } catch { throw new Error("payload_json must be valid JSON."); }
-        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("payload_json must contain a JSON object.");
+        try { payload = JSON.parse(payload_json); } catch { throw Object.assign(new Error("payload_json must be valid JSON."), { code: "invalid_request" }); }
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw Object.assign(new Error("payload_json must contain a JSON object."), { code: "invalid_request" });
         const proposal = await createActionProposal(env, {
           actor: serviceActor,
           actionType: action_type as ActionType,
@@ -925,10 +863,7 @@ export function buildMcpServer(
         // code — never a raw SQL or internal exception message (Sections 4.1, 9.3).
         const mapped = mapDomainError(e);
         error = mapped.code;
-        result = {
-          isError: true,
-          content: [{ type: "text", text: `Error ${mapped.code}: ${mapped.message}` }],
-        };
+        result = toToolError(failResult(mapped.code, mapped.message, mapped.retryable, mapped.details));
       }
       const durationMs = Date.now() - t0;
       // Audit shape and outcome only. Tool arguments/results routinely contain
@@ -974,16 +909,12 @@ export function buildMcpServer(
             visibility,
             idempotencyKey: idempotency_key,
           });
+          const envelope = await captureResult(env, descriptorActor(actor), keyed);
           const label = keyed.outcome === "replayed" ? "Replayed existing capture" : "Stored";
-          return {
-            content: [{
-              type: "text" as const,
-              text: `${label}. ID: ${keyed.entryId} (revision ${keyed.currentRevision}, capture mode: ${keyed.captureMode}, visibility: ${keyed.visibility}).`,
-            }],
-          };
+          return toToolSuccess(envelope, `${label}. ID: ${keyed.entryId} (revision ${envelope.data.entry?.revision ?? "unavailable"}, capture mode: create_only).`);
         } catch (error) {
           const mapped = mapDomainError(error);
-          return { isError: true, content: [{ type: "text" as const, text: `Not stored: ${mapped.code}. ${mapped.message}` }] };
+          return domainToolError(error);
         }
       }
       let result;
@@ -1007,28 +938,22 @@ export function buildMcpServer(
         if (error.code === "secret_detected") {
           console.warn("capture rejected", { detector: error.detector, actor_id: userId });
         }
-        return { isError: true, content: [{ type: "text" as const, text: `Not stored: ${error.code}.` }] };
+        return domainToolError(error);
       }
-      if (result.status === "blocked") {
-        return { content: [{ type: "text", text: `Duplicate detected (${(result.score * 100).toFixed(0)}% match) — not stored. Existing entry ID: ${result.matchId}` }] };
-      }
-      const visibilityText = ` (visibility: ${result.visibility})`;
-      if (result.status === "contradiction") {
-        return { content: [{ type: "text", text: `Stored. ID: ${result.id}${visibilityText} — resolved contradiction with entry ${result.resolvedConflict}${result.reason ? `: ${result.reason}` : ""}.` }] };
-      }
-      if (result.status === "contradiction_protected") {
-        return { content: [{ type: "text", text: `Stored as draft (ID: ${result.id}, visibility: ${result.visibility}) — conflicts with a canonical memory (${result.canonicalId}), which was kept${result.reason ? `: ${result.reason}` : ""}.` }] };
-      }
-      if (result.status === "replaced") {
-        return { content: [{ type: "text", text: `Memory updated — new content replaced outdated entry (ID: ${result.id}, visibility: ${result.visibility}).` }] };
-      }
-      if (result.status === "merged") {
-        return { content: [{ type: "text", text: `Memories merged — combined into existing entry (ID: ${result.id}, visibility: ${result.visibility}).` }] };
-      }
-      if (result.status === "flagged") {
-        return { content: [{ type: "text", text: `Stored with ID: ${result.id}${visibilityText} — note: similar entry exists (${(result.score * 100).toFixed(0)}% match, ID: ${result.matchId}). Tagged as duplicate-candidate.` }] };
-      }
-      return { content: [{ type: "text", text: `Stored. ID: ${result.id}${visibilityText}` }] };
+      const outcome = result.status === "blocked" ? "duplicate"
+        : result.status === "merged" ? "merged" : result.status === "replaced" ? "replaced" : "created";
+      const warnings: string[] = [];
+      const id = result.status === "blocked" ? result.matchId : result.id;
+      let entry = null;
+      try { entry = await loadEntryDescriptor(env, id, descriptorActor(actor)); } catch { /* Capture already committed. */ }
+      if (!entry) warnings.push("metadata_unavailable: current entry metadata is unavailable");
+      if ("crossUserNote" in result && result.crossUserNote) warnings.push(result.crossUserNote);
+      if (result.status === "flagged") warnings.push("similar_memory: stored as a separate duplicate candidate");
+      if (result.status === "contradiction" || result.status === "contradiction_protected") warnings.push("conflict_draft: conflicting memory was kept separately");
+      return toToolSuccess(okResult({
+        outcome, capture_mode: "smart", entry: outcome === "duplicate" ? null : entry,
+        receipt: null, matched_entry: outcome === "duplicate" ? entry : null,
+      }, warnings), `${outcome === "duplicate" ? "Duplicate detected; not stored" : "Stored"}. ID: ${id}.`);
     })
   );
 
@@ -1069,13 +994,13 @@ export function buildMcpServer(
         ownerUserId: userId,
         defaultSource: `mcp:${await resolveOwnerUsername()}`,
       }, items);
-      const envelope = okResult(result);
+      const envelope = await serializeCaptureBatch(env, descriptorActor(actor), result);
 
-      const lines = result.items.map((item) => {
+      const lines = envelope.data.items.map((item) => {
         if (item.status === "failed") {
           return `- ${item.client_item_id}: failed (${item.error?.code ?? "storage_unavailable"})`;
         }
-        return `- ${item.client_item_id}: ${item.status} (entry ${item.data?.entry_id}, revision ${item.data?.current_revision})`;
+        return `- ${item.client_item_id}: ${item.status} (entry ${item.data?.receipt?.entry_id}, revision ${item.data?.entry?.revision ?? "unavailable"})`;
       });
       return {
         structuredContent: envelope as unknown as Record<string, unknown>,
@@ -1098,11 +1023,12 @@ export function buildMcpServer(
       inputSchema: {
         id: z.string().describe("Entry ID to append to — from recall or list_recent"),
         addition: z.string().describe("The new information to add to the existing entry"),
+        expected_revision: z.number().int().min(0).optional().describe("Revision you read; omit to retain the internal compare-and-swap guard."),
       },
     },
-    audited("append", async ({ id, addition }) => {
+    audited("append", async ({ id, addition, expected_revision }) => {
       const row = await env.DB.prepare(
-        `SELECT id, content, tags, source, owner_user_id FROM entries WHERE id = ?`
+        `SELECT id, content, tags, source, owner_user_id, visibility FROM entries WHERE id = ?`
       ).bind(id).first() as Record<string, any> | null;
 
       if (!row) {
@@ -1112,7 +1038,7 @@ export function buildMcpServer(
       }
 
       if (userId && row.owner_user_id && row.owner_user_id !== userId && row.owner_user_id !== "") {
-        return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
+        return domainToolError({ code: row?.visibility === "public" ? "not_owner" : "not_found_or_inaccessible" });
       }
 
       const existingContent = row.content as string;
@@ -1121,18 +1047,16 @@ export function buildMcpServer(
       const a = addition.trim();
 
       if (!a) {
-        return {
-          content: [{ type: "text", text: "Addition cannot be empty." }],
-        };
+        return domainToolError({ code: "invalid_request" });
       }
 
       if (await isManagedMirror(id, source, userId, env)) {
-        return { content: [{ type: "text", text: mirrorEditError(source) }] };
+        return domainToolError({ code: "forbidden" });
       }
 
       let appended;
       try {
-        appended = await appendToEntry(env, id, existingContent, a, tags, source, userId, ctx);
+        appended = await appendToEntry(env, id, existingContent, a, tags, source, userId, ctx, expected_revision);
       } catch (e) {
         console.error("Append failed:", e);
         const mapped = mapDomainError(e);
@@ -1163,30 +1087,31 @@ export function buildMcpServer(
       inputSchema: {
         id: z.string().describe("Entry ID to update — from recall or list_recent"),
         content: z.string().describe("The new content to replace the existing entry with"),
+        expected_revision: z.number().int().min(0).optional().describe("Revision you read; stale replacements are never retried automatically."),
       },
     },
-    audited("update", async ({ id, content }) => {
+    audited("update", async ({ id, content, expected_revision }) => {
       const newContent = content.trim();
       if (!newContent) {
-        return { content: [{ type: "text", text: "Content cannot be empty." }] };
+        return domainToolError({ code: "invalid_request" });
       }
 
       const row = await env.DB.prepare(
-        `SELECT content, tags, source, owner_user_id, revision,
+        `SELECT content, tags, source, owner_user_id, visibility, revision,
                 valid_from, valid_to, epistemic_status
          FROM entries WHERE id = ?`
       ).bind(id).first() as Record<string, any> | null;
 
       if (!row) {
-        return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
+        return domainToolError({ code: "not_found_or_inaccessible" });
       }
 
       if (userId && row.owner_user_id && row.owner_user_id !== userId && row.owner_user_id !== "") {
-        return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
+        return domainToolError({ code: row.visibility === "public" ? "not_owner" : "not_found_or_inaccessible" });
       }
 
       if (await isManagedMirror(id, row.source as string, userId, env)) {
-        return { content: [{ type: "text", text: mirrorEditError(row.source as string) }] };
+        return domainToolError({ code: "forbidden" });
       }
 
       const tags: string[] = JSON.parse(row.tags ?? "[]").filter((t: string) => t !== "rolled-up");
@@ -1198,7 +1123,7 @@ export function buildMcpServer(
           kind: "update",
           actorUserId: existingOwnerId || userId,
           entryId: id,
-          expectedRevision: Number(row.revision ?? 0),
+          expectedRevision: expected_revision ?? Number(row.revision ?? 0),
           rawContent: content,
           materializedContent: newContent,
           tags,
@@ -1219,7 +1144,7 @@ export function buildMcpServer(
         };
       } catch (e) {
         console.error("Versioned MCP update failed:", e);
-        return { isError: true, content: [{ type: "text", text: versionErrorText(e) }] };
+        return domainToolError(e);
       }
     })
   );
@@ -1238,9 +1163,9 @@ export function buildMcpServer(
     },
     audited("set_status", async ({ id, status, reason, expected_revision }) => {
       if (userId) {
-        const row = await env.DB.prepare(`SELECT owner_user_id FROM entries WHERE id = ?`).bind(id).first() as { owner_user_id: string } | null;
+        const row = await env.DB.prepare(`SELECT owner_user_id, visibility FROM entries WHERE id = ?`).bind(id).first() as { owner_user_id: string; visibility: string } | null;
         if (row && row.owner_user_id && row.owner_user_id !== userId && row.owner_user_id !== "") {
-          return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
+          return domainToolError({ code: row.visibility === "public" ? "not_owner" : "not_found_or_inaccessible" });
         }
       }
       let committedVersion: Awaited<ReturnType<typeof applyStatus>>;
@@ -1253,11 +1178,11 @@ export function buildMcpServer(
       } catch (error) {
         const mapped = mapDomainError(error);
         if (mapped.code !== "storage_unavailable") {
-          return { isError: true, content: [{ type: "text", text: `Not changed: ${mapped.code}. ${mapped.message}` }] };
+          return toToolError(failResult(mapped.code, mapped.message, mapped.retryable, mapped.details));
         }
         throw error;
       }
-      if (!committedVersion) return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
+      if (!committedVersion) return domainToolError({ code: "not_found_or_inaccessible" });
       const envelope = okResult({
         entry_id: committedVersion.entryId,
         episode_id: committedVersion.episodeId,
@@ -1285,13 +1210,13 @@ export function buildMcpServer(
     },
     audited("set_epistemic_status", async ({ entry_id, new_status, reason, expected_revision }) => {
       const entry = await env.DB.prepare(
-        `SELECT content, tags, source, owner_user_id, revision,
+        `SELECT content, tags, source, owner_user_id, visibility, revision,
                 valid_from, valid_to, epistemic_status
          FROM entries WHERE id = ?`,
       ).bind(entry_id).first() as Record<string, any> | null;
-      if (!entry) return { content: [{ type: "text", text: `No entry found with ID: ${entry_id}` }] };
+      if (!entry) return domainToolError({ code: "not_found_or_inaccessible" });
       if (entry.owner_user_id !== userId) {
-        return { content: [{ type: "text", text: `No entry found with ID: ${entry_id}` }] };
+        return domainToolError({ code: entry.visibility === "public" ? "not_owner" : "not_found_or_inaccessible" });
       }
       const currentStatus = (entry.epistemic_status ?? "canonical") as EpistemicStatus;
       if (expected_revision !== undefined && expected_revision !== Number(entry.revision ?? 0)) {
@@ -1299,24 +1224,18 @@ export function buildMcpServer(
           code: "revision_conflict",
           details: { expected_revision, actual_revision: Number(entry.revision ?? 0) },
         });
-        return { isError: true, content: [{ type: "text", text: `Not changed: ${mapped.code}. ${mapped.message}` }] };
+        return toToolError(failResult(mapped.code, mapped.message, mapped.retryable, mapped.details));
       }
       if (!isValidTransition(currentStatus, new_status as EpistemicStatus)) {
         const validNext = VALID_EPISTEMIC_TRANSITIONS[currentStatus] ?? [];
-        return {
-          isError: true,
-          content: [{
-            type: "text",
-            text: `Invalid transition: ${currentStatus} → ${new_status}. Valid next states: ${validNext.length ? validNext.join(", ") : "(none — terminal state)"}`,
-          }],
-        };
+        return toToolError(failResult("invalid_transition", "That status change is not allowed.", false, { allowed_next_states: validNext }));
       }
       let normalizedReason: string | null;
       try {
         normalizedReason = normalizeStatusReason(reason);
       } catch (error) {
         const mapped = mapDomainError(error);
-        return { isError: true, content: [{ type: "text", text: `Not changed: ${mapped.code}. ${mapped.message}` }] };
+        return toToolError(failResult(mapped.code, mapped.message, mapped.retryable, mapped.details));
       }
       try {
         const committed = await commitEntryVersion({
@@ -1351,7 +1270,7 @@ export function buildMcpServer(
           content: [{ type: "text" as const, text: `Entry ${entry_id} transitioned: ${currentStatus} → ${new_status} (revision ${committed.revision}).` }],
         };
       } catch (error) {
-        return { isError: true, content: [{ type: "text", text: versionErrorText(error) }] };
+        return domainToolError(error);
       }
     })
   );
@@ -1374,8 +1293,12 @@ export function buildMcpServer(
         include_insight: z.boolean().default(true).describe("Set false to skip insight generation and return raw ranked retrieval only."),
       },
     },
-    audited("recall", async ({ query, topK, tag, after, before, kind, hops, as_of, known_at, include_insight }) => {
-      const { matches, insight, semanticUnavailable, proposed_edges } = await recallEntries({
+    audited("recall", readRecallTool)
+  );
+
+  async function readRecallTool(input: Record<string, any>) {
+    const { query, topK, tag, after, before, kind, hops, as_of, known_at, include_insight = true } = input;
+      const { matches, insight, semanticUnavailable } = await recallEntries({
         query, topK, tag, after, before,
         kind: kind as MemoryKind | undefined,
         hops, userId, asOf: as_of, knownAt: known_at,
@@ -1388,65 +1311,44 @@ export function buildMcpServer(
         ? `Note: dense retrieval was unavailable for this query, so these are keyword matches only. Fix: ${VECTORIZE_FIX_HINT}.\n\n`
         : "";
 
-      // Structured matches carry the EntryDescriptor, bounded current text and
-      // the existing score/hop semantics. Nothing else is added.
-      const ownerIds = [...new Set(matches.map((match) => entryOwner(match)).filter(Boolean))];
-      const ownerMap: Record<string, string> = {};
-      if (ownerIds.length) {
-        const placeholders = ownerIds.map(() => "?").join(",");
-        const { results: owners } = await env.DB.prepare(
-          `SELECT id, username FROM users WHERE id IN (${placeholders})`,
-        ).bind(...ownerIds).all<{ id: string; username: string }>();
-        for (const owner of owners) ownerMap[owner.id] = owner.username;
+      const descriptor = actor.kind === "service"
+        ? await verifyServiceActor(env, actor).then(v => descriptorActor(v.actor, v.autonomyProfile))
+        : descriptorActor(actor);
+      const structuredMatches = [];
+      const warnings: string[] = [];
+      for (const match of matches) {
+        const entry = await loadEntryDescriptor(env, match.id, descriptor);
+        if (!entry) {
+          warnings.push("metadata_unavailable: a retrieved entry is no longer accessible");
+          continue;
+        }
+        const context = entry.owner.id === userId ? "owner_mcp" : "team_public";
+        const source = sanitizeSourceMetadataForOutput({ source: match.source }, context).source;
+        const citations = (match.passages ?? []).map(passage => {
+          const safe = sanitizeSourceMetadataForOutput({ sourceUrl: passage.sourceUrl, sourceTitle: passage.documentTitle }, context);
+          return {
+            ...passage, ...boundContentExcerpt(passage.content),
+            sourceUrl: safe.sourceUrl, documentTitle: safe.sourceTitle,
+            section: sanitizeBoundedMetadataForOutput(passage.section, 256),
+          };
+        });
+        structuredMatches.push({
+          entry, ...boundContentExcerpt(match.content), score: match.score, hop: match.hop,
+          source, citations, content_revision: match.revision ?? entry.revision,
+          content_state: match.revision !== undefined && match.revision !== entry.revision ? "historical" : "current",
+        });
       }
-      const actorDescriptor = { actorId: actor.actorId, ownerUserId: userId, isService: false };
-      const structuredMatches = matches.map((match) => {
-        const descriptorRow = match as unknown as Record<string, unknown>;
-        const excerpt = boundContentExcerpt(String(match.content ?? ""));
-        return {
-          entry: buildEntryDescriptor({
-            id: match.id,
-            revision: typeof descriptorRow.revision === "number" ? descriptorRow.revision : null,
-            owner_user_id: String(descriptorRow.owner_user_id ?? ""),
-            visibility: typeof descriptorRow.visibility === "string" ? descriptorRow.visibility : null,
-            tags: JSON.stringify(match.tags ?? []),
-            epistemic_status: match.epistemicStatus ?? null,
-          }, ownerMap[String(descriptorRow.owner_user_id ?? "")] ?? "", actorDescriptor),
-          ...excerpt,
-          score: match.score,
-          hop: match.hop,
-          source: match.source,
-          citations: match.passages ?? [],
-        };
-      });
-
-      const boundedMatches = fitWithinBudget(structuredMatches);
-      const envelope = okResult({
-        matches: boundedMatches.items,
-        insight: include_insight ? (insight || null) : null,
+      const data = fitDataPage(structuredMatches, (rows, omitted) => ({
+        matches: rows,
+        insight: include_insight && !omitted && insight ? boundContentExcerpt(insight, 8192).content : null,
         semantic_available: !semanticUnavailable,
         retrieval_mode: retrievalMode,
-      });
-
-      if (!matches.length) {
-        return {
-          structuredContent: envelope as unknown as Record<string, unknown>,
-          content: [{ type: "text" as const, text: notice + "Nothing found matching that query." }],
-        };
-      }
-
-      let text = notice + renderRecallText(matches, insight, userId);
-      if (proposed_edges.length) {
-        text += `\n\n⚠️ **Contradictions detected** (${proposed_edges.length}):\n` +
-          proposed_edges.map(pe => `  • ${pe.source_id} vs ${pe.target_id} — ${pe.reason}`).join("\n") +
-          `\n\nUse \`list-proposals\` to review, or \`approve-proposal\` / \`reject-proposal\` to act.`;
-      }
-      return {
-        structuredContent: envelope as unknown as Record<string, unknown>,
-        content: [{ type: "text" as const, text }],
-      };
-    })
-  );
+      }));
+      const text = data.matches.length ? data.matches.map(match =>
+        `ID: ${match.entry.entry_id} (current revision ${match.entry.revision}, ${match.content_state} content revision ${match.content_revision})\n${match.content}${match.citations.length ? `\nEvidence: ${JSON.stringify(match.citations)}` : ""}`,
+      ).join("\n\n") + (data.insight ? `\n\n${data.insight}` : "") : "Nothing found matching that query.";
+      return toToolSuccess(okResult(data, [...new Set(warnings)]), notice + text);
+  }
 
   // ── reinforce ────────────────────────────────────────────────────────────
   // Explicit human retention signal. Service actors return before this block,
@@ -1488,7 +1390,11 @@ export function buildMcpServer(
         cursor: z.string().optional().describe("next_cursor from the previous page. Stable keyset pagination: newer entries never shift an already-read position."),
       },
     },
-    audited("list_recent", async ({ n, tag, after, before, cursor: cursorToken }) => {
+    audited("list_recent", readRecentTool)
+  );
+
+  async function readRecentTool(input: Record<string, any>) {
+    const { n = 10, tag, after, before, cursor: cursorToken } = input;
       const contextHash = await browseContextHash({
         actorKind: actor.kind,
         actorId: actor.actorId,
@@ -1501,7 +1407,7 @@ export function buildMcpServer(
       });
 
       let decoded: { last_created_at: number; last_id: string } | null = null;
-      if (cursorToken) {
+      if (cursorToken !== undefined) {
         try {
           decoded = decodeBrowseCursor(cursorToken, contextHash);
         } catch (error) {
@@ -1530,55 +1436,30 @@ export function buildMcpServer(
         for (const owner of owners) ownerMap[owner.id] = owner.username;
       }
 
-      const descriptorActor = { actorId: actor.actorId, ownerUserId: userId, isService: false };
-      const items = (pageRows as Record<string, any>[]).map((row) => {
-        const { source: safeSource } = sanitizeSourceMetadataForOutput(
-          { source: row.source },
-          row.owner_user_id === userId ? "owner_mcp" : "team_public",
-        );
+      const descriptor = actor.kind === "service"
+        ? await verifyServiceActor(env, actor).then(v => descriptorActor(v.actor, v.autonomyProfile))
+        : descriptorActor(actor);
+      const items = (pageRows as Record<string, any>[]).map(row =>
+        listingEntry(row as never, ownerMap[row.owner_user_id] ?? "", descriptor));
+
+      const data = fitDataPage(items, (rows, omitted) => {
+        const last = rows.at(-1);
+        const boundary = omitted && last ? { last_created_at: last.created_at, last_id: last.entry_id } : nextCursor;
         return {
-          entry: buildEntryDescriptor(row as never, ownerMap[row.owner_user_id] ?? "", descriptorActor),
-          ...boundContentExcerpt(String(row.content ?? "")),
-          created_at: Number(row.created_at),
-          source: safeSource ?? null,
+          entries: rows,
+          next_cursor: boundary ? encodeBrowseCursor({ v: BROWSE_CURSOR_VERSION, ...boundary, context_hash: contextHash }) : null,
         };
       });
-
-      // The data budget may drop trailing rows; any cursor is then derived from
-      // the FINAL EMITTED row so an omitted row is never skipped.
-      const bounded = fitWithinBudget(items);
-      const last = bounded.items[bounded.items.length - 1];
-      const emittedCursor = bounded.omitted > 0 && last
-        ? { last_created_at: last.created_at, last_id: last.entry.entry_id }
-        : nextCursor;
-
-      const data = {
-        entries: bounded.items,
-        next_cursor: emittedCursor
-          ? encodeBrowseCursor({
-            v: BROWSE_CURSOR_VERSION,
-            last_created_at: emittedCursor.last_created_at,
-            last_id: emittedCursor.last_id,
-            context_hash: contextHash,
-          })
-          : null,
-      };
-
       const envelope = okResult(data);
-      const counts = pageCounts(bounded.items.length, bounded.items.length + bounded.omitted);
-      const text = bounded.items.length === 0
+      const text = data.entries.length === 0
         ? "No entries found."
-        : bounded.items.map((item, index) => {
+        : data.entries.map((item, index) => {
           const date = new Date(item.created_at).toLocaleDateString();
-          const tags: string[] = JSON.parse(
-            (pageRows as Record<string, any>[])[index]?.tags ?? "[]",
-          );
-          const tagStr = tags.length ? ` · ${tags.join(", ")}` : "";
           const sourceStr = item.source ? ` · ${item.source}` : "";
           const truncated = item.content_truncated
             ? `\n[truncated: showing ${item.content.length} of ${item.original_content_bytes} bytes]`
             : "";
-          return `${index + 1}. [${date}${sourceStr}${tagStr}]\nID: ${item.entry.entry_id} (revision ${item.entry.revision})\n${item.content}${truncated}`;
+          return `${index + 1}. [${date}${sourceStr}]\nID: ${item.entry_id} (revision ${item.revision})\n${item.content}${truncated}`;
         }).join("\n\n");
 
       return {
@@ -1587,10 +1468,8 @@ export function buildMcpServer(
           type: "text" as const,
           text: `${text}${data.next_cursor ? `\n\nMore entries available. Pass next_cursor to list_recent.` : ""}`,
         }],
-        ...(counts.truncated ? {} : {}),
       };
-    })
-  );
+  }
 
   // ── forget ───────────────────────────────────────────────────────────────
   // Permanent deletion is a compliance/erasure operation routed through the
@@ -1804,30 +1683,7 @@ export function buildMcpServer(
     },
     audited("history", async ({ entry_id }) => {
       const history = await loadOwnedMcpHistory(env, userId, entry_id);
-      if (!history) {
-        // Hidden existence stays hidden: a non-owner learns nothing.
-        return { content: [{ type: "text", text: `No history found for entry ${entry_id}.` }] };
-      }
-      // The text is rendered from the already-bounded structured data, so
-      // structuredContent is never an unbounded copy of what was omitted.
-      const text = renderBoundedMcpHistory(history);
-      const counts = {
-        episodes: { returned: history.episodes.length, total: history.episodeTotal },
-        snapshots: { returned: history.snapshots.length, total: history.snapshotTotal },
-      };
-      const envelope = okResult({
-        projection: history.projection,
-        episodes: history.episodes,
-        snapshots: history.snapshots,
-        truncated: counts.episodes.returned < counts.episodes.total
-          || counts.snapshots.returned < counts.snapshots.total,
-        counts,
-        guidance: "Raw history is owner-only. Status changes are recorded per episode as status_change.",
-      });
-      return {
-        structuredContent: envelope as unknown as Record<string, unknown>,
-        content: [{ type: "text" as const, text }],
-      };
+      return historyToolResult(history);
     }),
   );
 
@@ -2071,8 +1927,7 @@ export function buildMcpServer(
       try {
         return await handler(input);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Governed proposal request failed.";
-        return { isError: true, content: [{ type: "text" as const, text: `Error: ${message}` }] };
+        return domainToolError(error);
       }
     };
 
@@ -2097,8 +1952,8 @@ export function buildMcpServer(
       },
       governedTool(async ({ action_type, payload_json, target_ids, expected_revision, visibility_scope, risk_level, reason, idempotency_key, expires_at, reviewer_username }) => {
         let payload: unknown;
-        try { payload = JSON.parse(payload_json); } catch { throw new Error("payload_json must be valid JSON."); }
-        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("payload_json must contain a JSON object.");
+        try { payload = JSON.parse(payload_json); } catch { throw Object.assign(new Error("payload_json must be valid JSON."), { code: "invalid_request" }); }
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw Object.assign(new Error("payload_json must contain a JSON object."), { code: "invalid_request" });
         const proposal = await createActionProposal(env, {
           actor,
           actionType: action_type as ActionType,

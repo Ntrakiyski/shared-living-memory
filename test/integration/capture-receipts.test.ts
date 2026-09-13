@@ -27,6 +27,7 @@ import {
   EntryVersionVectorStageError,
 } from "../../src/entry-version-service";
 import { eraseEntryArtifacts } from "../../src/erasure";
+import { captureEntryKeyed } from "../../src/ingest";
 import {
   drainCaptureStageIntents,
   drainVectorCleanupQueue,
@@ -258,6 +259,142 @@ describe("capture receipt identity", () => {
     expect(harness.db.one<{ content: string }>(
       "SELECT content FROM entries WHERE id = ?", entryId,
     ).content).toBe("Edited content");
+  });
+
+  it("keeps live revision separate from the capture receipt on replay", async () => {
+    const actor = { kind: "human" as const, actorId: human.actorId, ownerUserId: human.actorId, defaultSource: "mcp:alice" };
+    const input = { content: "Original", idempotencyKey: "live-revision" };
+    const first = await captureEntryKeyed(harness.env, actor, input);
+    await commitEntryVersion({
+      kind: "update", actorUserId: human.actorId, entryId: first.entryId,
+      rawContent: "Edited", materializedContent: "Edited",
+    }, harness.env);
+
+    const replay = await captureEntryKeyed(harness.env, actor, input);
+    expect(replay).toMatchObject({ outcome: "replayed", currentRevision: 2, committedRevision: 1 });
+    const next = await commitEntryVersion({
+      kind: "update", actorUserId: human.actorId, entryId: first.entryId,
+      expectedRevision: replay.currentRevision, rawContent: "Follow-up", materializedContent: "Follow-up",
+    }, harness.env);
+    expect(next.revision).toBe(3);
+  });
+
+  it("preserves this attempt's committed vectors after a lost batch response", async () => {
+    const batch = harness.db.batch.bind(harness.db);
+    vi.spyOn(harness.db, "batch").mockImplementationOnce(async (statements) => {
+      await batch(statements);
+      throw new Error("response lost after COMMIT");
+    });
+    const result = await keyedCapture(harness, "lost-response", {
+      meaning: { content: "# Evidence\nA captured source", contentType: "research" },
+    });
+
+    expect(result.committed).toBeDefined();
+    expect(harness.db.count("entries")).toBe(1);
+    expect(harness.db.count("episodes")).toBe(1);
+    expect(harness.db.count("capture_receipts")).toBe(1);
+    expect(harness.db.count("passages")).toBeGreaterThan(0);
+    const referenced = [
+      ...result.committed!.vectorIds,
+      ...harness.db.all<{ vector_ids: string }>("SELECT vector_ids FROM passages")
+        .flatMap(row => JSON.parse(row.vector_ids) as string[]),
+    ];
+    expect([...harness.vectors.keys()].sort()).toEqual(referenced.sort());
+    expect(harness.deleteByIds).not.toHaveBeenCalled();
+  });
+
+  it("cleans only the different losing attempt after a receipt uniqueness race", async () => {
+    const winner = await keyedCapture(harness, "different-winner");
+    const winnerVectors = [...harness.vectors.keys()].sort();
+    const replay = await commitEntryVersion({
+      kind: "capture", actorUserId: human.actorId, entryId: crypto.randomUUID(),
+      rawContent: MEANING.content, materializedContent: MEANING.content,
+      captureReceipt: {
+        actorKind: "human", actorId: human.actorId,
+        keyHash: winner.keyHash, requestHash: winner.requestHash, attemptId: crypto.randomUUID(),
+      },
+    }, harness.env);
+    expect(replay).toMatchObject({ entryId: winner.committed!.entryId, captureOutcome: "replayed" });
+    expect(harness.db.count("entries")).toBe(1);
+    expect(harness.db.count("episodes")).toBe(1);
+    expect(harness.db.count("capture_receipts")).toBe(1);
+    expect(harness.db.count("vector_cleanup_queue")).toBe(0);
+    expect([...harness.vectors.keys()].sort()).toEqual(winnerVectors);
+  });
+
+  it("returns the receipt with a warning when replay metadata enrichment fails", async () => {
+    const actor = { kind: "human" as const, actorId: human.actorId, ownerUserId: human.actorId, defaultSource: "mcp:alice" };
+    const input = { content: "Original", idempotencyKey: "metadata-warning" };
+    const first = await captureEntryKeyed(harness.env, actor, input);
+    await commitEntryVersion({
+      kind: "update", actorUserId: human.actorId, entryId: first.entryId,
+      rawContent: "Edited", materializedContent: "Edited",
+    }, harness.env);
+    const prepare = harness.db.prepare.bind(harness.db);
+    vi.spyOn(harness.db, "prepare").mockImplementation(sql => {
+      if (sql.includes("SELECT id, revision, vector_ids FROM entries")) throw new Error("metadata unavailable");
+      return prepare(sql);
+    });
+    const replay = await captureEntryKeyed(harness.env, actor, input);
+    expect(replay).toMatchObject({ entryId: first.entryId, outcome: "replayed", currentRevision: 2, committedRevision: 1 });
+    expect(replay.warnings).toEqual([expect.stringContaining("metadata_unavailable")]);
+    expect(harness.db.count("entries")).toBe(1);
+    expect(harness.db.count("capture_receipts")).toBe(1);
+  });
+
+  it.each([true, false])("defers vector cleanup when commit authority cannot be read (committed=%s)", async (committed) => {
+    const batch = harness.db.batch.bind(harness.db);
+    const prepare = harness.db.prepare.bind(harness.db);
+    let unreadable = false;
+    vi.spyOn(harness.db, "prepare").mockImplementation(sql => {
+      if (unreadable && sql.includes("FROM capture_receipts")) throw new Error("receipt storage unavailable");
+      return prepare(sql);
+    });
+    vi.spyOn(harness.db, "batch").mockImplementationOnce(async statements => {
+      if (committed) await batch(statements);
+      unreadable = true;
+      throw new Error("ambiguous batch response");
+    });
+
+    await expect(keyedCapture(harness, "uncertain-authority")).rejects.toThrow();
+    expect(harness.deleteByIds).not.toHaveBeenCalled();
+    expect(harness.vectors.size).toBeGreaterThan(0);
+    expect(harness.db.count("vector_cleanup_queue")).toBe(committed ? 0 : 1);
+    unreadable = false;
+    if (committed) {
+      expect((await keyedCapture(harness, "uncertain-authority")).lookup.status).toBe("replayed");
+    } else {
+      harness.db.exec("UPDATE vector_cleanup_queue SET lease_expires_at = 1");
+      expect((await drainCaptureStageIntents(harness.env)).abandoned).toBe(1);
+      expect(harness.vectors.size).toBe(0);
+    }
+  });
+
+  it("does not authorize a fenced-out attempt with another attempt's winning receipt", async () => {
+    const keyHash = await captureKeyHash("winner-and-lost-fence");
+    const requestHash = await captureRequestHash(MEANING);
+    // Both requests observed absence before the first request committed.
+    expect((await lookupCaptureReceipt(harness.env, { kind: "human", actorId: human.actorId },
+      keyHash, requestHash, human.actorId)).status).toBe("absent");
+    const winner = await keyedCapture(harness, "winner-and-lost-fence");
+    const winnerVectors = [...harness.vectors.keys()].sort();
+    const attemptId = crypto.randomUUID();
+    harness.db.beforeNextBatch = () => harness.db.exec(
+      `UPDATE vector_cleanup_queue SET claim_token = 'repair' WHERE id = '${attemptId}'`,
+    );
+    await expect(commitEntryVersion({
+      kind: "capture", actorUserId: human.actorId, entryId: crypto.randomUUID(),
+      rawContent: MEANING.content, materializedContent: MEANING.content,
+      captureReceipt: { actorKind: "human", actorId: human.actorId, keyHash, requestHash, attemptId },
+    }, harness.env)).rejects.toBeInstanceOf(EntryVersionCommitError);
+
+    expect(harness.db.count("entries")).toBe(1);
+    expect(harness.db.count("episodes")).toBe(1);
+    expect(harness.db.count("documents")).toBe(1);
+    expect(harness.db.count("capture_receipts")).toBe(1);
+    expect([...harness.vectors.keys()].sort()).toEqual(winnerVectors);
+    expect(harness.db.one<{ entry_id: string }>("SELECT entry_id FROM capture_receipts").entry_id)
+      .toBe(winner.committed!.entryId);
   });
 
   it("C3 never recaptures a committed receipt whose target is gone", async () => {

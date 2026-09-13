@@ -208,6 +208,8 @@ export interface RecallMatch {
   epistemicStatus?: string;
   ownerUserId?: string;
   ownerUsername?: string;
+  /** Revision of the retrieved current or historical body, not an edit precondition. */
+  revision?: number;
   visibility?: "private" | "public";
   // The passage id of the vector that produced this match (passage-vector hits).
   // Kept so citations can point at the exact passage that matched, not the first
@@ -855,6 +857,7 @@ export async function recallEntries(
       hop: 0,
       epistemicStatus: row.epistemic_status,
       ownerUserId: row.owner_user_id,
+      revision: row.revision,
       visibility: row.visibility,
       passageId: typeof meta?.passageId === "string" ? meta.passageId : null,
     }];
@@ -874,6 +877,7 @@ export async function recallEntries(
       hop: e.hop,
       epistemicStatus: row.epistemic_status,
       ownerUserId: row.owner_user_id,
+      revision: row.revision,
       visibility: row.visibility,
     }];
   });

@@ -41,6 +41,12 @@ export interface CaptureServicePrivateDraftInput {
   now?: number;
 }
 
+export interface CaptureServicePrivateDraftResult extends CommitEntryVersionResult {
+  outcome: "created" | "replayed";
+  committedRevision: number | null;
+  warnings: string[];
+}
+
 export class OperatorDraftIdempotencyError extends Error {
   constructor(message: string) {
     super(message);
@@ -66,21 +72,24 @@ export class OperatorDraftErasedError extends Error {
  */
 async function replayServiceReceipt(
   env: Pick<Env, "DB">,
-  receipt: { entryId: string; episodeId: string | null; mutationId: string | null; revision: number | null },
-): Promise<CommitEntryVersionResult | null> {
-  const view = await loadCommittedCaptureView(env, receipt);
-  if (!view) return null;
+  receipt: { entryId: string; episodeId: string | null; mutationId: string | null; revision: number | null; currentRevision: number },
+): Promise<CaptureServicePrivateDraftResult> {
+  const view = await loadCommittedCaptureView(env, receipt).catch(() => null);
   return {
-    entryId: view.entryId,
-    episodeId: view.episodeId ?? "",
-    mutationId: view.mutationId ?? "",
-    revision: view.revision,
+    entryId: receipt.entryId,
+    episodeId: receipt.episodeId ?? "",
+    mutationId: receipt.mutationId ?? "",
+    revision: receipt.revision ?? receipt.currentRevision,
+    currentRevision: view?.currentRevision ?? receipt.currentRevision,
+    outcome: "replayed",
+    committedRevision: receipt.revision,
+    warnings: view ? [] : ["metadata_unavailable: the committed capture metadata is temporarily unavailable"],
     created: true,
     snapshotId: null,
-    documentId: view.documentId,
-    sectionIds: view.sectionIds,
-    passageIds: view.passageIds,
-    vectorIds: view.vectorIds,
+    documentId: view?.documentId ?? null,
+    sectionIds: view?.sectionIds ?? [],
+    passageIds: view?.passageIds ?? [],
+    vectorIds: view?.vectorIds ?? [],
     cleanupQueueId: null,
     cleanupPending: false,
   };
@@ -118,7 +127,7 @@ async function resolveLegacyServiceCapture(
   | { kind: "absent" }
   | { kind: "erased" }
   | { kind: "conflict" }
-  | { kind: "replayed"; result: CommitEntryVersionResult }
+  | { kind: "replayed"; result: CaptureServicePrivateDraftResult }
 > {
   const legacyKeyHash = await legacyServiceKeyHash(input.serviceIdentityId, input.key);
   const legacyEntryId = legacyServiceEntryId(legacyKeyHash);
@@ -155,6 +164,7 @@ async function resolveLegacyServiceCapture(
     episodeId: provenance.episodeId,
     mutationId: expectedMutationId,
     revision: provenance.revision,
+    currentRevision: provenance.currentRevision,
   };
   const results = await env.DB.batch([
     legacyReceiptBackfillStatement(env, {
@@ -182,7 +192,7 @@ async function resolveLegacyServiceCapture(
 export async function captureServicePrivateDraft(
   env: Env,
   input: CaptureServicePrivateDraftInput,
-): Promise<CommitEntryVersionResult> {
+): Promise<CaptureServicePrivateDraftResult> {
   // The service path enforces exactly the same bounds and secret detection as
   // the personal path; the transport must never be a way around them.
   assertCapturePayloadValid({
@@ -320,7 +330,7 @@ export async function captureServicePrivateDraft(
 
       const attemptId = crypto.randomUUID();
       try {
-        return await commitEntryVersion({
+        const committed = await commitEntryVersion({
           kind: "capture",
           actorUserId: verified.ownerUserId,
           entryId: crypto.randomUUID(),
@@ -344,6 +354,13 @@ export async function captureServicePrivateDraft(
             }
             : undefined,
         }, env);
+        const { captureOutcome, ...result } = committed;
+        return {
+          ...result,
+          outcome: captureOutcome ?? "created",
+          committedRevision: committed.revision,
+          warnings: committed.warnings ?? [],
+        };
       } catch (error) {
         // A concurrent retry loses the receipt primary-key race and rolls its
         // whole batch back. Only that exact request is recovered.

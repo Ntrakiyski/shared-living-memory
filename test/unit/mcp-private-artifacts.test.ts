@@ -329,6 +329,8 @@ describe("MCP private child artifacts", () => {
 
   it("sanitizes visible legacy source labels in human list_recent output", async () => {
     const secret = `sk_live_${"q".repeat(24)}`;
+    // Listing descriptors require real owner rows, just as the production store does.
+    db.users.push(...["alice", "bob"].map(id => ({ id, username: id, status: "active", role: "member" })));
     db.entries.push(
       {
         id: "alice-public-legacy", content: "Public legacy content", tags: "[]",
@@ -351,6 +353,8 @@ describe("MCP private child artifacts", () => {
     expect(text).toContain("owner-source-exact");
     expect(text).not.toContain(secret);
     expect(text).not.toContain("FORGED_RECENT_SOURCE");
+    expect(JSON.stringify(result.structuredContent)).not.toContain(secret);
+    expect(JSON.stringify(result.structuredContent)).not.toContain("FORGED_RECENT_SOURCE");
   });
 
   it("does not expose snapshots from a public entry owned by another actor", async () => {

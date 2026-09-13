@@ -4,7 +4,7 @@ import { makeTestEnv, makeTestDb, makeVectorizeMock } from "../helpers/make-env"
 import { req } from "../helpers/make-request";
 import type { Env } from "../../src/testing";
 import { D1Mock } from "../helpers/d1-mock";
-import { TEST_USER_ID } from "../helpers/test-principal";
+import { TEST_USER_ID, TEST_USERNAME, TEST_USER_AUTH_HASH } from "../helpers/test-principal";
 import { buildMcpServer } from "../../src/mcp";
 import type { CaptureResponse, HumanActorContext } from "../../src/types";
 
@@ -201,6 +201,7 @@ describe("POST /capture", () => {
   });
 
   it("exposes MCP visibility/source fields, defaults private, and does not audit captured content", async () => {
+    db.users.push({ id: TEST_USER_ID, username: TEST_USERNAME, normalized_username: TEST_USERNAME, auth_key_hash: TEST_USER_AUTH_HASH, status: "active", role: "member" });
     const pending: Promise<any>[] = [];
     const actor: HumanActorContext = {
       kind: "human",
@@ -220,7 +221,7 @@ describe("POST /capture", () => {
     const result = await remember.handler({ content: "private MCP note" }, {});
     await Promise.allSettled(pending);
 
-    expect(result.content[0].text).toContain("visibility: private");
+    expect(result.structuredContent).toMatchObject({ ok: true, data: { entry: { visibility: "private", owner: { id: TEST_USER_ID } } } });
     expect(db.entries[0].visibility).toBe("private");
     expect(JSON.stringify(db.agentEvents)).not.toContain("private MCP note");
 
@@ -232,7 +233,7 @@ describe("POST /capture", () => {
     }, {});
     await Promise.allSettled(pending);
 
-    expect(publicResult.content[0].text).toContain("visibility: public");
+    expect(publicResult.structuredContent).toMatchObject({ ok: true, data: { entry: { visibility: "public" } } });
     expect(db.entries[1].visibility).toBe("public");
     expect(db.episodes[1].source_url).toBe("https://example.test/mcp-source");
     expect(db.documents[1].title).toBe("MCP source title");
@@ -262,7 +263,7 @@ describe("POST /capture", () => {
     consoleWarn.mockRestore();
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe("Not stored: secret_detected.");
+    expect(result.structuredContent).toMatchObject({ ok: false, error: { code: "secret_detected", retryable: false } });
     expect(JSON.stringify(result)).not.toContain(secret);
     expect(JSON.stringify(db.agentEvents)).not.toContain(secret);
     expect(JSON.stringify(warningCalls)).not.toContain(secret);

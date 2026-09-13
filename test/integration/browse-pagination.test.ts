@@ -249,7 +249,7 @@ describe("REST /list paging (E4/E5)", () => {
       expect(response.status).toBe(200);
       const body = await response.json() as any;
       expect(body.ok).toBe(true);
-      const ids = body.data.entries.map((entry: any) => entry.id);
+      const ids = body.data.entries.map((entry: any) => entry.entry_id);
       seen.push(...ids);
       expect(ids.length).toBeLessThanOrEqual(5);
       cursor = body.data.next_cursor;
@@ -282,7 +282,7 @@ describe("REST /list paging (E4/E5)", () => {
     );
     const secondBody = await second.json() as any;
     expect(secondBody.data.entries).toHaveLength(7);
-    const ids = [...firstBody.data.entries, ...secondBody.data.entries].map((entry: any) => entry.id);
+    const ids = [...firstBody.data.entries, ...secondBody.data.entries].map((entry: any) => entry.entry_id);
     expect(new Set(ids).size).toBe(10);
   });
 
@@ -301,9 +301,9 @@ describe("REST /list paging (E4/E5)", () => {
       harness.env, ctx,
     );
     const secondBody = await second.json() as any;
-    const ids = secondBody.data.entries.map((entry: any) => entry.id);
+    const ids = secondBody.data.entries.map((entry: any) => entry.entry_id);
     expect(ids).not.toContain("entry-newest");
-    expect(ids.some((id: string) => firstBody.data.entries.some((entry: any) => entry.id === id))).toBe(false);
+    expect(ids.some((id: string) => firstBody.data.entries.some((entry: any) => entry.entry_id === id))).toBe(false);
   });
 
   it("rejects a cursor used against a different filter", async () => {
@@ -353,7 +353,7 @@ describe("REST /list paging (E4/E5)", () => {
       harness.env, ctx,
     );
     const secondBody = await second.json() as any;
-    const ids = secondBody.data.entries.map((entry: any) => entry.id);
+    const ids = secondBody.data.entries.map((entry: any) => entry.entry_id);
     expect(ids).toEqual(["entry-005", "entry-004", "entry-003"]);
     expect(ids).not.toContain("entry-006");
     expect(ids).not.toContain("entry-007");

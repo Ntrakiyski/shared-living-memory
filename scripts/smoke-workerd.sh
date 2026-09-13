@@ -340,82 +340,63 @@ if grep -q "wrong-secret" "$CHALLENGE_BODY"; then
   exit 1
 fi
 
-# ─── E1: erase an entry that owns all five child artifact types ──────────────
-# Capture embeds through the AI binding, which is unavailable to a purely local
-# Workerd. The phase therefore runs only when the smoke is pointed at an
-# AI-capable target (WORKER_SMOKE_EXPECT_AI=1); otherwise it is reported as
-# SKIPPED rather than silently passing. The five-term query shape itself is
-# covered on every run by test/integration/erasure-workerd-limit.test.ts, which
-# enforces SQLITE_LIMIT_COMPOUND_SELECT=5 against real SQLite.
-if [[ "${WORKER_SMOKE_EXPECT_AI:-0}" != "1" ]]; then
-  echo "SKIPPED erasure-with-child-artifacts phase: local Workerd has no AI binding. Set WORKER_SMOKE_EXPECT_AI=1 on an AI-capable target to run it."
-  echo "Real-Workerd smoke check passed (AI-independent checks): public root=200, unauthenticated /mcp=401 with Bearer challenge, first-admin bootstrap=201, authenticated /count=200, key rotation keeps the account id and kills the old key, invalid cursor=400 invalid_cursor, and an invalid personal key at /mcp is challenged without echoing the key."
-  exit 0
-fi
+# ─── E1: erase every child type through real Workerd without remote AI ──────
+# Seed only this run's isolated local D1. Empty vectors deliberately keep this
+# database/ownership regression independent of external AI and Vectorize.
+entry_id="smoke-erasure-entry"
+node - "$original_account_id" > "$ARTIFACT_DIR/erasure-fixture.sql" <<'NODE'
+const owner = process.argv[2];
+if (!/^[a-zA-Z0-9_-]+$/.test(owner)) throw new Error("Unexpected synthetic owner id");
+for (const prefix of ["smoke-erasure", "smoke-unrelated"]) {
+  console.log(`INSERT INTO entries (id, content, created_at, owner_user_id, visibility, current_episode_id, revision)
+    VALUES ('${prefix}-entry', 'Synthetic smoke entry', 1, '${owner}', 'private', '${prefix}-episode', 1);`);
+  console.log(`INSERT INTO episodes (id, entry_id, content, created_at, owner_user_id)
+    VALUES ('${prefix}-episode', '${prefix}-entry', 'Synthetic episode', 1, '${owner}');`);
+  console.log(`INSERT INTO entry_snapshots (id, entry_id, content, created_at, episode_id)
+    VALUES ('${prefix}-snapshot', '${prefix}-entry', 'Synthetic snapshot', 1, '${prefix}-episode');`);
+  console.log(`INSERT INTO documents (id, title, created_at, episode_id, owner_user_id)
+    VALUES ('${prefix}-document', 'Synthetic document', 1, '${prefix}-episode', '${owner}');`);
+  console.log(`INSERT INTO document_sections (id, document_id, title, created_at)
+    VALUES ('${prefix}-section', '${prefix}-document', 'Synthetic section', 1);`);
+  console.log(`INSERT INTO passages (id, entry_id, episode_id, document_id, section_id, content, created_at)
+    VALUES ('${prefix}-passage', '${prefix}-entry', '${prefix}-episode', '${prefix}-document', '${prefix}-section', 'Synthetic passage', 1);`);
+}
+NODE
+"$WRANGLER_BIN" d1 execute DB --local --persist-to "$STATE_DIR" \
+  --file "$ARTIFACT_DIR/erasure-fixture.sql" --json > "$ARTIFACT_DIR/seed-result.json"
 
-# Headers create documents + document_sections; headings create passages; a
-# second version creates a snapshot. All five must be collected and deleted by
-# the shared helper inside real Workerd, which enforces the five-term
-# compound-SELECT limit that the local SQLite tests simulate.
-capture_payload="$(
-  node -e '
-const doc = [
-  "# Smoke Heading One",
-  "",
-  "Body paragraph with enough text to produce a passage.",
-  "",
-  "## Smoke Heading Two",
-  "",
-  "More body text for the second section.",
-].join("\n");
-process.stdout.write(JSON.stringify({
-  content: doc,
-  tags: ["ci-smoke"],
-  source_url: "https://example.test/smoke",
-  source_title: "Smoke document",
-  visibility: "private",
-}));
-'
-)"
-
-capture_status="$(
-  curl --silent --show-error \
-    --connect-timeout 2 --max-time 10 \
-    --request POST \
-    --header "Authorization: Bearer $user_api_key" \
-    --header 'Content-Type: application/json' \
-    --data "$capture_payload" \
-    --output "$CAPTURE_BODY" --write-out "%{http_code}" \
-    "$BASE_URL/capture" 2>/dev/null || true
-)"
-if [[ "$capture_status" != "200" ]]; then
-  echo "Authenticated /capture must return HTTP 200; received: ${capture_status:-none}." >&2
-  exit 1
-fi
-
-entry_id="$(node -e '
+# No compound SELECT here: the six-term failure must be exercised in the real
+# application's collector, not in fixture setup or verification.
+cat > "$ARTIFACT_DIR/erasure-counts.sql" <<'SQL'
+SELECT
+ (SELECT COUNT(*) FROM entries WHERE id = 'smoke-erasure-entry') AS entries,
+ (SELECT COUNT(*) FROM episodes WHERE id = 'smoke-erasure-episode') AS episodes,
+ (SELECT COUNT(*) FROM entry_snapshots WHERE id = 'smoke-erasure-snapshot') AS snapshots,
+ (SELECT COUNT(*) FROM documents WHERE id = 'smoke-erasure-document') AS documents,
+ (SELECT COUNT(*) FROM document_sections WHERE id = 'smoke-erasure-section') AS sections,
+ (SELECT COUNT(*) FROM passages WHERE id = 'smoke-erasure-passage') AS passages,
+ (SELECT COUNT(*) FROM entries WHERE id = 'smoke-unrelated-entry') AS unrelated_entries,
+ (SELECT COUNT(*) FROM episodes WHERE id = 'smoke-unrelated-episode') AS unrelated_episodes,
+ (SELECT COUNT(*) FROM entry_snapshots WHERE id = 'smoke-unrelated-snapshot') AS unrelated_snapshots,
+ (SELECT COUNT(*) FROM documents WHERE id = 'smoke-unrelated-document') AS unrelated_documents,
+ (SELECT COUNT(*) FROM document_sections WHERE id = 'smoke-unrelated-section') AS unrelated_sections,
+ (SELECT COUNT(*) FROM passages WHERE id = 'smoke-unrelated-passage') AS unrelated_passages;
+SQL
+assert_artifacts() {
+  "$WRANGLER_BIN" d1 execute DB --local --persist-to "$STATE_DIR" \
+    --file "$ARTIFACT_DIR/erasure-counts.sql" --json > "$ARTIFACT_DIR/artifact-counts.json"
+  node - "$ARTIFACT_DIR/artifact-counts.json" "$1" <<'NODE'
 const fs = require("node:fs");
-const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-if (body.ok !== true || typeof body.id !== "string") process.exit(1);
-process.stdout.write(body.id);
-' "$CAPTURE_BODY")"
-
-# A second version, so entry_snapshots exist when the erasure runs.
-curl --silent --show-error \
-  --connect-timeout 2 --max-time 10 \
-  --request POST \
-  --header "Authorization: Bearer $user_api_key" \
-  --header 'Content-Type: application/json' \
-  --data "$(node -e '
-const fs = require("node:fs");
-const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-process.stdout.write(JSON.stringify({
-  id: body.id,
-  content: "# Smoke Heading One\n\nRevised after capture.\n\n## Smoke Heading Two\n\nSecond revision body.",
-}));
-' "$CAPTURE_BODY")" \
-  --output /dev/null \
-  "$BASE_URL/update" >/dev/null 2>&1 || true
+const rows = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const row = rows[0]?.results?.[0];
+if (!row || Object.keys(row).length !== 12) throw new Error("Missing artifact counts");
+for (const [name, value] of Object.entries(row)) {
+  const expected = name.startsWith("unrelated_") ? 1 : Number(process.argv[3]);
+  if (value !== expected) throw new Error(`${name}: expected ${expected}, received ${value}`);
+}
+NODE
+}
+assert_artifacts 1
 
 forget_status="$(
   curl --silent --show-error \
@@ -438,8 +419,8 @@ const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 if (body.ok !== true) process.exit(1);
 // A committed erasure is never reported as a retryable failure.
 if (body.retry === true) process.exit(1);
-if (typeof body.erasure_status !== "string") process.exit(1);
-process.stdout.write(typeof body.operation_id === "string" ? body.operation_id : "");
+if (body.erasure_status !== "complete" || typeof body.operation_id !== "string" || !body.operation_id) process.exit(1);
+process.stdout.write(body.operation_id);
 ' "$FORGET_BODY")"
 
 if [[ -n "$erasure_operation" ]]; then
@@ -457,29 +438,12 @@ if [[ -n "$erasure_operation" ]]; then
   node -e '
 const fs = require("node:fs");
 const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-if (body.ok !== true || !body.erasure || typeof body.erasure.status !== "string") process.exit(1);
+if (body.ok !== true || body.erasure?.status !== "complete") process.exit(1);
 ' "$ERASURE_BODY" || { echo "GET /erasure-status returned an unexpected shape." >&2; exit 1; }
 fi
 
-# The entry must be gone from the projection.
-count_after_status="$(
-  curl --silent --show-error \
-    --connect-timeout 2 --max-time 5 \
-    --header "Authorization: Bearer $user_api_key" \
-    --output "$COUNT_BODY" --write-out "%{http_code}" \
-    "$BASE_URL/count" 2>/dev/null || true
-)"
-if [[ "$count_after_status" != "200" ]]; then
-  echo "Authenticated /count must return HTTP 200 after erasure; received: ${count_after_status:-none}." >&2
-  exit 1
-fi
-node -e '
-const fs = require("node:fs");
-const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-if (typeof body.count !== "number" || body.count !== 0) {
-  console.error("Expected zero surviving entries after erasure, got " + body.count);
-  process.exit(1);
-}
-' "$COUNT_BODY" || exit 1
+# Verify authoritative child deletion and unrelated-record survival, not only
+# the top-level entry count or a successful HTTP response.
+assert_artifacts 0
 
 echo "Real-Workerd smoke check passed: public root=200, unauthenticated /mcp=401 with Bearer challenge, first-admin bootstrap=201, authenticated /count=200, key rotation keeps the account id and kills the old key, invalid cursor=400 invalid_cursor, an invalid personal key at /mcp is challenged without echoing the key, and an entry owning all five child artifacts erased cleanly with a complete receipt."

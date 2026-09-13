@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { readVerifiedStage } from "./check-staging-bindings.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
@@ -79,7 +81,7 @@ export async function fetchWithTimeout(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchImpl(input, { ...init, signal: controller.signal });
+    const response = await fetchImpl(input, { ...init, redirect: "error", signal: controller.signal });
     return await consume(response);
   } finally {
     clearTimeout(timeout);
@@ -89,7 +91,7 @@ export async function fetchWithTimeout(
 async function request(path, { method = "GET", body, user } = {}) {
   return fetchWithTimeout(
     fetch,
-    new URL(`${baseUrl.pathname}${path}`, baseUrl),
+    new URL(path, baseUrl),
     {
       method,
       headers: {
@@ -120,15 +122,42 @@ async function createUser(username) {
 }
 
 async function capture(user, content, visibility) {
-  const { response, data } = await request("/capture", {
+  const clientItemId = crypto.randomUUID();
+  const { response, data } = await request("/capture/batch", {
     method: "POST",
     user,
-    body: { content, visibility, tags: ["system:semantic-canary"] },
+    body: { items: [{
+      client_item_id: clientItemId, idempotency_key: `semantic-canary:${clientItemId}`,
+      content, visibility, tags: ["system:semantic-canary"],
+    }] },
   });
-  if (!response.ok || !data?.ok || typeof data.id !== "string") {
+  const item = data?.data?.items?.[0];
+  const receipt = item?.data?.receipt;
+  if (!response.ok || data?.ok !== true || !Array.isArray(data.data?.items) || data.data.items.length !== 1
+      || item.client_item_id !== clientItemId || item.status !== "created"
+      || item.data?.outcome !== "created" || item.data.capture_mode !== "create_only"
+      || typeof receipt?.entry_id !== "string" || !receipt.entry_id
+      || typeof receipt.episode_id !== "string" || !receipt.episode_id) {
     throw new CanaryFailure("CANARY_CAPTURE_FAILED", EXIT.capture, { status: response.status });
   }
-  return data.id;
+  return receipt.entry_id;
+}
+
+async function eraseCreatedEntry(user, id) {
+  const { response, data } = await request("/forget", {
+    method: "POST", user, body: { id, confirm_entry_id: id },
+  });
+  if (!response.ok || data?.ok !== true || data.id !== id || data.retry === true
+      || !["complete", "pending_cleanup"].includes(data.erasure_status)
+      || typeof data.operation_id !== "string" || !data.operation_id) {
+    throw new CanaryFailure("CANARY_CLEANUP_FAILED", EXIT.cleanup);
+  }
+  const status = await request(`/erasure-status?operation_id=${encodeURIComponent(data.operation_id)}`, { user });
+  const receipt = status.data?.erasure;
+  if (!status.response.ok || status.data?.ok !== true || receipt?.operationId !== data.operation_id
+      || receipt.entryId !== id || receipt.status !== "complete") {
+    throw new CanaryFailure("CANARY_CLEANUP_FAILED", EXIT.cleanup);
+  }
 }
 
 async function recall(user, query) {
@@ -159,7 +188,9 @@ async function pollFor(user, query, expectedId) {
 
 function configure() {
   const rawBaseUrl = process.env.SLM_BASE_URL?.trim();
-  adminKey = process.env.SLM_ADMIN_KEY?.trim();
+  adminKey = process.env.SLM_ADMIN_KEY_FILE
+    ? readFileSync(process.env.SLM_ADMIN_KEY_FILE, "utf8").trim()
+    : process.env.SLM_ADMIN_KEY?.trim();
   if (!rawBaseUrl || !adminKey) {
     console.error("CANARY_CONFIG_MISSING");
     process.exit(EXIT.config);
@@ -183,17 +214,23 @@ function configure() {
   }
   const forbiddenOrigins = new Set([
     new URL(productionOrigin).origin,
+    "https://memory.fractals-solutions.com",
     ...(configuredProductionOrigin ? [configuredProductionOrigin] : []),
   ]);
   if (forbiddenOrigins.has(baseUrl.origin)) {
     console.error("CANARY_PRODUCTION_REFUSED");
     process.exit(EXIT.config);
   }
-  baseUrl.pathname = baseUrl.pathname.replace(/\/$/, "");
+  if (baseUrl.pathname !== "/" || baseUrl.search || baseUrl.hash || baseUrl.username || baseUrl.password
+      || (baseUrl.protocol !== "https:" && !(baseUrl.protocol === "http:"
+        && ["127.0.0.1", "localhost", "[::1]"].includes(baseUrl.hostname)))) {
+    throw new CanaryFailure("CANARY_URL_INVALID", EXIT.config);
+  }
 }
 
-async function main() {
+export async function main() {
   configure();
+  await readVerifiedStage({ env: { ...process.env, SLM_URL: baseUrl.origin } });
   const suffix = `${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 6)}`;
   const scenario = buildCanaryScenario(suffix);
   const { contents, probes } = scenario;
@@ -238,11 +275,18 @@ async function main() {
     if (duplicate.response.status !== 409
         || duplicate.data?.action !== "blocked_duplicate"
         || duplicate.data?.match_id !== ids.semantic) {
+      // If duplicate suppression itself fails, a positively identified new
+      // capture is ours to erase. A merge/replay never authorizes another ID.
+      if (duplicate.response.ok && duplicate.data?.ok === true
+          && ["stored", "stored_separately"].includes(duplicate.data.action)
+          && typeof duplicate.data.id === "string"
+          && !created.some(([, id]) => id === duplicate.data.id)) {
+        created.push([alice, duplicate.data.id]);
+      }
       throw new CanaryFailure("CANARY_DUPLICATE_NOT_BLOCKED", EXIT.duplicate, {
         status: duplicate.response.status,
       });
     }
-    console.log(JSON.stringify({ ok: true, code: "CANARY_OK", checks: probes.length + 1 }));
   } catch (error) {
     primaryFailure = error instanceof CanaryFailure
       ? error
@@ -251,23 +295,29 @@ async function main() {
     let cleanupFailed = false;
     for (const [user, id] of created.reverse()) {
       try {
-        const { response } = await request("/forget", { method: "POST", user, body: { id } });
-        if (!response.ok) cleanupFailed = true;
+        await eraseCreatedEntry(user, id);
       } catch {
         cleanupFailed = true;
       }
     }
-    if (!primaryFailure && cleanupFailed) {
-      primaryFailure = new CanaryFailure("CANARY_CLEANUP_FAILED", EXIT.cleanup);
+    if (cleanupFailed) {
+      primaryFailure ??= new CanaryFailure("CANARY_CLEANUP_FAILED", EXIT.cleanup);
+      primaryFailure.details.cleanup_failed = true;
     }
   }
 
   if (primaryFailure) {
-    console.error(JSON.stringify({ ok: false, code: primaryFailure.code, ...primaryFailure.details }));
-    process.exit(primaryFailure.exitCode);
+    throw primaryFailure;
   }
+  console.log(JSON.stringify({ ok: true, code: "CANARY_OK", checks: probes.length + 1 }));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await main();
+  await main().catch(error => {
+    console.error(JSON.stringify({
+      ok: false, code: error instanceof CanaryFailure ? error.code : "CANARY_CONFIG_FAILED",
+      ...(error instanceof CanaryFailure && error.details.cleanup_failed ? { cleanup_failed: true } : {}),
+    }));
+    process.exitCode = error instanceof CanaryFailure ? error.exitCode : EXIT.config;
+  });
 }

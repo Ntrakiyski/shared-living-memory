@@ -234,7 +234,8 @@ describe("read-only maintenance over MCP", () => {
     await seedAlice(writable);
     const server = buildMcpServer(writable.env, ctx, actor(), "full") as any;
     const result = await server._registeredTools.update.handler({ id: "nope", content: "x" }, {});
-    expect(result.isError).toBeUndefined();
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent.error.code).toBe("not_found_or_inaccessible");
     writable.db.close();
   });
 });

@@ -11,7 +11,10 @@
  *   as a failed write.
  */
 
-import type { Env } from "./types";
+import type { ActorContext, Env } from "./types";
+import type { BatchCaptureItem, BatchCaptureResult } from "./ingest";
+import { decideOperatorAction, OperatorPolicyError } from "./operator-policy";
+import { sanitizeSourceMetadataForOutput } from "./source-metadata";
 
 export interface SlmSuccess<T> {
   ok: true;
@@ -92,6 +95,7 @@ export interface MappedError {
  * the rejected value.
  */
 export function mapDomainError(error: unknown): MappedError {
+  if (error instanceof OperatorPolicyError) return { code: "forbidden", message: "The credential is not authorized for this action.", retryable: false };
   const candidate = error as { code?: unknown; retryable?: unknown; details?: unknown; name?: unknown } | null;
   const code = typeof candidate?.code === "string" ? candidate.code : null;
 
@@ -134,8 +138,19 @@ export function mapDomainError(error: unknown): MappedError {
       return { code, message: "The source title exceeds the maximum length.", retryable: false, details: { field: "source_title", max_code_points: 512 } };
     case "secret_detected":
       return { code, message: "The value looks like a credential and was not stored.", retryable: false, details: { field: "content" } };
+    case "invalid_input":
     case "invalid_request":
-      return { code, message: "The request was not valid.", retryable: false, details: sanitizeDetails(candidate?.details) };
+      return { code: "invalid_request", message: "The request was not valid.", retryable: false, details: sanitizeDetails(candidate?.details) };
+    case "invalid_actor":
+    case "inactive_service":
+    case "inactive_credential":
+    case "expired_credential":
+    case "scope_escalation":
+    case "invalid_credentials":
+      return { code: "invalid_credentials", message: "The credential is no longer active or valid.", retryable: false };
+    case "forbidden":
+    case "human_review_required":
+      return { code: "forbidden", message: "This account is not authorized for the requested action.", retryable: false };
     case "not_found_or_inaccessible":
     case "not_found":
       return { code: "not_found_or_inaccessible", message: "No such record is available to this account.", retryable: false };
@@ -145,9 +160,10 @@ export function mapDomainError(error: unknown): MappedError {
         message: "Only the memory owner can change this record directly. The current content stays readable.",
         retryable: false,
       };
+    case "stale":
     case "revision_conflict":
       return {
-        code,
+        code: "revision_conflict",
         message: "The record changed since it was read. Re-read it and retry with the current revision.",
         retryable: false,
         details: sanitizeDetails(candidate?.details),
@@ -158,8 +174,11 @@ export function mapDomainError(error: unknown): MappedError {
       return { code, message: "The cursor is not valid for this query.", retryable: false };
     case "invalid_profile":
       return { code, message: "X-SLM-Tool-Profile must be capture, review or full.", retryable: false };
+    case "vector_stage_failed":
+      return { code: "semantic_unavailable", message: "Semantic storage is temporarily unavailable.", retryable: true };
+    case "database_commit_failed":
     case "storage_unavailable":
-      return { code, message: "Shared Living Memory storage is temporarily unavailable.", retryable: true };
+      return { code: "storage_unavailable", message: "Shared Living Memory storage is temporarily unavailable.", retryable: true };
     case "semantic_unavailable":
       return { code, message: "Semantic search is temporarily unavailable; keyword retrieval still works.", retryable: true };
     default:
@@ -302,6 +321,33 @@ export interface DescriptorActor {
   /** The account id that owns entries this actor writes. */
   ownerUserId: string;
   isService: boolean;
+  actor?: ActorContext;
+  autonomyProfile?: string;
+}
+
+export function descriptorActor(actor: ActorContext, autonomyProfile?: string): DescriptorActor {
+  return {
+    actorId: actor.actorId,
+    ownerUserId: actor.kind === "human" ? actor.userId : actor.kind === "service" ? actor.ownerUserId : actor.systemId,
+    isService: actor.kind === "service",
+    actor,
+    autonomyProfile,
+  };
+}
+
+export function principalCapabilities(actor: ActorContext, autonomyProfile?: string) {
+  const read = decideOperatorAction({ actor, operation: "memory.read", autonomyProfile }).effect === "allow";
+  const capture = decideOperatorAction({
+    actor, operation: "entry.create", autonomyProfile,
+    directCapture: { visibility: "private", lifecycleStatus: "draft", epistemicStatus: "candidate", mayMerge: false, mayAutoDeprecate: false },
+  }).effect === "allow";
+  return {
+    read_public: read,
+    read_owner_private: read,
+    direct_mutation_scope: actor.kind === "human" ? "owned_entries" : capture ? "private_drafts" : "none",
+    proposal_review: actor.kind === "human" ? "account_policy" : "none",
+    erase_owned_entries: actor.kind === "human",
+  };
 }
 
 /**
@@ -315,12 +361,17 @@ export function entryPermissions(
   ownerUserId: string,
 ): EntryDescriptorPermissions {
   const actorIsOwner = Boolean(actor.ownerUserId) && actor.ownerUserId === ownerUserId;
+  const canRead = !actor.isService || Boolean(actor.actor && decideOperatorAction({
+    actor: actor.actor, operation: "memory.read", autonomyProfile: actor.autonomyProfile,
+  }).effect === "allow");
+  const canPropose = !actor.isService || Boolean(actor.actor && decideOperatorAction({
+    actor: actor.actor, operation: "proposal.create", proposedAction: "entry.update", autonomyProfile: actor.autonomyProfile,
+  }).effect === "allow");
   return {
-    read_current: true,
-    read_history: actorIsOwner,
-    mutate_directly: actorIsOwner,
-    // Direct cross-owner mutation is never granted; a non-owner may propose.
-    submit_change_proposal: !actorIsOwner,
+    read_current: canRead,
+    read_history: actorIsOwner && canRead,
+    mutate_directly: actorIsOwner && !actor.isService,
+    submit_change_proposal: actorIsOwner && canPropose,
   };
 }
 
@@ -361,6 +412,114 @@ export function buildEntryDescriptor(
     epistemic_status: row.epistemic_status ?? "canonical",
     permissions: entryPermissions(actor, row.owner_user_id),
   };
+}
+
+export function listingEntry(
+  row: DescriptorRow & { content: string; created_at: number; source: string },
+  ownerUsername: string,
+  actor: DescriptorActor,
+) {
+  if (!ownerUsername) throw Object.assign(new Error("Owner metadata is unavailable"), { code: "storage_unavailable" });
+  return {
+    ...buildEntryDescriptor(row, ownerUsername, actor),
+    ...boundContentExcerpt(row.content),
+    created_at: Number(row.created_at),
+    source: sanitizeSourceMetadataForOutput({ source: row.source }, row.owner_user_id === actor.ownerUserId ? "owner_mcp" : "team_public").source,
+  };
+}
+
+/** Recheck current visibility when rendering metadata after retrieval or commit. */
+export async function loadEntryDescriptor(env: Pick<Env, "DB">, entryId: string, actor: DescriptorActor): Promise<EntryDescriptor | null> {
+  const row = await env.DB.prepare(
+    `SELECT id, revision, owner_user_id, visibility, tags, epistemic_status FROM entries WHERE id = ?`,
+  ).bind(entryId).first<DescriptorRow>();
+  if (!row || (row.owner_user_id !== actor.ownerUserId && row.visibility !== "public")) return null;
+  if (!row.owner_user_id || !Number.isSafeInteger(row.revision) || Number(row.revision) < 0) {
+    throw Object.assign(new Error("Current projection metadata is unavailable"), { code: "storage_unavailable" });
+  }
+  const owner = await env.DB.prepare(`SELECT username FROM users WHERE id = ?`)
+    .bind(row.owner_user_id).first<{ username: string }>();
+  if (!owner?.username) throw Object.assign(new Error("Owner metadata is unavailable"), { code: "storage_unavailable" });
+  return buildEntryDescriptor(row, owner.username, actor);
+}
+
+export interface RememberData {
+  outcome: "created" | "merged" | "replaced" | "duplicate" | "replayed";
+  capture_mode: "smart" | "create_only";
+  entry: EntryDescriptor | null;
+  receipt: { entry_id: string; episode_id: string | null; revision: number | null } | null;
+  matched_entry: EntryDescriptor | null;
+}
+
+export interface CaptureCommitMetadata {
+  outcome: "created" | "replayed";
+  entryId: string;
+  episodeId: string | null;
+  committedRevision: number | null;
+  warnings?: string[];
+}
+
+export async function captureResult(env: Pick<Env, "DB">, actor: DescriptorActor, commit: CaptureCommitMetadata): Promise<SlmSuccess<RememberData>> {
+  const warnings = [...(commit.warnings ?? [])];
+  let entry: EntryDescriptor | null = null;
+  try { entry = await loadEntryDescriptor(env, commit.entryId, actor); } catch { /* The receipt remains authoritative after commit. */ }
+  if (!entry) warnings.push("metadata_unavailable: current entry metadata is unavailable");
+  return okResult({
+    outcome: commit.outcome,
+    capture_mode: "create_only",
+    entry,
+    receipt: { entry_id: commit.entryId, episode_id: commit.episodeId, revision: commit.committedRevision },
+    matched_entry: null,
+  }, [...new Set(warnings)]);
+}
+
+export interface CaptureBatchData {
+  items: { client_item_id: string; status: "created" | "replayed" | "failed"; data?: RememberData; error?: MappedError }[];
+  summary: { created: number; replayed: number; failed: number };
+}
+
+/** Keep every outcome and receipt; only current metadata is optional after commit. */
+export async function serializeCaptureBatch(env: Pick<Env, "DB">, actor: DescriptorActor, result: BatchCaptureResult): Promise<SlmSuccess<CaptureBatchData>> {
+  const items: CaptureBatchData["items"] = [];
+  const warnings: string[] = [];
+  for (const item of result.items) {
+    if (item.status === "failed" || !item.data) {
+      items.push({ client_item_id: item.client_item_id, status: "failed", error: item.error });
+      continue;
+    }
+    const captured = await captureResult(env, actor, {
+      outcome: item.status, entryId: item.data.entry_id, episodeId: item.data.episode_id,
+      committedRevision: item.data.committed_revision, warnings: item.data.warnings,
+    });
+    items.push({ client_item_id: item.client_item_id, status: item.status, data: captured.data });
+    warnings.push(...captured.warnings);
+  }
+  return okResult({ items, summary: result.summary }, [...new Set(warnings)]);
+}
+
+/** Both transports use the same service policy callback, once per item. */
+export async function captureServiceBatch(
+  env: Pick<Env, "DB">,
+  actor: DescriptorActor,
+  items: BatchCaptureItem[],
+  capture: (item: BatchCaptureItem) => Promise<CaptureCommitMetadata>,
+): Promise<SlmSuccess<CaptureBatchData>> {
+  const data: CaptureBatchData = { items: [], summary: { created: 0, replayed: 0, failed: 0 } };
+  const warnings: string[] = [];
+  for (const item of items) {
+    try {
+      if (item.visibility === "public") throw Object.assign(new Error("Service captures must be private"), { code: "forbidden" });
+      const committed = await capture(item);
+      const result = await captureResult(env, actor, committed);
+      data.items.push({ client_item_id: item.client_item_id, status: committed.outcome, data: result.data });
+      data.summary[committed.outcome]++;
+      warnings.push(...result.warnings);
+    } catch (error) {
+      data.summary.failed++;
+      data.items.push({ client_item_id: item.client_item_id, status: "failed", error: mapDomainError(error) });
+    }
+  }
+  return okResult(data, [...new Set(warnings)]);
 }
 
 // ─── Output bounds (Section 4.5) ─────────────────────────────────────────────
@@ -422,6 +581,17 @@ export function fitWithinBudget<T>(
     used += size;
   }
   return { items: emitted, omitted: items.length - emitted.length };
+}
+
+/** Budget the complete data object, including the cursor derived from its last row. */
+export function fitDataPage<T, D>(items: readonly T[], makeData: (rows: T[], omitted: boolean) => D, maxBytes = LISTING_DATA_MAX_BYTES): D {
+  const rows = [...items];
+  while (true) {
+    const data = makeData(rows, rows.length < items.length);
+    if (utf8Bytes(JSON.stringify(data)) <= maxBytes) return data;
+    if (rows.length <= 1) throw Object.assign(new Error("Response metadata exceeds its budget"), { code: "storage_unavailable" });
+    rows.pop();
+  }
 }
 
 /** Report a bounded page's shape so a caller can tell truncation from absence. */

@@ -113,10 +113,14 @@ describe("check-staging-bindings.mjs", () => {
     });
   });
 
-  it("reads the real wrangler.jsonc and verifies staging does not inherit production resources", () => {
+  it("reads the real wrangler.jsonc and verifies staging does not inherit production resources", async () => {
     const config = check.parseJsonc(readFileSync(resolve(projectRoot, "wrangler.jsonc"), "utf8"));
     const denylist = check.buildDenylist(config);
-    const staging = check.collectBindings(config.envs.staging);
+    const { unstable_readConfig } = await import("wrangler");
+    const effective = unstable_readConfig({ config: resolve(projectRoot, "wrangler.jsonc"), env: "staging" }, { hideWarnings: true });
+    const staging = check.collectBindings(effective);
+    expect(config.envs).toBeUndefined();
+    expect(staging).toEqual(check.collectBindings(config.env.staging));
 
     expect(denylist.d1_databases.some(d => d.database_id)).toBe(true);
     expect(denylist.kv_namespaces.some(k => k.id)).toBe(true);

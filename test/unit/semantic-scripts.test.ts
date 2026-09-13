@@ -1,8 +1,103 @@
 import { spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../../scripts/check-staging-bindings.mjs", () => ({ readVerifiedStage: vi.fn(async () => ({})) }));
+
+async function runFixture(mode: "complete" | "pending" | "false-success" | "existing" | "redirect") {
+  // The actual HTTP driver runs; only external Cloudflare binding proof is replaced.
+  const { main } = await import("../../scripts/staging-semantic-canary.mjs");
+  const { readVerifiedStage } = await import("../../scripts/check-staging-bindings.mjs");
+  const entries = new Map<string, { owner: string; content: string; visibility: string }>();
+  entries.set("preexisting", { owner: "unrelated", content: "Unrelated memory", visibility: "public" });
+  const erased: string[] = [];
+  const receipts: string[] = [];
+  const requests: string[] = [];
+  let userCount = 0;
+  let entryCount = 0;
+  let keyedCaptures = 0;
+  const server = createServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const body = raw ? JSON.parse(raw) : {};
+    const url = new URL(req.url!, "http://localhost");
+    requests.push(url.pathname);
+    const owner = req.headers.authorization ?? "";
+    let data: unknown;
+    if (url.pathname === "/api/users") {
+      expect(readVerifiedStage).toHaveBeenCalled();
+      if (mode === "redirect") {
+        res.statusCode = 307;
+        res.setHeader("Location", `http://${req.headers.host}/steal`);
+      } else {
+        res.statusCode = 201;
+        data = { ok: true, key: `slm_user${++userCount}.secret` };
+      }
+    } else if (url.pathname === "/capture/batch") {
+      keyedCaptures++;
+      const item = body.items[0];
+      const id = mode === "existing" ? "preexisting" : `fixture-${++entryCount}`;
+      const outcome = mode === "existing" ? "replayed" : "created";
+      if (mode !== "existing") entries.set(id, { owner, ...item });
+      data = { ok: true, data: { items: [{ client_item_id: item.client_item_id, status: outcome, data: {
+        outcome, capture_mode: "create_only", entry: { entry_id: id }, receipt: { entry_id: id, episode_id: `episode-${id}`, revision: 1 },
+      } }], summary: { created: outcome === "created" ? 1 : 0, replayed: outcome === "replayed" ? 1 : 0, failed: 0 } } };
+    } else if (url.pathname === "/capture") {
+      const match = [...entries].find(([, entry]) => entry.owner === owner && entry.content === body.content);
+      if (match) {
+        res.statusCode = 409;
+        data = { ok: false, action: "blocked_duplicate", match_id: match[0] };
+      } else {
+        const id = `fixture-${++entryCount}`;
+        entries.set(id, { owner, ...body });
+        data = { ok: true, id, action: "stored" };
+      }
+    } else if (url.pathname === "/recall") {
+      data = { ok: true, results: [...entries].filter(([, entry]) => entry.owner === owner || entry.visibility === "public")
+        .map(([id]) => ({ id })) };
+    } else if (url.pathname === "/forget") {
+      if (body.id !== body.confirm_entry_id) {
+        res.statusCode = 400;
+        data = { ok: false, error: "confirmation_required" };
+      } else {
+        erased.push(body.id);
+        if (mode !== "false-success") entries.delete(body.id);
+        data = mode === "false-success" ? { ok: false, error: "not deleted" }
+          : { ok: true, id: body.id, operation_id: `op-${body.id}`, erasure_status: mode === "pending" ? "pending_cleanup" : "complete", retry: false };
+      }
+    } else if (url.pathname === "/erasure-status") {
+      const operation = url.searchParams.get("operation_id")!;
+      receipts.push(operation);
+      data = { ok: true, erasure: { operationId: operation, entryId: operation.slice(3), status: mode === "pending" ? "pending_cleanup" : "complete" } };
+    } else {
+      res.statusCode = 404;
+      data = { ok: false };
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(data));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  vi.stubEnv("SLM_BASE_URL", origin);
+  vi.stubEnv("SLM_ADMIN_KEY", "slm_admin.secret");
+  vi.stubEnv("SLM_ADMIN_KEY_FILE", "");
+  const output: string[] = [];
+  const log = vi.spyOn(console, "log").mockImplementation(value => { output.push(String(value)); });
+  let error: unknown;
+  try { await main(); } catch (cause) { error = cause; }
+  finally {
+    log.mockRestore();
+    vi.unstubAllEnvs();
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+  return { error, output, entries, erased, receipts, keyedCaptures, requests };
+}
 
 const projectRoot = resolve(import.meta.dirname, "../..");
 const canaryScript = resolve(projectRoot, "scripts/staging-semantic-canary.mjs");
@@ -34,6 +129,35 @@ function meaningfulTokens(value: string): Set<string> {
 }
 
 describe("semantic deployment scripts", () => {
+  it("executes confirmed keyed-fixture cleanup and verifies every receipt", async () => {
+    const result = await runFixture("complete");
+    expect(result.error).toBeUndefined();
+    expect(result.keyedCaptures).toBe(4);
+    expect(result.erased).toHaveLength(4);
+    expect(result.receipts).toHaveLength(4);
+    expect([...result.entries.keys()]).toEqual(["preexisting"]);
+  });
+
+  it.each(["pending", "false-success"] as const)("fails without printing success when cleanup is %s", async mode => {
+    const result = await runFixture(mode);
+    expect(result.error).toMatchObject({ code: "CANARY_CLEANUP_FAILED" });
+    expect(result.output.join("\n")).not.toContain("CANARY_OK");
+    expect(result.erased).toHaveLength(4);
+  });
+
+  it("never registers a replayed or preexisting entry for deletion", async () => {
+    const result = await runFixture("existing");
+    expect(result.error).toMatchObject({ code: "CANARY_CAPTURE_FAILED" });
+    expect(result.erased).toEqual([]);
+    expect(result.entries.has("preexisting")).toBe(true);
+  });
+
+  it("never follows a redirect with fixture credentials", async () => {
+    const result = await runFixture("redirect");
+    expect(result.error).toMatchObject({ code: "CANARY_REQUEST_FAILED" });
+    expect(result.requests).toEqual(["/api/users"]);
+    expect(result.erased).toEqual([]);
+  });
   it("requires an explicit staging URL and admin key", () => {
     const result = run(canaryScript);
 
