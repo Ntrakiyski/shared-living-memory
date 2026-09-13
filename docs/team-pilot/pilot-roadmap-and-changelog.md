@@ -4,6 +4,13 @@
 > "what do I do next" view: every stage has user stories, concrete deliverables, and
 > the observable change for the team. The `[x]`/`[ ]` markers reflect the `codex/slm-team-pilot-readiness`
 > branch, not `main`.
+>
+> **Status reconciled 2026-09-13** against `docs/superpowers/plans/2026-09-13-agent-memory-reliability.md`
+> and `docs/team-pilot/releases/agent-reliability-1-1.md`. Stages 7–10 are marked
+> `[x]` **only** where code and tests back the claim; each mark names the test file
+> or evidence document that proves it, and anything that needs a deployed
+> environment is marked `[~]` (built locally, not yet verified on staging) rather
+> than done. Text above this line is retained as dated history.
 
 ## Changelog — what the current version does
 
@@ -88,16 +95,17 @@ Legend: each stage = one mergeable slice. **Gate rule:** a stage with a `▶` ga
 - **What the team sees:** the documented 15-minute connect-and-capture journey succeeds without operator debugging.
 
 ### Stage 7 — Correction and attribution UX
-**Status:** `[ ]` not started
+**Status:** `[~]` partially delivered
 
 - **User stories:**
   - "As a teammate, I can tell who wrote a memory and whether it's mine, and I can correct/outdate/restore without deleting history."
   - "As a teammate, I see the consequences before I publish or privatize."
 - **Deliverables:** author + scope on every card; Edit / Add clarification / Mark outdated / View history / Restore; tag add/remove; visibility-change warnings.
 - **What the team sees:** correcting shared knowledge is the normal, visible path — hard delete becomes a rare, warned action.
+- **Reconciled status (2026-09-13):** delivered — author and scope on every recall card (`test/ui/recall-citation-cards.test.ts`); View history and Restore (`test/ui/temporal-history-controls.test.ts`); Edit memory, Mark outdated / deprecate and visibility-change warnings in the dashboard; Add clarification through the REST `POST /append`; and the dashboard's status panel now requires a reason before submit and shows the valid next transitions. **Not delivered:** tag add/remove on an existing entry has no dedicated dashboard control (tags are set through `POST /update`, which replaces the tag array).
 
 ### Stage 8 — Recall receipts, feedback, evaluation
-**Status:** `[ ]` not started
+**Status:** `[x]` delivered for the core deliverables — **evidence:** `src/recall-events.ts`, `src/pilot-metrics.ts`, the `rate_recall` MCP tool, the `GET /pilot-metrics` route, and the `recall_events` / `recall_feedback` tables; MCP `rate_recall` now returns a structured result and an unknown event is an explicit tool error (`test/integration/mcp-listing-contract.test.ts` covers the surrounding read contracts). **Not delivered:** a synthetic eval set with golden questions.
 
 - **User stories:**
   - "As a teammate, I can rate a recall as helpful/not helpful and pick a reason — without my query or result text being stored."
@@ -106,16 +114,23 @@ Legend: each stage = one mergeable slice. **Gate rule:** a stage with a `▶` ga
 - **What the team sees:** thumbs-up/thumbs-down on results; admins get a real scorecard instead of anecdotes.
 
 ### Stage 9 — Stage, observe, secure, recover  ⚠️ requires your authorization before any Cloudflare/GitHub changes
-**Status:** `[ ]` not started
+**Status:** `[~]` built locally, **not verified on any deployment**
 
 - **User stories:**
   - "As an operator, I can deploy to isolated staging, get alerted when the service degrades, and restore within hours from a backup."
   - "As an operator, I know exactly what is safe to run in production because CI blocks high-severity dependencies and broken canaries."
 - **Deliverables:** staging D1/Vectorize/KV; readiness endpoint; canary + incident issue workflow; rate limiting; dependency security; recovery runbooks and drills.
+- **Reconciled status (2026-09-13):**
+  - Staging D1/Vectorize/KV declarations and a binding-isolation preflight: **built** (`wrangler.jsonc` staging environment with placeholder ids; `scripts/check-staging-bindings.mjs`), but no staging deployment exists, so nothing is provisioned and the control-plane comparison is unrun.
+  - Readiness endpoint: **built and tested** — `/ready` requires valid deployment metadata, a responsive D1 and `write_mode=enabled`, and returns 503 `maintenance_read_only` in maintenance (`test/integration/health.test.ts`, `test/integration/maintenance-mode.test.ts`).
+  - Canary + incident workflow: **built and its control flow verified** (`test/unit/canary-workflow.test.ts` proves a missing configuration fails rather than skips, a failed canary keeps the incident open, and incident records carry stage/code/version/time/workflow without secrets). The staging fixture run itself is unrun.
+  - Rate limiting: **deliberately not built.** The release specification excludes a new application rate limiter and instead relies on the documented four-writer target plus platform backpressure with sanitized 429/503 retry metadata. Treat this deliverable as superseded rather than missing.
+  - Dependency security: **not built** — CI runs typecheck, the test suite and the Workerd smoke, but there is no dependency audit job or Dependabot configuration.
+  - Recovery runbooks: `docs/team-pilot/operator-runbook.md` exists; the **drill is unrun**, and the compatible read-only recovery version has been written but never deployed.
 - **What the team sees:** nothing visible day-to-day — this is the invisible safety net that makes the pilot trustworthy.
 
 ### Stage 10 — Rehearse and document the launch
-**Status:** `[ ]` not started
+**Status:** `[~]` documentation and local rehearsal delivered; the staging rehearsal is unrun
 
 - **User stories:**
   - "As a participant, I have a 15-minute guide that takes me from personal key to my first private recall."
