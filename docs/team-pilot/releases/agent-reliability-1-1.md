@@ -15,7 +15,7 @@ This document records measured results only. It contains no credentials, keys, k
 | --- | --- |
 | Working directory | `projects/shared-living-memory` |
 | Branch created from | `origin/main` (`b9dffafd6181d46dc9bfbcbd05333ad3273b78b8`) |
-| Release commit under review | `fa4b1a17824949eec4a9c2c1a4998060347c5463` (`fa4b1a1`) |
+| Last functional commit | `fa4b1a17824949eec4a9c2c1a4998060347c5463` (`fa4b1a1`) — every commit after it touches only this evidence document, verified with `git diff --name-only fa4b1a1..HEAD` |
 | Release version | `1.1.0` — asserted equal in `package.json`, both `package-lock.json` version fields, and the MCP server version (`test/unit/release-version.test.ts`), with the dependency ranges pinned to the reviewed set |
 | Tag / GitHub release | **none**, deliberately: the specification forbids tagging or publishing before deployment authorization |
 | Node | v22.22.3 |
