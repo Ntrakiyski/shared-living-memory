@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it, expect, beforeEach } from "vitest";
 import worker from "../../src/testing";
 import { makeTestEnv, makeTestDb } from "../helpers/make-env";
@@ -104,5 +106,32 @@ describe("GET /ready", () => {
     const data = await res.json() as any;
     expect(data.status).toBe("not_ready");
     expect(data.reason).toBe("configuration_error");
+  });
+});
+
+describe("local development configuration", () => {
+  it("names every deployment variable in .dev.vars.example", () => {
+    // A developer copying the example must end up with a /ready that explains
+    // itself rather than a bare 503, so the example has to name all five.
+    const example = readFileSync(join(process.cwd(), ".dev.vars.example"), "utf8");
+    for (const name of [
+      "AUTH_TOKEN",
+      "SLM_DEPLOYMENT_ID",
+      "SLM_ENVIRONMENT",
+      "SLM_PUBLIC_BASE_URL",
+      "SLM_RELEASE_ID",
+      "SLM_WRITE_MODE",
+    ]) {
+      expect({ name, present: new RegExp(`^${name}=`, "m").test(example) })
+        .toEqual({ name, present: true });
+    }
+  });
+
+  it("uses synthetic local values, never a real deployment", () => {
+    const example = readFileSync(join(process.cwd(), ".dev.vars.example"), "utf8");
+    expect(example).toMatch(/SLM_ENVIRONMENT=test/);
+    // No production host or identifier may appear in the committed example.
+    expect(example).not.toMatch(/fractals-solutions\.com/);
+    expect(example).not.toMatch(/slm-fractals-production/);
   });
 });

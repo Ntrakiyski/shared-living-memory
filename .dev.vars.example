@@ -1,1 +1,21 @@
 AUTH_TOKEN=your_memorable_token_here
+
+# Deployment metadata. Every deployed environment must set these; they are what
+# /health, /ready and whoami report, and /ready answers 503 not_ready with
+# reason=configuration_error while any of the first four is missing.
+#
+# Local development may use the `test` environment with a synthetic URL:
+SLM_DEPLOYMENT_ID=slm-local-dev
+SLM_ENVIRONMENT=test
+SLM_PUBLIC_BASE_URL=http://localhost:8787
+SLM_RELEASE_ID=local-dev
+#
+# `enabled` (default when absent) or `read-only` maintenance mode. In read-only
+# mode every mutation is refused with 503 maintenance_read_only while the read
+# surface keeps working; an unrecognized value fails readiness.
+SLM_WRITE_MODE=enabled
+
+# Set to "true" only if you want OAuth issuance enabled locally. When it is not
+# "true", the OAuth endpoints answer 404 and personal API keys are the supported
+# authentication path.
+MCP_OAUTH_ENABLED=false
