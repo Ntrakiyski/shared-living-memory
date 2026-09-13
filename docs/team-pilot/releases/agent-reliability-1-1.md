@@ -119,7 +119,7 @@ Status legend: **PASS** = behaviour asserted by a test that was observed to fail
 | --- | --- | --- |
 | O1 exporter mode 0600, rejects existing/symlink/redirect, no key in argv/output/logs | **PASS** | `scripts/export-mcp-connection.mjs` with 28 behavioural tests (see §5). `scripts/connect-ai-clients.sh` was also updated to the personal-key path with 9 behavioural tests, and that work caught a real defect: the "unexpected extra argument" refusal echoed the offending value, which could have been a key — it no longer echoes any argument value. |
 | O2 explicit source retained, actor-based defaults, default-source hash survives retry, no relabelling | **PASS** | `test/integration/source-defaults.test.ts` — personal REST defaults to `api:<verified username>`, personal MCP to `mcp:<verified username>`, service capture to `operator:<verified service name>` (the service's name, not its identity id or its owner's username), an explicit label is preserved, the actor-default marker keeps the request hash stable across a rename, and an existing record is never relabelled. |
-| O3 staging preflight rejects copied production bindings; A/B isolation | **PARTIAL / BLOCKED** | preflight implemented and unit-tested by WP9; there is no staging deployment in this environment, so the deployed-control-plane half and the two-installation A/B isolation proof are **BLOCKED** (§5, §7). |
+| O3 staging preflight rejects copied production bindings; A/B isolation | **PASS (local) / BLOCKED (deployed)** | `scripts/check-staging-bindings.mjs` rejects a copied production D1/KV/Vectorize id, both production domains, an unknown origin, a missing `environment=staging` and a mismatched deployment id, failing closed on unknown fields (WP9 unit tests). The two-installation client-isolation proof is **done locally**: `test/integration/client-isolation.test.ts` runs Client A and Client B as fully independent real SQLite stores with separate keys and proves cross-authentication fails in both directions, no entry/episode/receipt/vector/edge/proposal/export path crosses the binding, the same username exists in both (so a username is not a boundary), and a workspace key is never a principal. **Blocked:** comparing the local configuration and the *deployed* staging control-plane metadata, which needs a real staging deployment. |
 | O4 missing canary config is failure; failed check cannot close incident; staging semantic fixture | **PARTIAL / BLOCKED** | workflow corrections implemented by WP9; cannot be exercised without a staging deployment. |
 | O5 maintenance mode blocks writes and mutation-bearing GETs but serves reads; compatible recovery | **NOT DONE** | `SLM_WRITE_MODE` is read and `/ready` reports `maintenance_read_only` with 503, but the read-only **safe-route allowlist and mutation gating are not implemented**. See §6. |
 
@@ -133,13 +133,13 @@ All commands run from the project directory.
 | --- | --- |
 | `npm ci` | exit 0 |
 | `npm test` (baseline, before any edit) | exit 0 — 1124 passed / 106 files |
-| `npm test` (final) | exit 0 — **1403 passed / 124 files** |
+| `npm test` (final) | exit 0 — **1411 passed / 125 files** |
 | `npm run typecheck` (final, runs `wrangler types` then `tsc --noEmit`) | exit 0, zero errors |
 | `npx tsc --noEmit` | exit 0; zero errors under `src/` |
 | `npm run smoke:workerd` | **exit 1, blocked** — `setsid: command not found` (see §7) |
 | `node --check scripts/*.mjs` | exit 0 for each script delivered by WP8/WP9 |
 
-Net change on the branch: **65 files changed, ~15,100 insertions, ~300 deletions** relative to `origin/main` (tracked files; `tasks/` agent notes remain untracked). The release specification itself is committed on the branch so it is preserved with the work; `tasks/` (agent working notes) remains untracked.
+Net change on the branch: **66 files changed, ~15,500 insertions, ~300 deletions** relative to `origin/main` (tracked files; `tasks/` agent notes remain untracked). The release specification itself is committed on the branch so it is preserved with the work; `tasks/` (agent working notes) remains untracked.
 
 Secret scan of the committed diff: one match, and it is a **synthetic test vector** for the secret detector (`sk_live_0123…` inside `status-metadata.test.ts`). No live key, hash, prefix or credential appears anywhere in the diff.
 
