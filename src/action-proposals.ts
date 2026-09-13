@@ -106,6 +106,12 @@ export interface CreateActionProposalInput {
   expiresAt?: number | null;
   correlationId?: string | null;
   now?: number;
+  /**
+   * Optional designated reviewer, selected by username and bound to the
+   * resolved immutable user id. This is the ONLY public channel for the binding;
+   * `payload.reviewerUserId` from a caller is rejected.
+   */
+  reviewerUsername?: string;
 }
 
 export interface ReviewActionProposalInput {
@@ -199,6 +205,10 @@ function mapProposal(row: ProposalRow): ActionProposal {
     expiresAt: row.expires_at,
     reviewerKind: row.reviewer_kind,
     reviewerId: row.reviewer_id,
+    audience: designatedReviewerId(row)
+      ? { mode: "designated" as const, designated_reviewer_id: designatedReviewerId(row) }
+      : { mode: "legacy" as const, designated_reviewer_id: null },
+    designatedReviewerId: designatedReviewerId(row),
     reviewReason: row.review_reason,
     reviewedAt: row.reviewed_at,
     executorKind: row.executor_kind,
@@ -274,12 +284,68 @@ async function proposalOwnerUserId(
   return null;
 }
 
+/** The bound reviewer id, if this proposal has one. */
+function designatedReviewerId(row: ProposalRow): string | null {
+  try {
+    const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+    const value = payload?.reviewerUserId;
+    return typeof value === "string" && value ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve a designated reviewer once, to its immutable user id. A rejected
+ * lookup is deliberately generic and never exposes a directory of accounts.
+ */
+async function resolveDesignatedReviewer(
+  env: Pick<Env, "DB">,
+  input: { reviewerUsername?: string; actorId: string; subjectUserId: string },
+): Promise<{ id: string; username: string } | null> {
+  const raw = input.reviewerUsername;
+  if (raw === undefined) return null;
+  const username = typeof raw === "string" ? raw.trim() : "";
+  if (!username || username.length > 32 || !/^[A-Za-z0-9_]+$/.test(username)) {
+    throw new ActionProposalError("invalid_input", "Reviewer must be an active account.");
+  }
+  const row = await env.DB.prepare(
+    `SELECT id, username FROM users
+     WHERE normalized_username = ? AND status = 'active'
+       AND normalized_username <> '_system'`,
+  ).bind(username.toLowerCase()).first<{ id: string; username: string }>();
+  if (!row) {
+    throw new ActionProposalError("invalid_input", "Reviewer must be an active account.");
+  }
+  // This path requires a separate reviewing account.
+  if (row.id === input.actorId || row.id === input.subjectUserId) {
+    throw new ActionProposalError(
+      "invalid_input",
+      "A designated reviewer must be an account other than the proposer and the subject owner.",
+    );
+  }
+  return { id: row.id, username: row.username };
+}
+
 async function actorCanAccessProposal(
   env: Pick<Env, "DB">,
   actor: ActorContext,
   row: ProposalRow,
 ): Promise<boolean> {
   if (actor.kind === "system") return true;
+
+  // A designated proposal has a fixed audience: proposer, subject owner and the
+  // designated reviewer. Generic admin or team visibility cannot override it.
+  const designated = designatedReviewerId(row);
+  if (designated) {
+    if (actor.kind === "service") {
+      return row.proposer_kind === "service" && row.proposer_id === actor.serviceIdentityId;
+    }
+    if (actor.userId === designated) return true;
+    if (row.proposer_kind === "human" && row.proposer_id === actor.userId) return true;
+    return await proposalOwnerUserId(env, row) === actor.userId;
+  }
+
   if (actor.kind === "service") {
     return row.proposer_kind === "service" && row.proposer_id === actor.serviceIdentityId
       || row.visibility_scope === "team";
@@ -580,7 +646,23 @@ export async function createActionProposal(
   if (prepared.forcePrivateInbox && input.visibilityScope === "team") {
     throw new ActionProposalError("forbidden", "A proposal touching private memory cannot be team-visible.");
   }
-  const { payload, targetIds, expectedPreconditions, expectedRevision } = prepared;
+  if (Object.prototype.hasOwnProperty.call(input.payload ?? {}, "reviewerUserId")) {
+    throw new ActionProposalError(
+      "invalid_input",
+      "reviewerUserId is not a public payload field; pass reviewer_username instead.",
+    );
+  }
+  const designatedReviewer = await resolveDesignatedReviewer(env, {
+    reviewerUsername: input.reviewerUsername,
+    actorId: resolved.actor.actorId,
+    subjectUserId: resolved.subjectUserId,
+  });
+  const { targetIds, expectedPreconditions, expectedRevision } = prepared;
+  // The immutable id is stored BEFORE the payload hash and idempotency identity
+  // are computed, so reusing the key with a different reviewer conflicts.
+  const payload = designatedReviewer
+    ? { ...prepared.payload, reviewerUserId: designatedReviewer.id }
+    : prepared.payload;
   const payloadJson = stableJson(payload);
   const targetIdsJson = stableJson(targetIds);
   const preconditionsJson = stableJson(expectedPreconditions);
@@ -763,6 +845,22 @@ export async function reviewActionProposal(
       if (!current) throw new ActionProposalError("not_found", "Proposal was not found.");
       if (!await actorCanAccessProposal(env, reviewer, current)) {
         throw new ActionProposalError("forbidden", "This proposal is not visible to the reviewer.");
+      }
+      const boundReviewer = designatedReviewerId(current);
+      if (boundReviewer) {
+        if (boundReviewer !== reviewer.actorId) {
+          throw new ActionProposalError(
+            "forbidden",
+            "Only the designated reviewer may review this proposal.",
+          );
+        }
+        // The reviewer must still be active before a new effect.
+        const active = await env.DB.prepare(
+          `SELECT id FROM users WHERE id = ? AND status = 'active'`,
+        ).bind(reviewer.actorId).first<{ id: string }>();
+        if (!active) {
+          throw new ActionProposalError("forbidden", "The designated reviewer is no longer active.");
+        }
       }
       if (reviewIsIdempotent(current, reviewer, input.decision)) return mapProposal(current);
       if (current.expires_at !== null && current.expires_at <= now && current.status === "pending") {

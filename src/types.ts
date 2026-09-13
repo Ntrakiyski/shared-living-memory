@@ -496,6 +496,13 @@ export interface ActionProposal {
   policyVersion: string;
   idempotencyKey: string;
   expiresAt: number | null;
+  /**
+   * Audience for review/execution. `designated` means only the proposer, the
+   * resolved subject owner and the bound reviewer may see it; `legacy` means the
+   * pre-existing unassigned/self-review behaviour.
+   */
+  audience: { mode: "designated" | "legacy"; designated_reviewer_id: string | null };
+  designatedReviewerId: string | null;
   reviewerKind: ActorKind | null;
   reviewerId: string | null;
   reviewReason: string | null;

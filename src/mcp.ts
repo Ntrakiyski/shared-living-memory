@@ -696,10 +696,13 @@ export function buildMcpServer(
           risk_level: z.enum([...PROPOSAL_RISK_LEVELS] as [string, ...string[]]).default("medium"),
           reason: z.string(),
           idempotency_key: z.string(),
+          reviewer_username: z.string().optional().describe(
+            "Optional designated reviewer, by username. Binds this proposal's audience to the proposer, the subject owner and that one account, and stores the reviewer's immutable user id before the payload hash is computed.",
+          ),
           expires_at: z.number().int().optional(),
         },
       },
-      safe(async ({ action_type, payload_json, target_ids, expected_revision, visibility_scope, risk_level, reason, idempotency_key, expires_at }) => {
+      safe(async ({ action_type, payload_json, target_ids, expected_revision, visibility_scope, risk_level, reason, idempotency_key, expires_at, reviewer_username }) => {
         let payload: unknown;
         try { payload = JSON.parse(payload_json); } catch { throw new Error("payload_json must be valid JSON."); }
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("payload_json must contain a JSON object.");
@@ -714,6 +717,7 @@ export function buildMcpServer(
           reason,
           idempotencyKey: idempotency_key,
           expiresAt: expires_at,
+          reviewerUsername: reviewer_username,
         });
         return { content: [{ type: "text", text: JSON.stringify(proposal, null, 2) }] };
       }),
@@ -1742,10 +1746,13 @@ export function buildMcpServer(
           risk_level: z.enum([...PROPOSAL_RISK_LEVELS] as [string, ...string[]]).default("medium"),
           reason: z.string(),
           idempotency_key: z.string(),
+          reviewer_username: z.string().optional().describe(
+            "Optional designated reviewer, by username. Binds this proposal's audience to the proposer, the subject owner and that one account, and stores the reviewer's immutable user id before the payload hash is computed.",
+          ),
           expires_at: z.number().int().optional(),
         },
       },
-      governedTool(async ({ action_type, payload_json, target_ids, expected_revision, visibility_scope, risk_level, reason, idempotency_key, expires_at }) => {
+      governedTool(async ({ action_type, payload_json, target_ids, expected_revision, visibility_scope, risk_level, reason, idempotency_key, expires_at, reviewer_username }) => {
         let payload: unknown;
         try { payload = JSON.parse(payload_json); } catch { throw new Error("payload_json must be valid JSON."); }
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("payload_json must contain a JSON object.");
@@ -1760,6 +1767,7 @@ export function buildMcpServer(
           reason,
           idempotencyKey: idempotency_key,
           expiresAt: expires_at,
+          reviewerUsername: reviewer_username,
         });
         return { content: [{ type: "text", text: JSON.stringify(proposal, null, 2) }] };
       }),

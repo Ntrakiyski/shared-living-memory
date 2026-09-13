@@ -956,8 +956,12 @@ export const defaultHandler = {
         evidence?: unknown[];
         idempotency_key?: string;
         expires_at?: number | null;
+        reviewer_username?: string;
       };
       try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
+      if (body.reviewer_username !== undefined && typeof body.reviewer_username !== "string") {
+        return json({ ok: false, error: "reviewer_username must be a string" }, 400);
+      }
       if (!(ACTION_TYPES as readonly string[]).includes(body.action_type ?? "")) {
         return json({ ok: false, error: `action_type must be one of: ${ACTION_TYPES.join(", ")}` }, 400);
       }
@@ -980,6 +984,7 @@ export const defaultHandler = {
           reason: body.reason ?? "",
           evidence: body.evidence,
           idempotencyKey: body.idempotency_key ?? "",
+          reviewerUsername: body.reviewer_username,
           expiresAt: body.expires_at,
         });
         return json({ ok: true, proposal }, 201);
