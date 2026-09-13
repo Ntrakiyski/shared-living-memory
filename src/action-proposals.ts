@@ -1359,6 +1359,26 @@ async function executeEntryRestore(env: Env, row: ProposalRow, now: number): Pro
   return entryResult(row, "entry.restore", committed);
 }
 
+/**
+ * Trusted status metadata for a proposal-driven status change: the ACTUAL
+ * executor is the actor, the stored approving account is the reviewer, and the
+ * stored review reason is the reason. The submission rationale stays linked
+ * through proposal_id. Never inferred from entry ownership.
+ */
+function proposalStatusChange(row: ProposalRow, axis: "lifecycle" | "epistemic") {
+  if (!row.executor_id || !row.reviewer_id) return undefined;
+  const executorKind = row.executor_kind === "service" || row.executor_kind === "system"
+    ? row.executor_kind
+    : "human";
+  return {
+    axis,
+    reason: row.review_reason,
+    actor: { kind: executorKind as "human" | "service" | "system", id: row.executor_id },
+    reviewer: { kind: "human" as const, id: row.reviewer_id },
+    proposalId: row.id,
+  };
+}
+
 async function executeEntryStatus(env: Env, row: ProposalRow, now: number): Promise<EntryProposalExecutionResult> {
   const payload = parseRecord(row.payload_json);
   if (!payload || typeof payload.status !== "string"
@@ -1379,6 +1399,7 @@ async function executeEntryStatus(env: Env, row: ProposalRow, now: number): Prom
     validTo: entry.valid_to,
     epistemicStatus: entry.epistemic_status,
     mutationId: `proposal:${row.id}`,
+    statusChange: proposalStatusChange(row, "lifecycle"),
     now,
   }, env);
   const result = entryResult(row, "entry.status.set", committed);
@@ -1410,6 +1431,7 @@ async function executeEntryEpistemicStatus(env: Env, row: ProposalRow, now: numb
     validTo: entry.valid_to,
     epistemicStatus: next,
     mutationId: `proposal:${row.id}`,
+    statusChange: proposalStatusChange(row, "epistemic"),
     now,
   }, env);
   return entryResult(row, "entry.epistemic-status.set", committed);

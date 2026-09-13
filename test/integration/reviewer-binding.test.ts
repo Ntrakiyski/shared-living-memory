@@ -352,3 +352,59 @@ describe("proposal tool structured results (Section 4.4)", () => {
     expect(executed.structuredContent.data.execution.proposalId).toBe(createdData.proposal.id);
   });
 });
+
+describe("M2: proposal-driven status metadata", () => {
+  let harness: Harness;
+  let entryId: string;
+
+  beforeEach(async () => {
+    harness = makeHarness();
+    entryId = await seedCandidate(harness);
+  });
+
+  afterEach(() => {
+    harness.db.close();
+  });
+
+  it("records the executor as actor and the approving account as reviewer", async () => {
+    const proposal = await createActionProposal(harness.env, submission(entryId));
+    await reviewActionProposal(harness.env, {
+      actor: human(JARVIS), proposalId: proposal.id, decision: "approve",
+      reason: "Evidence checked against the source",
+    });
+    await executeApprovedProposal(harness.env, { actor: human(JARVIS), proposalId: proposal.id });
+
+    const change = JSON.parse(harness.db.one<{ status_change_json: string }>(
+      `SELECT status_change_json FROM episodes
+       WHERE entry_id = ? AND status_change_json IS NOT NULL LIMIT 1`,
+      entryId,
+    ).status_change_json);
+
+    expect(change).toMatchObject({
+      axis: "epistemic",
+      from: "candidate",
+      to: "reviewed",
+      reason_status: "provided",
+      actor: { kind: "human", id: JARVIS },
+      reviewer: { kind: "human", id: JARVIS },
+      proposal_id: proposal.id,
+    });
+    // The submission rationale is the change's reason, and the owner is never
+    // substituted as the actor or the reviewer.
+    expect(change.reason).toBe("Evidence checked against the source");
+    expect(change.actor.id).not.toBe(RESEARCHER);
+    expect(change.reviewer.id).not.toBe(RESEARCHER);
+    // The revision links the metadata to the version it produced.
+    expect(harness.db.one<{ revision: number }>(
+      "SELECT revision FROM entries WHERE id = ?", entryId,
+    ).revision).toBe(change.revision);
+  });
+
+  it("leaves pre-release episodes explicitly unknown", async () => {
+    // The original capture episode predates this release's metadata.
+    expect(harness.db.one<{ status_change_json: string | null }>(
+      `SELECT status_change_json FROM episodes WHERE entry_id = ? ORDER BY created_at ASC LIMIT 1`,
+      entryId,
+    ).status_change_json).toBeNull();
+  });
+});
