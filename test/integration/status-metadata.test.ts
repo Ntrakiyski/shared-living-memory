@@ -401,3 +401,89 @@ describe("staleness transition safety (G5)", () => {
     }
   });
 });
+
+describe("M5: status metadata in MCP history", () => {
+  let harness: Harness;
+
+  beforeEach(async () => {
+    harness = makeHarness();
+    await seed(harness);
+  });
+
+  afterEach(() => {
+    harness.db.close();
+  });
+
+  async function historyOf(harnessIn: Harness, entryId: string) {
+    const { buildMcpServer } = await import("../../src/mcp");
+    const actor = {
+      kind: "human" as const,
+      actorId: OWNER,
+      userId: OWNER,
+      role: "member" as const,
+      authMethod: "personal_api_key",
+      scopes: new Set<never>(),
+    };
+    const server = buildMcpServer(harnessIn.env, { waitUntil: () => {} } as never, actor as never, "full") as any;
+    return server._registeredTools.history.handler({ entry_id: entryId }, {});
+  }
+
+  it("attaches permitted status_change metadata to each episode", async () => {
+    await applyStatus("entry-1", "canonical", harness.env, OWNER, {
+      reason: "Reviewed against the source",
+      actor: { kind: "human", id: OWNER },
+    });
+
+    const result = await historyOf(harness, "entry-1");
+    const data = result.structuredContent.data;
+    expect(result.structuredContent.ok).toBe(true);
+    const withChange = data.episodes.find((episode: any) => episode.status_change !== null);
+    expect(withChange).toBeTruthy();
+    expect(withChange.status_change).toMatchObject({
+      axis: "lifecycle",
+      to: "canonical",
+      reason: "Reviewed against the source",
+      reason_truncated: false,
+      actor: { kind: "human", id: OWNER },
+    });
+    // The pre-release episode reports no status metadata rather than a guess.
+    const withoutChange = data.episodes.find((episode: any) => episode.status_change === null);
+    expect(withoutChange).toBeTruthy();
+  });
+
+  it("truncates an over-long reason explicitly rather than silently", async () => {
+    const longReason = "r".repeat(2_000);
+    await applyStatus("entry-1", "canonical", harness.env, OWNER, {
+      reason: longReason,
+      actor: { kind: "human", id: OWNER },
+    });
+    const result = await historyOf(harness, "entry-1");
+    const change = result.structuredContent.data.episodes
+      .map((episode: any) => episode.status_change)
+      .find((value: any) => value !== null);
+    expect(change.reason_truncated).toBe(true);
+    expect([...change.reason]).toHaveLength(240);
+    expect(change.reason_original_code_points).toBe(2_000);
+  });
+
+  it("keeps structuredContent inside the history budget and reports truncation counts", async () => {
+    for (let index = 0; index < 4; index++) {
+      await applyStatus("entry-1", index % 2 === 0 ? "draft" : "canonical", harness.env, OWNER, {
+        reason: `change ${index}`,
+        actor: { kind: "human", id: OWNER },
+      });
+    }
+    const result = await historyOf(harness, "entry-1");
+    const data = result.structuredContent.data;
+    expect(data.counts.episodes.returned).toBe(data.episodes.length);
+    expect(data.counts.episodes.total).toBeGreaterThanOrEqual(data.episodes.length);
+    expect(typeof data.truncated).toBe("boolean");
+    expect(new TextEncoder().encode(JSON.stringify(data)).byteLength).toBeLessThanOrEqual(16_384);
+  });
+
+  it("returns nothing for an entry the caller does not own", async () => {
+    const result = await historyOf(harness, "does-not-exist");
+    expect(result.structuredContent).toBeUndefined();
+    expect(result.content[0].text).toContain("No history found");
+  });
+});

@@ -207,7 +207,7 @@ async function loadOwnedMcpHistory(
     env.DB.prepare(
       `SELECT ep.id, ep.mutation_kind, ep.parent_episode_id,
               ep.restored_from_snapshot_id, ep.content_hash, ep.source,
-              ep.content_type, d.title AS source_title,
+              ep.content_type, ep.status_change_json, d.title AS source_title,
               COALESCE(d.source_url, ep.source_url) AS source_url,
               ep.created_at, COUNT(*) OVER() AS total_count
        FROM episodes ep
@@ -240,7 +240,7 @@ async function loadOwnedMcpHistory(
       sourceTitle: row.source_title,
       sourceUrl: row.source_url,
     }, "owner_mcp");
-    const { total_count: _totalCount, ...metadata } = row;
+    const { total_count: _totalCount, status_change_json: rawStatusChange, ...metadata } = row;
     return {
       ...metadata,
       source: safeSource,
@@ -250,6 +250,7 @@ async function loadOwnedMcpHistory(
         row.content_type,
         SOURCE_TITLE_MAX_CODE_POINTS,
       ),
+      status_change: boundStatusChange(rawStatusChange),
     };
   });
   const snapshots = snapshotResult.results.map(({ total_count: _totalCount, ...row }) => row);
@@ -260,6 +261,34 @@ async function loadOwnedMcpHistory(
 function entryOwner(match: unknown): string {
   const value = (match as Record<string, unknown>)?.owner_user_id;
   return typeof value === "string" ? value : "";
+}
+
+/**
+ * Status metadata attached to an episode. Permissioned memory content, so it is
+ * bounded and its truncation is explicit; a pre-release episode has none.
+ */
+export const STATUS_CHANGE_REASON_MAX_CODE_POINTS = 240;
+
+function boundStatusChange(raw: unknown): Record<string, unknown> | null {
+  if (typeof raw !== "string" || !raw) return null;
+  let parsed: Record<string, unknown>;
+  try {
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    parsed = value as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const reason = typeof parsed.reason === "string" ? parsed.reason : null;
+  if (reason === null) return { ...parsed, reason: null, reason_truncated: false };
+  const points = [...reason];
+  const truncated = points.length > STATUS_CHANGE_REASON_MAX_CODE_POINTS;
+  return {
+    ...parsed,
+    reason: truncated ? points.slice(0, STATUS_CHANGE_REASON_MAX_CODE_POINTS).join("") : reason,
+    reason_truncated: truncated,
+    reason_original_code_points: points.length,
+  };
 }
 
 function renderBoundedMcpHistory(history: LoadedMcpHistory): string {
@@ -1727,10 +1756,28 @@ export function buildMcpServer(
     audited("history", async ({ entry_id }) => {
       const history = await loadOwnedMcpHistory(env, userId, entry_id);
       if (!history) {
+        // Hidden existence stays hidden: a non-owner learns nothing.
         return { content: [{ type: "text", text: `No history found for entry ${entry_id}.` }] };
       }
+      // The text is rendered from the already-bounded structured data, so
+      // structuredContent is never an unbounded copy of what was omitted.
+      const text = renderBoundedMcpHistory(history);
+      const counts = {
+        episodes: { returned: history.episodes.length, total: history.episodeTotal },
+        snapshots: { returned: history.snapshots.length, total: history.snapshotTotal },
+      };
+      const envelope = okResult({
+        projection: history.projection,
+        episodes: history.episodes,
+        snapshots: history.snapshots,
+        truncated: counts.episodes.returned < counts.episodes.total
+          || counts.snapshots.returned < counts.snapshots.total,
+        counts,
+        guidance: "Raw history is owner-only. Status changes are recorded per episode as status_change.",
+      });
       return {
-        content: [{ type: "text", text: renderBoundedMcpHistory(history) }],
+        structuredContent: envelope as unknown as Record<string, unknown>,
+        content: [{ type: "text" as const, text }],
       };
     }),
   );
