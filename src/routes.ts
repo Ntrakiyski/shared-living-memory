@@ -1054,7 +1054,7 @@ export const defaultHandler = {
 
     // POST /capture
     if (url.pathname === "/capture" && request.method === "POST") {
-      const { error: authErr, user_id } = await requireAuthAsync(request, env);
+      const { error: authErr, user_id, username } = await requireAuthAsync(request, env);
       if (authErr) return captureRequestError("Unauthorized", 401);
 
       let parsedBody: unknown;
@@ -1084,7 +1084,8 @@ export const defaultHandler = {
         result = await captureEntry(
           body.content,
           body.tags ?? [],
-          typeof body.source === "string" ? body.source : "api",
+          // An omitted source resolves to this transport's verified principal.
+          typeof body.source === "string" ? body.source : `api:${username ?? user_id}`,
           env,
           ctx,
           user_id,

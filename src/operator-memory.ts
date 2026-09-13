@@ -209,7 +209,14 @@ export async function captureServicePrivateDraft(
       "Idempotency key must contain 1 to 240 non-whitespace characters.",
     );
   }
-  const effectiveSource = input.source ?? `operator:${verified.actor.serviceIdentityId}`;
+  // The default label names the verified SERVICE, not its owner account.
+  const serviceName = input.source === undefined
+    ? (await env.DB.prepare(
+      `SELECT name FROM service_identities WHERE id = ?`,
+    ).bind(verified.actor.serviceIdentityId).first<{ name: string }>())?.name
+      ?? verified.actor.serviceIdentityId
+    : null;
+  const effectiveSource = input.source ?? `operator:${serviceName}`;
   const keyed = idempotencyKey !== undefined;
 
   // Retry identity is decided before any write, and erased state is evaluated

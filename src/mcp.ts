@@ -865,7 +865,16 @@ export function buildMcpServer(
       }
       let result;
       try {
-        result = await captureEntry(content, tags ?? [], source ?? "claude", env, ctx, userId, {
+        // Actor-based default: the declared source is provenance, and an omitted
+        // one resolves to this transport's verified principal label (Section 5.3).
+        result = await captureEntry(
+          content,
+          tags ?? [],
+          source ?? `mcp:${await resolveOwnerUsername()}`,
+          env,
+          ctx,
+          userId,
+          {
           sourceUrl: source_url,
           sourceTitle: source_title,
           visibility,
