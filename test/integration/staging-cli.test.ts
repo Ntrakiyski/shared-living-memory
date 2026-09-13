@@ -334,6 +334,45 @@ it("measures complete chat SSE and rejects missing completion or stream errors",
   }
 });
 
+it("accepts real provider citation tokens over HTTP and rejects missing or impossible source numbers", async () => {
+  let events: object[] = [];
+  let requests = 0;
+  const server = createServer((request, response) => {
+    requests++;
+    expect(request.url).toBe("/chat");
+    expect(request.headers.authorization).toBe("Bearer fixture");
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    for (const event of events) response.write(`data: ${JSON.stringify(event)}\n\n`);
+    response.end("data: [DONE]\n\n");
+  });
+  servers.push(server);
+  await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+  const address = server.address() as { port: number };
+  const client = createLoadClient({ origin: `http://127.0.0.1:${address.port}`, key: "fixture" });
+  const text = "The silver compass retains safe harbor decisions [1].";
+  events = ["The silver compass retains safe harbor decisions [", 1, "]."].map(token => ({
+    response: token, choices: [{ delta: { content: String(token) } }],
+  }));
+  const numbered = await client.chat("What does the silver compass retain?");
+  expect(numbered.ok).toBe(true);
+  if (numbered.ok) expect(numbered.value.answer_bytes).toBe(Buffer.byteLength(text));
+  for (const citation of ["[Source 1]", "[Source 1](https://example.test/evidence)", "[1](https://example.test/evidence)"]) {
+    events = [{ response: `Safe harbor decisions ${citation}.` }];
+    expect((await client.chat("fixture")).ok).toBe(true);
+  }
+  for (const [answer, error] of [
+    ["Safe harbor decisions.", "chat_grounding_missing"],
+    ["Safe harbor decisions [0].", "chat_citation_invalid"],
+    ["Safe harbor decisions [Source 9].", "chat_citation_invalid"],
+    ["Safe harbor decisions [1] [-1].", "chat_citation_invalid"],
+  ]) {
+    events = [{ response: answer }];
+    const result = await client.chat("fixture");
+    expect(result).toMatchObject({ ok: false, error, retries: 0 });
+  }
+  expect(requests).toBe(8);
+});
+
 
 it("settles four concurrent cleanup workers and continues after one HTTP failure without retrying deletion", async () => {
   const f = await fixture({ badProvenance: true, failFirstCleanup: true });

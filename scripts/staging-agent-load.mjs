@@ -615,9 +615,15 @@ export function createLoadClient({ origin, key, fetchImpl = fetch, sleep = async
         let data;
         try { data = JSON.parse(event.data); } catch { throw new RequestFailure("chat_invalid_sse"); }
         if (data.error || data.errors || event.event === "error") throw new RequestFailure("chat_stream_error");
-        answer += data.response ?? data.choices?.[0]?.delta?.content ?? "";
+        const delta = data.choices?.[0]?.delta?.content;
+        answer += typeof data.response === "string" ? data.response : typeof delta === "string" ? delta : "";
       }
-      if (!answer.trim() || !/\[Source \d+\]/.test(answer)) throw new RequestFailure("chat_grounding_missing");
+      // /chat labels evidence [N] and requests [Source N]; both identify the
+      // same sources. Its stream omits the source list, so only the fixed
+      // CHAT_RECALL_TOP_K=8 range can be checked here, not exact membership.
+      const citations = [...answer.matchAll(/\[(?:Source )?(-?\d+)\]/g)].map(match => Number(match[1]));
+      if (!answer.trim() || !citations.length) throw new RequestFailure("chat_grounding_missing");
+      if (citations.some(number => number < 1 || number > 8)) throw new RequestFailure("chat_citation_invalid");
       return { complete: true, answer_bytes: Buffer.byteLength(answer) };
     }),
   };

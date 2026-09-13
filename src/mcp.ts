@@ -458,13 +458,11 @@ export function buildMcpServer(
   const maintenanceReadOnly = isMaintenanceReadOnly(env);
   const guardHandler = (name: string, handler: unknown): unknown => {
     if (!maintenanceReadOnly || READ_ONLY_SAFE_TOOLS.has(name)) return handler;
-    return async () => ({
-      isError: true as const,
-      content: [{
-        type: "text" as const,
-        text: "Error maintenance_read_only: Shared Living Memory is in read-only maintenance; this tool is temporarily unavailable.",
-      }],
-    });
+    return async () => toToolError(failResult(
+      "maintenance_read_only",
+      "Shared Living Memory is in read-only maintenance. Reads remain available.",
+      true,
+    ));
   };
   const registerUnderProfile = (name: string, config: unknown, handler: unknown): void => {
     if (profileAllowsTool(profile, name)) {

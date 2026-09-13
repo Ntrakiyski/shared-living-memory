@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteD1 } from "../helpers/sqlite-d1";
 import worker, { _resetDbReady, initializeDatabase } from "../../src/testing";
 import { buildMcpServer } from "../../src/mcp";
+import { createLoadClient } from "../../scripts/staging-agent-load.mjs";
 import {
   READ_ONLY_SAFE_GET_PATHS,
   READ_ONLY_SAFE_TOOLS,
@@ -17,7 +18,7 @@ import {
   isReadOnlySafeRequest,
   readWriteMode,
 } from "../../src/config";
-import type { Env, HumanActorContext } from "../../src/types";
+import type { ActorContext, Env, HumanActorContext } from "../../src/types";
 
 const ctx = { waitUntil: (_: Promise<unknown>) => {}, passThroughOnException: () => {} } as any;
 const ALICE_KEY = "slm_user-alice.alice-secret";
@@ -214,12 +215,49 @@ describe("read-only maintenance over MCP", () => {
       expect(Object.keys(tools)).toContain(name);
     }
 
-    for (const name of ["remember", "remember_batch", "update", "forget", "restore", "rate_recall"]) {
-      expect(Object.keys(tools)).toContain(name);
-      const result = await tools[name].handler({}, {});
-      expect({ name, isError: result.isError }).toEqual({ name, isError: true });
-      expect(result.content[0].text).toContain("maintenance_read_only");
+    const service: ActorContext = {
+      kind: "service", actorId: "service", serviceIdentityId: "service", credentialId: "credential",
+      ownerUserId: "user-alice", authMethod: "service_api_key",
+      scopes: new Set(["memory:read", "memory:draft", "audit:write", "run:write"]),
+    };
+    const requestIds = new Set<string>();
+    for (const principal of [actor(), service]) {
+      const registered = (buildMcpServer(harness.env, ctx, principal, "full") as any)._registeredTools;
+      const before = harness.db.executed.length;
+      for (const name of Object.keys(registered).filter(name => !READ_ONLY_SAFE_TOOLS.has(name))) {
+        const result = await registered[name].handler({}, {});
+        expect({ name, isError: result.isError }).toEqual({ name, isError: true });
+        expect(result.structuredContent).toMatchObject({
+          ok: false,
+          error: { code: "maintenance_read_only", retryable: true },
+          request_id: expect.any(String),
+        });
+        expect(result.content[0].text).toContain("maintenance_read_only");
+        expect(requestIds.has(result.structuredContent.request_id)).toBe(false);
+        requestIds.add(result.structuredContent.request_id);
+      }
+      expect(harness.db.executed.length).toBe(before);
     }
+    expect(harness.env.AI.run).not.toHaveBeenCalled();
+    expect(harness.env.VECTORIZE.upsert).not.toHaveBeenCalled();
+  });
+
+  it("preserves the actual handler's maintenance code through the recovery load client", async () => {
+    const tools = (buildMcpServer(harness.env, ctx, actor(), "full") as any)._registeredTools;
+    let attempts = 0;
+    const client = createLoadClient({ origin: "https://staging.example.test", key: "synthetic", sleep: async () => {},
+      fetchImpl: async (_url: any, init: any) => {
+        attempts++;
+        const request = JSON.parse(init.body);
+        const result = await tools[request.params.name].handler(request.params.arguments, {});
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
+      },
+    });
+    const blocked = await client.tool("remember", { content: "Must remain blocked", idempotency_key: "maintenance-probe" });
+    expect(blocked).toMatchObject({ ok: false, error: "maintenance_read_only", retries: 3, toolErrors: 4 });
+    expect(attempts).toBe(4);
+    expect(harness.db.count("entries")).toBe(0);
+    expect(harness.db.count("capture_receipts")).toBe(0);
   });
 
   it("still serves whoami normally", async () => {
