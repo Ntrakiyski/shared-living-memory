@@ -18,7 +18,22 @@ import { type CaptureRequest, type CaptureRequestError, type CaptureResponse, ty
 import { loginHtml, hmacKey, generateApiKey, AUTH_PEPPER, requireAuthAsync, resolveUserByApiKey, isAuthorized, json, rotateUserKey } from "./auth";
 import { CORS_HEADERS, D1_MAX_BOUND_PARAMS, graceMs, LLM_MODEL, COMPRESSION_MIN_AGE_MS, compressionEligibilitySql, VECTORIZE_FIX_HINT } from "./config";
 import { initializeDatabase, checkVectorizeHealth } from "./db";
-import { buildVisibilityClause, buildEntryFilterQuery, getStatus, withStatus, withKind } from "./tags";
+import {
+  BROWSE_CURSOR_VERSION,
+  BROWSE_DEFAULT_PAGE_SIZE,
+  InvalidBrowseCursorError,
+  boundsCheckPageSize,
+  browseContextHash,
+  buildEntryFilterQuery,
+  buildEntryPageQuery,
+  buildVisibilityClause,
+  decodeBrowseCursor,
+  encodeBrowseCursor,
+  getStatus,
+  paginateRows,
+  withKind,
+  withStatus,
+} from "./tags";
 import {
   EDGE_TYPES,
   isValidEdgeType,
@@ -1352,7 +1367,54 @@ export const defaultHandler = {
       const user = url.searchParams.get("user")?.trim() || undefined;
       const visibility = url.searchParams.get("visibility")?.trim() || undefined;
 
-      const { sql, bindings } = buildEntryFilterQuery({ n, tag, after, before, userId: user_id, user, visibility });
+      // Stable cursor paging is opt-in: `page=true` on the first page, or any
+      // cursor. Without it the legacy array shape is retained unchanged.
+      const pageRequested = url.searchParams.get("page") === "true" || url.searchParams.has("cursor");
+      if (url.searchParams.has("page")
+          && url.searchParams.get("page") !== "true"
+          && url.searchParams.get("page") !== "false") {
+        return json({
+          ok: false,
+          error: { code: "invalid_request", message: "page must be true or false", retryable: false },
+          request_id: crypto.randomUUID(),
+        }, 400);
+      }
+
+      const cursorToken = url.searchParams.get("cursor");
+      let cursor: { last_created_at: number; last_id: string } | null = null;
+      let contextHash: string | null = null;
+      let pageSize = n;
+
+      if (pageRequested) {
+        try {
+          pageSize = boundsCheckPageSize(url.searchParams.has("n") ? n : BROWSE_DEFAULT_PAGE_SIZE);
+          contextHash = await browseContextHash({
+            actorKind: "human",
+            actorId: user_id!,
+            ownerUserId: user_id!,
+            tag,
+            after: after ?? null,
+            before: before ?? null,
+            user: user ?? null,
+            visibility: visibility ?? null,
+          });
+          if (cursorToken) cursor = decodeBrowseCursor(cursorToken, contextHash);
+        } catch (error) {
+          if (error instanceof InvalidBrowseCursorError) {
+            return json({
+              ok: false,
+              error: { code: "invalid_cursor", message: error.message, retryable: false },
+              request_id: crypto.randomUUID(),
+            }, 400);
+          }
+          throw error;
+        }
+      }
+
+      const query = pageRequested
+        ? buildEntryPageQuery({ n: pageSize, cursor, tag, after, before, userId: user_id, user, visibility })
+        : buildEntryFilterQuery({ n, tag, after, before, userId: user_id, user, visibility });
+      const { sql, bindings } = query;
       const { results } = await env.DB.prepare(sql).bind(...bindings).all();
 
       // Hydrate owner usernames
@@ -1376,7 +1438,21 @@ export const defaultHandler = {
         is_private: r.visibility === "private",
         is_owned: r.owner_user_id === user_id,
       }));
-      return json(enriched);
+
+      if (!pageRequested) return json(enriched);
+
+      // Emit at most the page size; the cursor comes from the FINAL EMITTED row
+      // and is omitted entirely when no further row exists.
+      const { rows, nextCursor } = paginateRows(enriched, pageSize);
+      const next = nextCursor && contextHash
+        ? encodeBrowseCursor({
+          v: BROWSE_CURSOR_VERSION,
+          last_created_at: nextCursor.last_created_at,
+          last_id: nextCursor.last_id,
+          context_hash: contextHash,
+        })
+        : null;
+      return json(okResult({ entries: rows, next_cursor: next }));
     }
 
     // GET /team-activity — recent public entries from all team members
