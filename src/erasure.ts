@@ -488,23 +488,48 @@ export async function eraseEntryArtifacts(
   return { status, operationId, vectorCount: tracked.vectorIds.length };
 }
 
-/**
- * Flip a `pending_cleanup` erasure receipt to `complete` once the repair
- * schedule has drained every queued vector ID for that operation. Refuses to
- * complete a receipt that is not pending, so an already-complete receipt stays
- * complete and a stale receipt requires an operator decision.
- */
+// Stale is an alert state, not a barrier to completing verified cleanup.
+// Evaluate all durable guards in the same statement that marks completion.
+const ERASURE_COMPLETION_READY_SQL = `
+  status IN ('pending_cleanup', 'stale')
+  AND NOT EXISTS (SELECT 1 FROM entries WHERE entries.id = erasure_receipts.entry_id)
+  AND NOT EXISTS (
+    SELECT 1 FROM vector_cleanup_queue
+    WHERE kind = 'delete'
+      AND reason = '${ERASURE_CLEANUP_REASON_PREFIX}' || erasure_receipts.operation_id || ':' || erasure_receipts.entry_id
+  )`;
+
+/** Complete a receipt only after its entry and every operation cleanup job are gone. */
 export async function finalizeErasureReceipt(
   env: Pick<Env, "DB">,
   operationId: string,
   now?: number,
 ): Promise<boolean> {
+  const completedAt = now ?? Date.now();
   const result = await env.DB.prepare(
     `UPDATE erasure_receipts
      SET status = 'complete', completed_at = ?, updated_at = ?
-     WHERE operation_id = ? AND status = 'pending_cleanup'`,
-  ).bind(now ?? Date.now(), now ?? Date.now(), operationId).run();
+     WHERE operation_id = ? AND ${ERASURE_COMPLETION_READY_SQL}`,
+  ).bind(completedAt, completedAt, operationId).run();
   return sqlChanges(result) === 1;
+}
+
+/** Recover receipts even if a previous pass deleted the queue before a D1 failure. */
+export async function reconcileErasureReceipts(
+  env: Pick<Env, "DB">,
+  limit = 25,
+  now = Date.now(),
+): Promise<number> {
+  const result = await env.DB.prepare(
+    `UPDATE erasure_receipts
+     SET status = 'complete', completed_at = ?, updated_at = ?
+     WHERE operation_id IN (
+       SELECT operation_id FROM erasure_receipts
+       WHERE ${ERASURE_COMPLETION_READY_SQL}
+       ORDER BY updated_at ASC, operation_id ASC LIMIT ?
+     )`,
+  ).bind(now, now, Math.max(1, Math.min(100, Math.trunc(limit)))).run();
+  return sqlChanges(result);
 }
 
 /**
@@ -557,12 +582,16 @@ export async function flagPendingErasures(
      WHERE status = 'pending_cleanup' AND created_at < ?`,
   ).bind(now - staleAfterMs).all<{ operation_id: string; entry_id: string; created_at: number }>();
 
+  let flagged = 0;
   for (const row of results) {
-    await env.DB.prepare(
+    const update = await env.DB.prepare(
       `UPDATE erasure_receipts
        SET status = 'stale', updated_at = ?
        WHERE operation_id = ? AND status = 'pending_cleanup'`,
     ).bind(now, row.operation_id).run();
+    // A concurrent repair may have completed this receipt after selection.
+    if (sqlChanges(update) !== 1) continue;
+    flagged++;
     await env.DB.prepare(
       `INSERT INTO security_events (
          id, event_type, actor_kind, actor_id, reason, error_code,
@@ -577,5 +606,5 @@ export async function flagPendingErasures(
       now,
     ).run();
   }
-  return results.length;
+  return flagged;
 }

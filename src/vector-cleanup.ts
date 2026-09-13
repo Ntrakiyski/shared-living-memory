@@ -12,7 +12,7 @@
  */
 
 import type { Env } from "./types";
-import { ERASURE_CLEANUP_REASON_PREFIX, finalizeErasureReceipt } from "./erasure";
+import { reconcileErasureReceipts } from "./erasure";
 import { DB_NOW_MS_SQL } from "./capture-receipts";
 
 export interface VectorCleanupResult {
@@ -31,14 +31,6 @@ export interface CaptureStageCleanupResult {
   /** Intents left for a later pass because authority could not be confirmed. */
   deferred: number;
   remaining: number;
-}
-
-/** `erasure:<operationId>:<entryId>` — the repair schedule keys receipt completion on this. */
-function parseErasureOperationId(reason: string): string | null {
-  if (!reason.startsWith(ERASURE_CLEANUP_REASON_PREFIX)) return null;
-  const rest = reason.slice(ERASURE_CLEANUP_REASON_PREFIX.length);
-  const operationId = rest.split(":")[0];
-  return operationId && operationId.length > 0 ? operationId : null;
 }
 
 function parseVectorIds(raw: string): string[] | null {
@@ -96,17 +88,6 @@ export async function drainVectorCleanupQueue(
       if (vectorIds.length) await env.VECTORIZE.deleteByIds(vectorIds);
       await env.DB.prepare(`DELETE FROM vector_cleanup_queue WHERE id = ?`).bind(item.id).run();
       deleted++;
-      // The receipt for an erasure operation must not become `complete` until
-      // every queued vector is gone. Finalizing is best-effort: the next drain
-      // retries it and flagPendingErasures still alerts on a stuck receipt.
-      const operationId = parseErasureOperationId(item.reason ?? "");
-      if (operationId) {
-        try {
-          await finalizeErasureReceipt(env, operationId, Date.now());
-        } catch (error) {
-          console.error(`Erasure receipt finalization failed for ${operationId} (non-fatal):`, error);
-        }
-      }
     } catch (error) {
       failed++;
       await env.DB.prepare(
@@ -115,6 +96,14 @@ export async function drainVectorCleanupQueue(
          WHERE id = ?`,
       ).bind(message(error), Date.now(), item.id).run();
     }
+  }
+
+  // Always retry receipts, including when no queue rows remain after a crash
+  // or a previous receipt update failed. The SQL guards remaining work.
+  try {
+    await reconcileErasureReceipts(env, bounded);
+  } catch (error) {
+    console.error("Erasure receipt reconciliation failed (retrying on next drain):", error);
   }
 
   const count = await env.DB.prepare(
