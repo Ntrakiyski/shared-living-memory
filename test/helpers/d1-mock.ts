@@ -1448,7 +1448,7 @@ export class D1Mock {
           return row;
         }
         if (s.includes("tags LIKE") && s.includes("created_at >")) {
-          // Cooldown check: find entries matching arg LIKE patterns + any hardcoded tags in SQL
+          // Cooldown checks combine a dynamic exact tag with static system tags.
           const ownerId = s.includes("owner_user_id = ?") ? String(args[0]) : null;
           const likePatterns: string[] = args.slice(ownerId ? 1 : 0, -1).map((a: any) => String(a));
           const cutoff = args[args.length - 1] as number;
@@ -1460,7 +1460,7 @@ export class D1Mock {
             const tags: string[] = JSON.parse(e.tags ?? "[]");
             if (!hardcoded.every(t => tags.includes(t))) return false;
             return likePatterns.every((p: string) => {
-              const tag = p.replace(/%"/g, "").replace(/"%/g, "");
+              const tag = s.includes("json_each.value = ?") ? p : p.replace(/%"/g, "").replace(/"%/g, "");
               return tags.includes(tag);
             });
           });
@@ -1680,8 +1680,8 @@ export class D1Mock {
             if (index < 0) return undefined;
             return args[(s.slice(0, index).match(/\?/g) ?? []).length];
           };
-          if (s.includes("tags LIKE ?")) {
-            const tag = String(bindingAt("tags LIKE ?")).replace(/%"/g, "").replace(/"%/g, "");
+          if (s.includes("json_each.value = ?")) {
+            const tag = String(bindingAt("json_each.value = ?"));
             rows = rows.filter((row: any) => parseTags(row.tags).includes(tag));
           }
           if (s.includes("created_at >= ?")) {
@@ -1726,10 +1726,10 @@ export class D1Mock {
           return { results };
         }
         if (
-          s.includes("FROM entries WHERE tags LIKE ?") &&
+          s.includes("FROM entries WHERE EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value = ?)") &&
           s.includes("id, vector_ids, content, tags, source, created_at, owner_user_id")
         ) {
-          const tag = String(args[0]).replace(/%"/g, "").replace(/"%/g, "");
+          const tag = String(args[0]);
           const results = db.entries
             .filter((row: any) => parseTags(row.tags).includes(tag))
             .map((row: any) => {
@@ -2469,12 +2469,11 @@ export class D1Mock {
           const results = rows.map((e: any) => ({ id: e.id, content: e.content, tags: e.tags, source: e.source, created_at: e.created_at, owner_user_id: e.owner_user_id ?? "" }));
           return { results };
         }
-        if (s.includes("SELECT id, content FROM entries") && s.includes("WHERE tags LIKE") && s.includes("ORDER BY created_at DESC")) {
+        if (s.includes("SELECT id, content FROM entries") && s.includes("WHERE EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value = ?)") && s.includes("ORDER BY created_at DESC")) {
           // compressTag raw entries query — tag match, system-tag exclusion, and the
           // recall/age/contradiction eligibility predicate (cutoff is the 2nd bind param).
           // When userId is provided (3rd bind param), filter by owner_user_id or public visibility.
-          const tagPattern = args[0] as string;
-          const tag = tagPattern.replace(/%"/g, "").replace(/"%/g, "");
+          const tag = args[0] as string;
           const cutoff = Number(args[1]);
           const userId = args.length > 2 ? (args[2] as string) : undefined;
           const results = [...db.entries]

@@ -623,6 +623,23 @@ export function createLoadClient({ origin, key, fetchImpl = fetch, sleep = async
   };
 }
 
+// A default-search benchmark must fail on contamination, never post-filter its
+// results into an apparently successful fixture-only response.
+export function validateRecallFixtures(data, ownerId, fixturesById) {
+  if (data.semantic_available !== true) return "semantic_unavailable";
+  if (!Array.isArray(data.matches) || data.matches.length === 0) return "semantic_matches_missing";
+  for (const match of data.matches) {
+    const fixture = fixturesById.get(match.entry?.entry_id);
+    if (!fixture) return "unexpected_fixture";
+    if (fixture.owner_id !== ownerId && fixture.spec.visibility !== "public") return "cross_owner_private_leak";
+    if (match.entry.owner?.id !== fixture.owner_id || match.entry.visibility !== fixture.spec.visibility) {
+      return "fixture_metadata_mismatch";
+    }
+    if (!Array.isArray(match.citations) || !match.citations.length) return "citations_missing";
+  }
+  return null;
+}
+
 function required(result, code) {
   assertGate(result.ok, code || result.error || "request_failed");
   return result.value;
@@ -666,14 +683,14 @@ export async function runLoad({ env = process.env, argv = process.argv.slice(2),
   const fd = openSync(resolve(cleanupPath), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   const journal = value => { writeFileSync(fd, JSON.stringify(value) + "\n"); fsyncSync(fd); };
   journal({ type: "run", run_id: runId, deployment_id: manifest.deployment_id, origin: manifest.origin, owners: ownerIds });
-  const report = { schema_version: 1, run_id: runId, started_at: new Date().toISOString(),
+  const report = { schema_version: 1, raw_recall_workload: "default_recall", run_id: runId, started_at: new Date().toISOString(),
     deployment: manifest, server_versions: serverVersions,
     models: { embedding: "@cf/baai/bge-small-en-v1.5", generation: "@cf/meta/llama-4-scout-17b-16e-instruct" },
     limits: LOAD_GATES, scenarios: [], cleanup: { complete: 0, pending: 0, failed: 0 }, ok: false };
   const recordScenario = scenario => {
     report.scenarios.push(scenario);
     console.log(JSON.stringify({ stage: scenario.kind, concurrency: scenario.concurrency,
-      repetition: scenario.repetition, mode: scenario.mode,
+      repetition: scenario.repetition, mode: scenario.mode, workload: scenario.workload,
       accepted: scenario.measured?.accepted, p95_ms: scenario.measured?.p95_ms }));
   };
   const cf = cloudflareClient(env, fetchImpl);
@@ -816,10 +833,14 @@ export async function runLoad({ env = process.env, argv = process.argv.slice(2),
     }
 
     const query = "What does the amber lighthouse archive say about navigation decisions and safe harbor instructions?";
+    const recallArgs = { query, topK: 5, include_insight: false };
+    const fixturesById = new Map([...records.values()].filter(record => record.id).map(record => [record.id, record]));
     let prepared = false;
     for (let attempt = 0; attempt < 40; attempt++) {
-      const probe = required(await clients[0].tool("recall", { query, topK: 5, tag: `run:${runId}`, include_insight: false }));
-      assertGate(probe.semantic_available === true, "semantic_unavailable");
+      const probe = required(await clients[0].tool("recall", recallArgs));
+      const error = validateRecallFixtures(probe, ownerIds[0], fixturesById);
+      assertGate(!error || error === "semantic_matches_missing", error);
+
       if (probe.matches?.some(m => m.entry?.owner?.id === ownerIds[0] && m.citations?.length)) { prepared = true; break; }
       await delay(1500);
     }
@@ -828,21 +849,17 @@ export async function runLoad({ env = process.env, argv = process.argv.slice(2),
       const request = async i => {
         const owner = i % 4;
         if (mode === "generated") return clients[owner].chat(query);
-        const result = await clients[owner].tool("recall", { query, topK: 5, tag: `run:${runId}`, include_insight: false });
+        const result = await clients[owner].tool("recall", recallArgs);
         if (result.ok) {
-          if (result.value.semantic_available !== true) return { ...result, ok: false, error: "semantic_unavailable" };
-          if (!Array.isArray(result.value.matches) || result.value.matches.length === 0) return { ...result, ok: false, error: "semantic_matches_missing" };
-          if (result.value.matches.some(m => m.entry?.visibility !== "public" && m.entry?.owner?.id !== ownerIds[owner])) {
-            return { ...result, ok: false, error: "cross_owner_private_leak" };
-          }
-          if (result.value.matches.some(m => !m.citations?.length)) return { ...result, ok: false, error: "citations_missing" };
+          const error = validateRecallFixtures(result.value, ownerIds[owner], fixturesById);
+          if (error) return { ...result, ok: false, error };
         }
         return result;
       };
       const warmup = await parallel(LOAD_GATES.latencyWarmups, 4, request);
       const measured = await parallel(LOAD_GATES.latencySamples, 4, request);
       const metrics = summarizeTimings(measured);
-      recordScenario({ kind: "latency", mode, warmup: summarizeTimings(warmup), measured: metrics });
+      recordScenario({ kind: "latency", mode, workload: mode === "raw" ? "default_recall" : "grounded_chat", warmup: summarizeTimings(warmup), measured: metrics });
       assertGate(warmup.concat(measured).every(r => r.ok), `${mode}_latency_request_failed`);
       assertGate(metrics.p95_ms <= (mode === "raw" ? LOAD_GATES.rawP95Ms : LOAD_GATES.generatedP95Ms), `${mode}_p95_exceeded`);
     }
@@ -856,7 +873,9 @@ export async function runLoad({ env = process.env, argv = process.argv.slice(2),
     // hashes and actors, may enter cleanup. Never delete a tag/source query.
     try {
       await readVerifiedStage({ env, fetchImpl });
-      for (const record of records.values()) {
+      const cleanupRecords = [...records.values()];
+      const cleanupResults = await parallel(cleanupRecords.length, 4, async index => {
+        const record = cleanupRecords[index];
         if (!record.id) {
           const rows = await sql("SELECT entry_id, episode_id FROM capture_receipts WHERE actor_kind = 'human' AND actor_id = ? AND key_hash = ? AND state = 'committed'", [record.owner_id, record.key_hash]);
           if (rows.length === 1) {
@@ -864,10 +883,10 @@ export async function runLoad({ env = process.env, argv = process.argv.slice(2),
             journal({ type: "reconciled", label: record.label, owner: record.owner, id: record.id, key_hash: record.key_hash });
           }
         }
-        if (!record.id) continue;
+        if (!record.id) return;
         const result = await clients[record.owner].rest("/forget", { id: record.id, confirm_entry_id: record.id }, "forget");
         if (!result.ok || result.value.ok !== true || !result.value.operation_id) {
-          report.cleanup.failed++; journal({ type: "cleanup_failed", id: record.id }); continue;
+          report.cleanup.failed++; journal({ type: "cleanup_failed", id: record.id }); return;
         }
         const receipt = await clients[record.owner].rest(`/erasure-status?operation_id=${encodeURIComponent(result.value.operation_id)}`);
         const status = receipt.ok ? receipt.value.erasure?.status : null;
@@ -877,6 +896,12 @@ export async function runLoad({ env = process.env, argv = process.argv.slice(2),
         journal({ type: "erasure", id: record.id, operation_id: result.value.operation_id, status: status || "unknown" });
         const rows = await sql("SELECT c.state, e.id AS surviving_entry FROM capture_receipts c LEFT JOIN entries e ON e.id = c.entry_id WHERE c.actor_kind = 'human' AND c.actor_id = ? AND c.key_hash = ?", [record.owner_id, record.key_hash]);
         if (rows.length !== 1 || rows[0].state !== "erased" || rows[0].surviving_entry != null) report.cleanup.failed++;
+      });
+      for (const [index, result] of cleanupResults.entries()) {
+        if (result?.ok === false) {
+          report.cleanup.failed++;
+          journal({ type: "cleanup_failed", id: cleanupRecords[index].id ?? null, error: result.error });
+        }
       }
     } catch (error) { report.cleanup.failed++; report.cleanup.error = safeCode(error.message); }
     closeSync(fd);

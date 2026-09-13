@@ -12,7 +12,6 @@
 
 import { STATUS_PREFIX, KIND_PREFIX, STATUS_VALUES, KIND_VALUES } from "./types";
 import type { MemoryStatus, MemoryKind } from "./types";
-import { escapeLikePattern } from "./helpers";
 
 // ─── Automatic overwrite protection ───────────────────────────────────────────
 // A memory is protected from AUTOMATIC replacement/merge when it is high
@@ -96,7 +95,7 @@ export function buildEntryFilterQuery(params: {
 }): { sql: string; bindings: (string | number)[] } {
   const conds: string[] = [];
   const bindings: (string | number)[] = [];
-  if (params.tag) { conds.push(`tags LIKE ?`); bindings.push(`%"${escapeLikePattern(params.tag)}"%`); }
+  if (params.tag) { conds.push(`EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value = ?)`); bindings.push(params.tag); }
   if (params.after !== undefined) { conds.push(`created_at >= ?`); bindings.push(params.after); }
   if (params.before !== undefined) { conds.push(`created_at <= ?`); bindings.push(params.before); }
   if (params.user) {
@@ -293,7 +292,7 @@ export function buildEntryPageQuery(params: {
   const conds: string[] = [];
   const bindings: (string | number)[] = [];
   const tag = normalizeBrowseTag(params.tag ?? null);
-  if (tag) { conds.push(`tags LIKE ?`); bindings.push(`%"${escapeLikePattern(tag)}"%`); }
+  if (tag) { conds.push(`EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value = ?)`); bindings.push(tag); }
   if (params.after !== undefined && params.after !== null) {
     conds.push(`created_at >= ?`);
     bindings.push(params.after);

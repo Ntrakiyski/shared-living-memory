@@ -128,7 +128,6 @@ import {
   normalizeStatusReason,
 } from "./lifecycle";
 import { classifyEntry, extractHashtags } from "./classification";
-import { escapeLikePattern } from "./helpers";
 import { INTEGRATION_PROVIDERS, getProvider, loadIntegration, saveIntegration, integrationStatus } from "./integrations";
 import type { IntegrationRecord } from "./integrations";
 import { disconnectIntegration, makeMirrorStore, isManagedMirror, mirrorEditError } from "./integrations-mirror";
@@ -1393,8 +1392,8 @@ export const defaultHandler = {
       const digestCandidates: { tag: string; count: number }[] = [];
       for (const row of candidateRows.results as any[]) {
         const existing = await env.DB.prepare(
-          `SELECT id FROM entries WHERE tags LIKE '%"synthesized"%' AND tags LIKE ? AND created_at > ? LIMIT 1`
-        ).bind(`%"${escapeLikePattern(row.tag as string)}"%`, cutoff).first();
+          `SELECT id FROM entries WHERE tags LIKE '%"synthesized"%' AND EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value = ?) AND created_at > ? LIMIT 1`
+        ).bind(row.tag as string, cutoff).first();
         if (!existing) digestCandidates.push({ tag: row.tag as string, count: row.count as number });
       }
 

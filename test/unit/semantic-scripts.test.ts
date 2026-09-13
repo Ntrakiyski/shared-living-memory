@@ -57,6 +57,7 @@ async function runFixture(mode: "complete" | "pending" | "false-success" | "exis
         data = { ok: true, id, action: "stored" };
       }
     } else if (url.pathname === "/recall") {
+      expect(url.searchParams.get("include_insight")).toBe("false");
       data = { ok: true, results: [...entries].filter(([, entry]) => entry.owner === owner || entry.visibility === "public")
         .map(([id]) => ({ id })) };
     } else if (url.pathname === "/forget") {
@@ -129,6 +130,66 @@ function meaningfulTokens(value: string): Set<string> {
 }
 
 describe("semantic deployment scripts", () => {
+  it("waits for delayed semantic indexing without relying on keyword matches", async () => {
+    const { pollFor } = await import("../../scripts/staging-semantic-canary.mjs");
+    let elapsed = 0;
+    const progress: unknown[] = [];
+    const found = await pollFor({}, "token-disjoint paraphrase", "fixture", {
+      probeName: "alice-own-private",
+      now: () => elapsed,
+      sleep: async (ms: number) => { elapsed += ms; },
+      recallImpl: async () => elapsed >= 60_000 ? [{ id: "fixture" }] : [],
+      report: (event: unknown) => { progress.push(event); },
+    });
+    expect(found).toEqual([{ id: "fixture" }]);
+    expect(elapsed).toBe(60_000);
+    expect(progress.at(-1)).toMatchObject({ probe: "alice-own-private", elapsed_ms: 60_000, target_found: true });
+    expect(JSON.stringify(progress)).not.toContain("token-disjoint paraphrase");
+  });
+
+  it("bounds index warmup at 90 seconds and reports the failed probe", async () => {
+    const { pollFor } = await import("../../scripts/staging-semantic-canary.mjs");
+    let elapsed = 0;
+    await expect(pollFor({}, "query", "fixture", {
+      probeName: "alice-own-private",
+      now: () => elapsed,
+      sleep: async (ms: number) => { elapsed += ms; },
+      recallImpl: async () => [],
+      report: () => {},
+    })).rejects.toMatchObject({ code: "CANARY_SEMANTIC_ZERO_RESULTS", details: { probe: "alice-own-private", elapsed_ms: 90_000 } });
+    expect(elapsed).toBe(90_000);
+  });
+
+  it("fails on a privacy leak during warmup even before the expected target is indexed", async () => {
+    const { pollFor } = await import("../../scripts/staging-semantic-canary.mjs");
+    const sleep = vi.fn();
+    await expect(pollFor({}, "query", "fixture", {
+      probeName: "bob-own-private", forbiddenIds: ["other-private"],
+      now: () => 0, sleep,
+      recallImpl: async () => [{ id: "other-private" }], report: () => {},
+    })).rejects.toMatchObject({ code: "CANARY_OTHER_PRIVATE_VISIBLE" });
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("limits the last request to the remaining warmup budget", async () => {
+    const { pollFor } = await import("../../scripts/staging-semantic-canary.mjs");
+    let elapsed = 0;
+    const timeouts: number[] = [];
+    await expect(pollFor({}, "query", "fixture", {
+      now: () => elapsed,
+      sleep: async (ms: number) => { elapsed += ms; },
+      recallImpl: async (_user: unknown, _query: string, timeoutMs: number) => {
+        timeouts.push(timeoutMs);
+        elapsed += timeoutMs;
+        return [];
+      },
+      report: () => {},
+    })).rejects.toMatchObject({ code: "CANARY_SEMANTIC_ZERO_RESULTS" });
+    expect(elapsed).toBe(90_000);
+    expect(timeouts.at(-1)).toBe(9_500);
+    expect(timeouts.every(timeout => timeout <= 10_000)).toBe(true);
+  });
+
   it("executes confirmed keyed-fixture cleanup and verifies every receipt", async () => {
     const result = await runFixture("complete");
     expect(result.error).toBeUndefined();

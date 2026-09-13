@@ -39,9 +39,16 @@ class SqliteD1Statement {
 
 class SqliteD1 {
   readonly sqlite = new DatabaseSync(":memory:");
+  private readonly nativeLike = new DatabaseSync(":memory:");
 
   constructor() {
     this.sqlite.exec(schema);
+    // D1 caps LIKE patterns at 50 bytes; Node's SQLite build has a higher cap.
+    // Keep native matching semantics while reproducing the deployed limit.
+    this.sqlite.function("like", (pattern, value) => {
+      if (Buffer.byteLength(String(pattern)) > 50) throw new Error("LIKE or GLOB pattern too complex");
+      return this.nativeLike.prepare("SELECT ? LIKE ? AS matched").get(value, pattern)!.matched;
+    });
   }
 
   prepare(sql: string): SqliteD1Statement {
@@ -50,6 +57,7 @@ class SqliteD1 {
 
   close(): void {
     this.sqlite.close();
+    this.nativeLike.close();
   }
 }
 
@@ -193,6 +201,29 @@ describe("versioned and bitemporal recall", () => {
       ctx,
     );
   }
+
+  it.each([
+    "semantic-diag-47bdac18-7207-4964-8840-87f0565446c1",
+    'literal_%_"quoted"\\tag',
+  ])("recalls literal tags under D1's LIKE limit while excluding private peers: %s", async tag => {
+    for (const [id, owner, entryTag] of [
+      ["owned", USER_ID, tag], ["other-private", "other-user", tag],
+      ["different-tag", USER_ID, `${tag}-suffix`],
+    ]) {
+      insertEntry({ id, content: "A crimson ledger rests beneath attic floorboards", episodeId: `episode-${id}`, recordedAt: 300, ownerUserId: owner, tags: [entryTag] });
+      db.sqlite.prepare("UPDATE entries SET vector_ids = ? WHERE id = ?").run(JSON.stringify([`vector-${id}`]), id);
+    }
+    const getByIds = vi.fn(async (ids: string[]) => ids.map(id => ({
+      ...vectorMatch(id, id.slice(7), `episode-${id.slice(7)}`, 1), values: new Array(384).fill(0.1),
+    })));
+    env.VECTORIZE = makeVectorizeMock({ getByIds, query: vectorQuery });
+
+    const result = await recallEntries({ query: "hidden financial notebook", tag, topK: 5, userId: USER_ID, skipInsight: true }, env, ctx);
+
+    expect(result.matches.map(match => match.id)).toEqual(["owned"]);
+    expect(getByIds).toHaveBeenCalledWith(["vector-owned"]);
+    expect(vectorQuery).not.toHaveBeenCalled();
+  });
 
   it("excludes stale version-scoped vectors and passages from default recall", async () => {
     insertEntry({ id: "entry", content: "Current launch fact", episodeId: "episode-current", recordedAt: 300 });

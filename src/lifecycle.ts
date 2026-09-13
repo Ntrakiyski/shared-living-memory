@@ -14,7 +14,7 @@
  */
 
 import type { Env } from "./types";
-import { readStreamText, escapeLikePattern, embed } from "./helpers";
+import { readStreamText, embed } from "./helpers";
 import {
   LLM_MODEL,
   DIGEST_MAX_TOKENS,
@@ -286,13 +286,13 @@ export async function compressTag(
   const recentSynthSql = `
     SELECT id FROM entries
     WHERE ${userId ? "owner_user_id = ? AND" : ""} tags LIKE '%"synthesized"%'
-      AND tags LIKE ?
+      AND EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value = ?)
       AND created_at > ?
     LIMIT 1
   `;
   const recentSynthBindings = userId
-    ? [userId, `%"${escapeLikePattern(tag)}"%`, Date.now() - 86400000]
-    : [`%"${escapeLikePattern(tag)}"%`, Date.now() - 86400000];
+    ? [userId, tag, Date.now() - 86400000]
+    : [tag, Date.now() - 86400000];
   const recentSynth = await env.DB.prepare(recentSynthSql)
     .bind(...recentSynthBindings).first();
 
@@ -303,11 +303,11 @@ export async function compressTag(
   // Fetch compressible entries: tagged with this tag, not system-tagged, not high-importance
   const eligibilitySql = compressionEligibilitySql("", userId);
   const bindValues = userId
-    ? [`%"${escapeLikePattern(tag)}"%`, Date.now() - COMPRESSION_MIN_AGE_MS, userId]
-    : [`%"${escapeLikePattern(tag)}"%`, Date.now() - COMPRESSION_MIN_AGE_MS];
+    ? [tag, Date.now() - COMPRESSION_MIN_AGE_MS, userId]
+    : [tag, Date.now() - COMPRESSION_MIN_AGE_MS];
   const { results: rawEntries } = await env.DB.prepare(`
     SELECT id, content FROM entries
-    WHERE tags LIKE ?
+    WHERE EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value = ?)
       AND tags NOT LIKE '%"synthesized"%'
       AND tags NOT LIKE '%"auto-pattern"%'
       AND tags NOT LIKE '%"rolled-up"%'

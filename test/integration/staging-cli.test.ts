@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
-import { createLoadClient, parseSseStream } from "../../scripts/staging-agent-load.mjs";
+import { createLoadClient, parseSseStream, validateRecallFixtures } from "../../scripts/staging-agent-load.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const account = "11111111111111111111111111111111";
@@ -28,11 +28,12 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-async function fixture(options: { badBinding?: boolean; badProvenance?: boolean; malformedWhoami?: boolean; wrongEnv?: boolean; retryWrite?: boolean; failAfterWrites?: boolean; pendingCleanup?: boolean; malformedSse?: boolean } = {}) {
+async function fixture(options: { badBinding?: boolean; failFirstCleanup?: boolean; badProvenance?: boolean; malformedWhoami?: boolean; wrongEnv?: boolean; retryWrite?: boolean; failAfterWrites?: boolean; pendingCleanup?: boolean; malformedSse?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "slm-staging-cli-")); dirs.push(dir);
   const db = new DatabaseSync(":memory:"); databases.push(db);
   db.exec(readFileSync(join(root, "db/schema.sql"), "utf8"));
   let version = "version-1", sequence = 0, requests = 0, attemptedWrites = 0, retryCount = 0;
+  let cleanupAttempts = 0, cleanupInFlight = 0, peakCleanup = 0;
   const counts = { created: 0, deleted: 0, raw: 0, chat: 0, status: 0, preflight: 0 };
   const erasures = new Map<string, string>();
   const bodies: any[] = [];
@@ -86,6 +87,13 @@ async function fixture(options: { badBinding?: boolean; badProvenance?: boolean;
         return send(200, options.malformedWhoami ? { ok: false } : success(whoami(actor)));
       }
       if (path === "/forget") {
+        const cleanupAttempt = ++cleanupAttempts;
+        if (options.failFirstCleanup) {
+          peakCleanup = Math.max(peakCleanup, ++cleanupInFlight);
+          await new Promise(resolve => setTimeout(resolve, 10));
+          cleanupInFlight--;
+          if (cleanupAttempt === 1) return send(500, { ok: false });
+        }
         expect(body.confirm_entry_id).toBe(body.id);
         const entry = db.prepare("SELECT * FROM entries WHERE id = ?").get(body.id) as any;
         expect(entry?.owner_user_id).toBe(actor);
@@ -167,7 +175,11 @@ async function fixture(options: { badBinding?: boolean; badProvenance?: boolean;
       if (name === "list_recent" || name === "recall") {
         const rows = db.prepare("SELECT * FROM entries WHERE owner_user_id = ? OR visibility = 'public' ORDER BY id").all(actor) as any[];
         const mapped = rows.map(row => ({ entry: { entry_id: row.id, owner: { id: row.owner_user_id }, visibility: row.visibility }, citations: [{ id: "passage" }] }));
-        if (name === "recall") { counts.raw++; return ok({ semantic_available: true, retrieval_mode: "hybrid", matches: mapped.slice(0, args.topK) }); }
+        if (name === "recall") {
+          expect(args).toEqual({ query: expect.any(String), topK: 5, include_insight: false });
+          counts.raw++;
+          return ok({ semantic_available: true, retrieval_mode: "hybrid", matches: mapped.slice(0, args.topK) });
+        }
         const offset = args.cursor ? Number(args.cursor) : 0;
         return ok({ entries: mapped.slice(offset, offset + args.n).map(item => ({ ...item.entry, content: "fixture", created_at: 1 })), next_cursor: mapped.length > offset + args.n ? String(offset + args.n) : null });
       }
@@ -193,7 +205,7 @@ async function fixture(options: { badBinding?: boolean; badProvenance?: boolean;
     });
   }
   return { env, dir, db, cli, counts, bodies, writerPaths, config, configFile,
-    mutateVersion: () => version = "version-2", attempts: () => attemptedWrites, requests: () => requests };
+    mutateVersion: () => version = "version-2", cleanupStats: () => ({ attempts: cleanupAttempts, peak: peakCleanup }), attempts: () => attemptedWrites, requests: () => requests };
 }
 
 it("runs the real preflight and all finite CLI scenarios over authenticated JSON/SSE HTTP with cleanup", async () => {
@@ -205,6 +217,8 @@ it("runs the real preflight and all finite CLI scenarios over authenticated JSON
   expect(result.code, result.stderr + result.stdout).toBe(0);
   const report = JSON.parse(readFileSync(f.env.SLM_LOAD_REPORT, "utf8"));
   expect(report.ok).toBe(true);
+  expect(report.raw_recall_workload).toBe("default_recall");
+  expect(result.stdout).toContain('"workload":"default_recall"');
   expect(report.scenarios.filter((s: any) => s.kind === "independent_writes")).toHaveLength(9);
   for (const scenario of report.scenarios.filter((s: any) => s.kind === "independent_writes")) {
     expect(scenario.measured.requests).toBe(100); expect(scenario.warmup.requests).toBe(10);
@@ -213,6 +227,9 @@ it("runs the real preflight and all finite CLI scenarios over authenticated JSON
   for (const scenario of report.scenarios.filter((s: any) => s.kind === "latency")) {
     expect(scenario.measured.requests).toBe(100); expect(scenario.warmup.requests).toBe(10);
   }
+  const raw = report.scenarios.find((s: any) => s.mode === "raw");
+  expect(raw.workload).toBe("default_recall");
+  expect(f.counts.raw).toBe(111); // One readiness probe, ten warmups, 100 measured.
   const generated = report.scenarios.find((s: any) => s.mode === "generated");
   expect(generated.measured.p50_ms).toBeGreaterThanOrEqual(14);
   expect(f.counts.chat).toBe(110);
@@ -315,4 +332,42 @@ it("measures complete chat SSE and rejects missing completion or stream errors",
     const client = createLoadClient({ origin, key: "fixture", fetchImpl: async () => new Response(body, { headers: { "content-type": "text/event-stream" } }) });
     expect((await client.chat("fixture")).ok).toBe(false);
   }
+});
+
+
+it("settles four concurrent cleanup workers and continues after one HTTP failure without retrying deletion", async () => {
+  const f = await fixture({ badProvenance: true, failFirstCleanup: true });
+  expect((await f.cli("check-staging-bindings.mjs")).code).toBe(0);
+  const result = await f.cli("staging-agent-load.mjs", ["--confirm-cleanup"]);
+  expect(result.code).toBe(1);
+  expect(f.counts.created).toBe(110);
+  expect(f.counts.deleted).toBe(109);
+  expect(f.cleanupStats()).toEqual({ attempts: 110, peak: 4 });
+  const report = JSON.parse(readFileSync(f.env.SLM_LOAD_REPORT, "utf8"));
+  expect(report.cleanup).toEqual({ complete: 109, pending: 0, failed: 1 });
+  expect(f.db.prepare("SELECT COUNT(*) AS count FROM entries").get()).toEqual({ count: 1 });
+  expect(f.db.prepare("SELECT COUNT(*) AS count FROM capture_receipts WHERE state = 'erased'").get()).toEqual({ count: 109 });
+  const journal = readFileSync(f.env.SLM_CLEANUP_MANIFEST, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  expect(journal.filter(row => row.type === "cleanup_failed")).toHaveLength(1);
+  expect(journal.filter(row => row.type === "erasure")).toHaveLength(109);
+}, 20_000);
+
+
+it("checks every default recall result against recorded fixture IDs, ownership and visibility without filtering", () => {
+  const fixtures = new Map([
+    ["owned", { owner_id: "alice", spec: { visibility: "private" } }],
+    ["public", { owner_id: "bob", spec: { visibility: "public" } }],
+    ["private", { owner_id: "bob", spec: { visibility: "private" } }],
+  ]);
+  const match = (entry_id: string, owner: string, visibility: string) => ({ entry: { entry_id, owner: { id: owner }, visibility }, citations: [{ id: "evidence" }] });
+  const valid = match("owned", "alice", "private");
+  const data = (extra: any) => ({ semantic_available: true, matches: [valid, extra] });
+  expect(validateRecallFixtures(data(match("public", "bob", "public")), "alice", fixtures)).toBeNull();
+  expect(validateRecallFixtures(data(match("other-run", "alice", "private")), "alice", fixtures)).toBe("unexpected_fixture");
+  expect(validateRecallFixtures(data(match("private", "bob", "public")), "alice", fixtures)).toBe("cross_owner_private_leak");
+  expect(validateRecallFixtures(data(match("public", "alice", "public")), "alice", fixtures)).toBe("fixture_metadata_mismatch");
+  expect(validateRecallFixtures(data(match("owned", "alice", "public")), "alice", fixtures)).toBe("fixture_metadata_mismatch");
+  expect(validateRecallFixtures(data({ ...valid, citations: [] }), "alice", fixtures)).toBe("citations_missing");
+  expect(validateRecallFixtures({ semantic_available: false, matches: [valid] }, "alice", fixtures)).toBe("semantic_unavailable");
+  expect(validateRecallFixtures({ semantic_available: true, matches: [] }, "alice", fixtures)).toBe("semantic_matches_missing");
 });

@@ -26,7 +26,6 @@ import {
   getHalfLifeMs,
   cosineSim,
   embed,
-  escapeLikePattern,
   tokenizeQuery,
   readStreamText,
   getRetentionScore,
@@ -658,9 +657,11 @@ export async function recallEntries(
     // query caps at 50 candidates, silently dropping tagged entries whose global
     // semantic rank falls outside the top 50 (issue #141). D1 is the source of
     // truth for tags and already stores each entry's vector_ids.
+    // JSON membership keeps tags literal and avoids D1's 50-byte LIKE limit.
     const { results: tagRows } = await env.DB.prepare(
-      `SELECT id, vector_ids, content, tags, source, created_at, owner_user_id, visibility FROM entries WHERE tags LIKE ?`
-    ).bind(`%"${escapeLikePattern(tag)}"%`).all();
+      `SELECT id, vector_ids, content, tags, source, created_at, owner_user_id, visibility FROM entries
+       WHERE EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value = ?)`
+    ).bind(tag).all();
     if (!tagRows.length) return { matches: [], insight: "", semanticUnavailable, proposed_edges: [] };
 
     // D1 is authoritative for visibility. Invalid ownership/visibility fails closed.

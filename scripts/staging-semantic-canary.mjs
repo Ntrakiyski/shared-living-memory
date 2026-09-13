@@ -17,6 +17,8 @@ const EXIT = {
 };
 const productionOrigin = "https://shared-living-memory.nikolay-trakiyski.workers.dev";
 export const REQUEST_TIMEOUT_MS = 10_000;
+export const INDEX_WARMUP_TIMEOUT_MS = 90_000;
+const POLL_INTERVAL_MS = 1500;
 
 class CanaryFailure extends Error {
   constructor(code, exitCode, details = {}) {
@@ -88,7 +90,7 @@ export async function fetchWithTimeout(
   }
 }
 
-async function request(path, { method = "GET", body, user } = {}) {
+async function request(path, { method = "GET", body, user, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   return fetchWithTimeout(
     fetch,
     new URL(path, baseUrl),
@@ -100,7 +102,7 @@ async function request(path, { method = "GET", body, user } = {}) {
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     },
-    REQUEST_TIMEOUT_MS,
+    timeoutMs,
     async response => {
       let data;
       try {
@@ -160,8 +162,8 @@ async function eraseCreatedEntry(user, id) {
   }
 }
 
-async function recall(user, query) {
-  const { response, data } = await request(`/recall?query=${encodeURIComponent(query)}&topK=20`, { user });
+async function recall(user, query, timeoutMs) {
+  const { response, data } = await request(`/recall?query=${encodeURIComponent(query)}&topK=20&include_insight=false`, { user, timeoutMs });
   if (!response.ok || !data?.ok) {
     throw new CanaryFailure("CANARY_RECALL_FAILED", EXIT.semanticUnavailable, { status: response.status });
   }
@@ -171,19 +173,41 @@ async function recall(user, query) {
   return data.results ?? [];
 }
 
-async function pollFor(user, query, expectedId) {
+export async function pollFor(user, query, expectedId, {
+  probeName = "semantic", forbiddenIds = /** @type {string[]} */ ([]), recallImpl = recall,
+  now = () => performance.now(), sleep = ms => delay(ms), report = event => console.log(JSON.stringify(event)),
+} = {}) {
+  // Upserts acknowledge queued mutations before filtered queries can see them.
+  // This warmup budget is separate from the load gate's request latency budget.
+  const started = now();
   let results = [];
-  for (let attempt = 0; attempt < 8; attempt++) {
-    results = await recall(user, query);
-    if (results.some(result => result.id === expectedId)) return results;
-    if (attempt < 7) await delay(1500);
+  let attempt = 0;
+  while (now() - started < INDEX_WARMUP_TIMEOUT_MS) {
+    const remaining = INDEX_WARMUP_TIMEOUT_MS - (now() - started);
+    attempt++;
+    try {
+      results = await recallImpl(user, query, Math.min(REQUEST_TIMEOUT_MS, remaining));
+    } catch (error) {
+      if (error instanceof CanaryFailure) {
+        Object.assign(error.details, { probe: probeName, attempt, elapsed_ms: Math.round(now() - started) });
+      }
+      throw error;
+    }
+    const targetFound = results.some(result => result.id === expectedId);
+    const details = { probe: probeName, attempt, elapsed_ms: Math.round(now() - started), match_count: results.length };
+    report({ code: "CANARY_POLL", ...details, target_found: targetFound });
+    if (forbiddenIds.some(id => results.some(result => result.id === id))) {
+      throw new CanaryFailure("CANARY_OTHER_PRIVATE_VISIBLE", EXIT.privacy, details);
+    }
+    if (targetFound) return results;
+    const wait = Math.min(POLL_INTERVAL_MS, INDEX_WARMUP_TIMEOUT_MS - (now() - started));
+    if (wait > 0) await sleep(wait);
   }
+  const details = { probe: probeName, attempt, elapsed_ms: Math.round(now() - started), match_count: results.length };
   if (results.length === 0) {
-    throw new CanaryFailure("CANARY_SEMANTIC_ZERO_RESULTS", EXIT.semanticZero, { match_count: 0 });
+    throw new CanaryFailure("CANARY_SEMANTIC_ZERO_RESULTS", EXIT.semanticZero, details);
   }
-  throw new CanaryFailure("CANARY_SEMANTIC_TARGET_MISSING", EXIT.semanticMissing, {
-    match_count: results.length,
-  });
+  throw new CanaryFailure("CANARY_SEMANTIC_TARGET_MISSING", EXIT.semanticMissing, details);
 }
 
 function configure() {
@@ -254,10 +278,12 @@ export async function main() {
     for (const probe of probes) {
       let results;
       try {
-        results = await pollFor(actors[probe.actor], probe.query, ids[probe.expected]);
+        results = await pollFor(actors[probe.actor], probe.query, ids[probe.expected], {
+          probeName: probe.name, forbiddenIds: probe.forbidden.map(key => ids[key]),
+        });
       } catch (error) {
         if (probe.name !== "bob-public-privacy-decoy"
-            || (error instanceof CanaryFailure && error.code === "CANARY_SEMANTIC_UNAVAILABLE")) {
+            || (error instanceof CanaryFailure && ["CANARY_SEMANTIC_UNAVAILABLE", "CANARY_OTHER_PRIVATE_VISIBLE"].includes(error.code))) {
           throw error;
         }
         throw new CanaryFailure("CANARY_PUBLIC_MISSING", EXIT.public, error.details);
@@ -316,6 +342,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   await main().catch(error => {
     console.error(JSON.stringify({
       ok: false, code: error instanceof CanaryFailure ? error.code : "CANARY_CONFIG_FAILED",
+      ...(error instanceof CanaryFailure && error.details.probe ? {
+        probe: error.details.probe, attempt: error.details.attempt,
+        elapsed_ms: error.details.elapsed_ms, match_count: error.details.match_count,
+      } : {}),
       ...(error instanceof CanaryFailure && error.details.cleanup_failed ? { cleanup_failed: true } : {}),
     }));
     process.exitCode = error instanceof CanaryFailure ? error.exitCode : EXIT.config;
