@@ -356,7 +356,10 @@ it("accepts real provider citation tokens over HTTP and rejects missing or impos
   const numbered = await client.chat("What does the silver compass retain?");
   expect(numbered.ok).toBe(true);
   if (numbered.ok) expect(numbered.value.answer_bytes).toBe(Buffer.byteLength(text));
-  for (const citation of ["[Source 1]", "[Source 1](https://example.test/evidence)", "[1](https://example.test/evidence)"]) {
+  for (const citation of [
+    "[Source 1]", "[Source 1](https://example.test/evidence)", "[1](https://example.test/evidence)",
+    "[1, 2, 3, 4, 5, 6, 7, 8]", "[Source 1, Source 2]", "[Source 1, 2]",
+  ]) {
     events = [{ response: `Safe harbor decisions ${citation}.` }];
     expect((await client.chat("fixture")).ok).toBe(true);
   }
@@ -365,12 +368,16 @@ it("accepts real provider citation tokens over HTTP and rejects missing or impos
     ["Safe harbor decisions [0].", "chat_citation_invalid"],
     ["Safe harbor decisions [Source 9].", "chat_citation_invalid"],
     ["Safe harbor decisions [1] [-1].", "chat_citation_invalid"],
+    ["Safe harbor decisions [1, 9].", "chat_citation_invalid"],
+    ["Safe harbor decisions [0, 1].", "chat_citation_invalid"],
+    ["Safe harbor decisions [Source 1, Source -1].", "chat_citation_invalid"],
+    ["Safe harbor decisions [1, unknown].", "chat_grounding_missing"],
   ]) {
     events = [{ response: answer }];
     const result = await client.chat("fixture");
     expect(result).toMatchObject({ ok: false, error, retries: 0 });
   }
-  expect(requests).toBe(8);
+  expect(requests).toBe(15);
 });
 
 

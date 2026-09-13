@@ -621,7 +621,8 @@ export function createLoadClient({ origin, key, fetchImpl = fetch, sleep = async
       // /chat labels evidence [N] and requests [Source N]; both identify the
       // same sources. Its stream omits the source list, so only the fixed
       // CHAT_RECALL_TOP_K=8 range can be checked here, not exact membership.
-      const citations = [...answer.matchAll(/\[(?:Source )?(-?\d+)\]/g)].map(match => Number(match[1]));
+      const citations = [...answer.matchAll(/\[((?:Source )?-?\d+(?:,\s*(?:Source )?-?\d+)*)\]/g)]
+        .flatMap(match => match[1].split(/,\s*/).map(source => Number(source.replace(/^Source /, ""))));
       if (!answer.trim() || !citations.length) throw new RequestFailure("chat_grounding_missing");
       if (citations.some(number => number < 1 || number > 8)) throw new RequestFailure("chat_citation_invalid");
       return { complete: true, answer_bytes: Buffer.byteLength(answer) };
