@@ -15,6 +15,9 @@ This document records measured results only. It contains no credentials, keys, k
 | --- | --- |
 | Working directory | `projects/shared-living-memory` |
 | Branch created from | `origin/main` (`b9dffafd6181d46dc9bfbcbd05333ad3273b78b8`) |
+| Release commit under review | `fa4b1a17824949eec4a9c2c1a4998060347c5463` (`fa4b1a1`) |
+| Release version | `1.1.0` — asserted equal in `package.json`, both `package-lock.json` version fields, and the MCP server version (`test/unit/release-version.test.ts`), with the dependency ranges pinned to the reviewed set |
+| Tag / GitHub release | **none**, deliberately: the specification forbids tagging or publishing before deployment authorization |
 | Node | v22.22.3 |
 | npm | 10.9.8 |
 | `npm ci` | exit 0 |
@@ -133,8 +136,9 @@ All commands run from the project directory.
 | --- | --- |
 | `npm ci` | exit 0 |
 | `npm test` (baseline, before any edit) | exit 0 — 1124 passed / 106 files |
-| `npm test` (final) | exit 0 — **1440 passed / 128 files** (52 commits on the branch) |
+| `npm test` (final) | exit 0 — **1445 passed / 129 files** |
 | `npm run typecheck` (final, runs `wrangler types` then `tsc --noEmit`) | exit 0, zero errors |
+| `npm ci` after the version bump | exit 0, dependency set unchanged |
 | `npx tsc --noEmit` | exit 0; zero errors under `src/` |
 | `npm run smoke:workerd` | **exit 1, blocked** — `setsid: command not found` (see §7). The script's control flow was nevertheless verified end-to-end by running the real script against a real Workerd with a `setsid` shim: **exit 0**, AI-independent phases green. |
 | `npm test -- test/integration/users-api.test.ts test/unit/mcp-identity.test.ts` | **exit 0** — 25 passed / 2 files |
@@ -204,6 +208,35 @@ These must be satisfied for the release to behave as specified. They are operati
 4. **Verify the four existing personal keys are unchanged** after deployment; this release performs no rotation and no forced re-export.
 
 ---
+
+## 8a. Recovery version and unresolved operational cleanup
+
+**Recovery version.** The compatible recovery artifact is *this same commit*
+(`fa4b1a17824949eec4a9c2c1a4998060347c5463`) deployed with `SLM_WRITE_MODE=read-only`. It is not a separate build and
+not an older one: a pre-receipt writer cannot maintain capture receipts or
+erased-key tombstones, so it is explicitly excluded as a rollback target. The
+procedure is in `docs/team-pilot/operator-runbook.md` ("Recovery"), and its
+properties are asserted by `test/unit/runbook-contract.test.ts`. It has **not
+been deployed or verified on staging**, which the specification requires before
+production.
+
+**Unresolved operational cleanup.** Nothing is outstanding in this workspace:
+`git status` is clean apart from the untracked `tasks/` agent notes, no staged
+work or partial migration exists, and no deployment was ever created, so there is
+no half-applied change to reconcile. At runtime the following are expected to be
+non-zero and are reported rather than suppressed:
+
+- `vector_cleanup_queue` rows, including `kind = 'capture_stage'` intents, are
+  drained by the scheduled repair pass. An unresolved entry surfaces as pending
+  operational cleanup, never as successful cleanup.
+- erasure receipts in `pending_cleanup` are reported truthfully until every
+  queued vector is gone, and `flagPendingErasures` raises a security event once a
+  receipt is stale.
+- `audit_completion_reconciliation` rows are retried with an attributable dead
+  letter after the bounded attempt count.
+
+None of these requires operator action in this workspace because nothing has been
+deployed.
 
 ## 9. Handoff
 
