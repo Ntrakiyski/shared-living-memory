@@ -137,6 +137,10 @@ All commands run from the project directory.
 | `npm run typecheck` (final, runs `wrangler types` then `tsc --noEmit`) | exit 0, zero errors |
 | `npx tsc --noEmit` | exit 0; zero errors under `src/` |
 | `npm run smoke:workerd` | **exit 1, blocked** — `setsid: command not found` (see §7) |
+| `npm test -- test/integration/users-api.test.ts test/unit/mcp-identity.test.ts` | **exit 0** — 25 passed / 2 files |
+| `npm test -- test/integration/forget.test.ts test/integration/deactivation-service.test.ts` | **exit 0** — 17 passed / 2 files |
+| `npm test -- test/integration/entry-version-service.test.ts test/integration/operator-governance.test.ts` | **exit 0** — 44 passed / 2 files |
+| `npm test -- test/integration/list.test.ts test/unit/mcp-private-artifacts.test.ts` | **exit 0** — 26 passed / 2 files |
 | `node --check scripts/*.mjs` | exit 0 for each script delivered by WP8/WP9 |
 
 Net change on the branch: **66 files changed, 15,034 insertions, 376 deletions** relative to `origin/main` (tracked files; `tasks/` agent notes remain untracked). The release specification itself is committed on the branch so it is preserved with the work; `tasks/` (agent working notes) remains untracked.
