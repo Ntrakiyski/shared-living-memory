@@ -65,6 +65,7 @@ import { captureEntryBatch, captureEntryKeyed, validateBatchEnvelope } from "./i
 import {
   EDGE_TOOL_ALIASES,
   READ_ONLY_SAFE_TOOLS,
+  SLM_RELEASE_VERSION,
   isMaintenanceReadOnly,
   profileAllowsTool,
   toolsRegisteredForProfile,
@@ -431,7 +432,8 @@ export function buildMcpServer(
     return ownerUsername;
   };
 
-  const server = new McpServer({ name: "shared-living-memory", version: "1.0.0" });
+  // Kept in lockstep with package.json by test/unit/release-version.test.ts.
+  const server = new McpServer({ name: "shared-living-memory", version: SLM_RELEASE_VERSION });
 
   // Profile-disallowed tools are never registered, so tools/list and tools/call
   // can never disagree and an unknown name has no hidden handler. The canonical

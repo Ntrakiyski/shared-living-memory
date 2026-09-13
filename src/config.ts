@@ -10,6 +10,12 @@
  *         chunking limits, token budgets, and the SQL fragment for compression eligibility.
  */
 
+// ─── Release identity ────────────────────────────────────────────────────────
+// The MCP server reports this version to every client. It is asserted against
+// package.json by test/unit/release-version.test.ts so the three cannot drift.
+// Update all three together, without upgrading dependencies.
+export const SLM_RELEASE_VERSION = "1.1.0";
+
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 
 export const CORS_HEADERS = {
