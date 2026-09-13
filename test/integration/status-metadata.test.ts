@@ -339,3 +339,65 @@ describe("automatic overwrite protection (G5)", () => {
     expect(isProtectedFromAutomaticOverwrite({ tags: [], importanceScore: null, epistemicStatus: null })).toBe(false);
   });
 });
+
+describe("staleness transition safety (G5)", () => {
+  it("only ever lists the four non-terminal states as staleness candidates", async () => {
+    const { STALENESS_SOURCE_STATES } = await import("../../src/lifecycle");
+    expect([...STALENESS_SOURCE_STATES]).toEqual(["candidate", "reviewed", "canonical", "qualified"]);
+    for (const terminal of ["stale", "superseded", "retracted"]) {
+      expect(STALENESS_SOURCE_STATES as readonly string[]).not.toContain(terminal);
+    }
+  });
+
+  it("never revives a superseded, retracted or deprecated entry", async () => {
+    const { detectStaleness } = await import("../../src/lifecycle");
+    const harness = makeHarness();
+    try {
+      const now = Date.now();
+      const seed = async (id: string, epistemic: string, tags: string) => {
+        harness.db.exec(
+          `INSERT INTO entries (id, content, tags, source, created_at, vector_ids, owner_user_id,
+                                visibility, valid_from, valid_to, recorded_at, epistemic_status, revision)
+           VALUES ('${id}', 'body', '${tags}', 'api', ${now - 400000}, '[]', '${OWNER}',
+                   'public', ${now - 400000}, ${now - 200000}, ${now - 400000}, '${epistemic}', 1)`,
+        );
+      };
+      await seed("candidate-expired", "candidate", "[]");
+      await seed("reviewed-expired", "reviewed", "[]");
+      await seed("superseded-expired", "superseded", "[]");
+      await seed("retracted-expired", "retracted", "[]");
+      await seed("deprecated-expired", "canonical", '["status:deprecated"]');
+      await seed("stale-expired", "stale", "[]");
+
+      await detectStaleness(harness.env);
+
+      const states = Object.fromEntries(harness.db
+        .all<{ id: string; epistemic_status: string }>("SELECT id, epistemic_status FROM entries")
+        .map((row) => [row.id, row.epistemic_status]));
+
+      expect(states["candidate-expired"]).toBe("stale");
+      expect(states["reviewed-expired"]).toBe("stale");
+      // Terminal and deprecated entries are untouched.
+      expect(states["superseded-expired"]).toBe("superseded");
+      expect(states["retracted-expired"]).toBe("retracted");
+      expect(states["deprecated-expired"]).toBe("canonical");
+      expect(states["stale-expired"]).toBe("stale");
+
+      // The maintenance actor is the detector, never the entry owner.
+      const change = JSON.parse(harness.db.one<{ status_change_json: string }>(
+        `SELECT status_change_json FROM episodes
+         WHERE entry_id = 'candidate-expired' AND status_change_json IS NOT NULL LIMIT 1`,
+      ).status_change_json);
+      expect(change).toMatchObject({
+        axis: "epistemic",
+        from: "candidate",
+        to: "stale",
+        actor: { kind: "system", id: "_staleness" },
+        reviewer: null,
+      });
+      expect(change.reason).toContain("staleness detector");
+    } finally {
+      harness.db.close();
+    }
+  });
+});

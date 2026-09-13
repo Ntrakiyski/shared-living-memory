@@ -416,6 +416,14 @@ export async function runNightlyCompression(env: Env, ctx: ExecutionContext): Pr
 // ─── Staleness detection (Ticket 06) ────────────────────────────────────────
 // Marks entries as stale when: valid_to is set, incoming edge confidence < 0.5,
 // or age > STALENESS_THRESHOLD_DAYS with no recalls. Runs nightly.
+/** The only states a staleness pass may move to `stale`. */
+export const STALENESS_SOURCE_STATES = ["candidate", "reviewed", "canonical", "qualified"] as const;
+
+/** Shared candidate predicate: never terminal states, never legacy-deprecated. */
+const STALENESS_CANDIDATE_SQL =
+  `epistemic_status IN ('candidate', 'reviewed', 'canonical', 'qualified')
+   AND tags NOT LIKE '%\"status:deprecated\"%'`;
+
 export async function detectStaleness(env: Env): Promise<void> {
   const now = Date.now();
   const { STALENESS_THRESHOLD_DAYS, STALENESS_CONFIDENCE_THRESHOLD } = await import("./config");
@@ -426,7 +434,7 @@ export async function detectStaleness(env: Env): Promise<void> {
   try {
     const { results } = await env.DB.prepare(
       `SELECT ${projection} FROM entries
-       WHERE valid_to IS NOT NULL AND epistemic_status != 'stale' LIMIT 100`,
+       WHERE valid_to IS NOT NULL AND ${STALENESS_CANDIDATE_SQL} LIMIT 100`,
     ).all();
     for (const row of results as Record<string, any>[]) candidates.set(row.id, { row, reason: "validity-ended" });
   } catch (e) { console.error("Staleness check (valid_to) failed (non-fatal):", e); }
@@ -436,7 +444,7 @@ export async function detectStaleness(env: Env): Promise<void> {
       `SELECT ${projection} FROM entries
        WHERE id IN (
          SELECT DISTINCT target_id FROM edges WHERE confidence < ? AND confidence > 0
-       ) AND epistemic_status != 'stale' LIMIT 100`,
+       ) AND ${STALENESS_CANDIDATE_SQL} LIMIT 100`,
     ).bind(STALENESS_CONFIDENCE_THRESHOLD).all();
     for (const row of results as Record<string, any>[]) {
       if (!candidates.has(row.id)) candidates.set(row.id, { row, reason: "low-confidence-evidence" });
@@ -447,7 +455,7 @@ export async function detectStaleness(env: Env): Promise<void> {
     const cutoff = now - STALENESS_THRESHOLD_DAYS * 86400000;
     const { results } = await env.DB.prepare(
       `SELECT ${projection} FROM entries
-       WHERE created_at < ? AND recall_count = 0 AND epistemic_status != 'stale'
+       WHERE created_at < ? AND recall_count = 0 AND ${STALENESS_CANDIDATE_SQL}
        LIMIT 100`,
     ).bind(cutoff).all();
     for (const row of results as Record<string, any>[]) {
@@ -458,6 +466,18 @@ export async function detectStaleness(env: Env): Promise<void> {
   let marked = 0;
   for (const { row, reason } of candidates.values()) {
     if (!row.owner_user_id) continue;
+    // Final guard, in addition to the candidate query and the revision CAS: a
+    // concurrent transition into a terminal state must never be reverted to
+    // stale, and a legacy-deprecated entry is never revived.
+    const guard = await env.DB.prepare(
+      `SELECT epistemic_status, tags, revision FROM entries WHERE id = ?`,
+    ).bind(row.id as string).first<{ epistemic_status: string; tags: string; revision: number }>();
+    if (!guard
+        || !(STALENESS_SOURCE_STATES as readonly string[]).includes(guard.epistemic_status)
+        || guard.tags.includes('"status:deprecated"')
+        || Number(guard.revision) !== Number(row.revision ?? 0)) {
+      continue;
+    }
     try {
       await commitEntryVersion({
         kind: "status",
@@ -471,6 +491,14 @@ export async function detectStaleness(env: Env): Promise<void> {
         validFrom: row.valid_from as number | null,
         validTo: row.valid_to as number | null,
         epistemicStatus: "stale",
+        statusChange: {
+          axis: "epistemic",
+          reason: `staleness detector: ${reason}`,
+          // The maintenance actor is the detector, never the entry owner.
+          actor: { kind: "system", id: "_staleness" },
+          reviewer: null,
+          proposalId: null,
+        },
       }, env);
       marked++;
     } catch (e) {

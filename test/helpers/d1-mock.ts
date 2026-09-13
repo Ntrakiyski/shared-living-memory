@@ -2070,14 +2070,18 @@ export class D1Mock {
             }));
           return { results };
         }
-        // Versioned staleness candidate scans.
+        // Versioned staleness candidate scans. Candidates are restricted to the
+        // four non-terminal states and exclude legacy-deprecated entries.
         if (
           s.includes("SELECT id, content, tags, source, owner_user_id, revision") &&
-          s.includes("epistemic_status != 'stale'") &&
+          s.includes("epistemic_status IN ('candidate', 'reviewed', 'canonical', 'qualified')") &&
           s.includes("FROM entries")
         ) {
+          const STALENESS_SOURCE_STATES = ["candidate", "reviewed", "canonical", "qualified"];
           let rows = db.entries.map((entry: any) => normalizeEntry(entry))
-            .filter((entry: any) => entry.epistemic_status !== "stale");
+            .filter((entry: any) =>
+              STALENESS_SOURCE_STATES.includes(entry.epistemic_status ?? "canonical")
+              && !String(entry.tags ?? "").includes('"status:deprecated"'));
           if (s.includes("valid_to IS NOT NULL")) {
             rows = rows.filter((entry: any) => entry.valid_to != null);
           } else if (s.includes("SELECT DISTINCT target_id FROM edges WHERE confidence < ?")) {

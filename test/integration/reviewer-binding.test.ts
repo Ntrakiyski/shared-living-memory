@@ -225,7 +225,6 @@ describe("designated reviewer binding (G2/G3)", () => {
     const executed = await executeApprovedProposal(harness.env, {
       actor: human(JARVIS),
       proposalId: proposal.id,
-      reason: "Executing approved change",
     });
     expect(executed.proposalId).toBe(proposal.id);
 
@@ -262,14 +261,14 @@ describe("designated reviewer binding (G2/G3)", () => {
       actor: human(JARVIS), proposalId: proposal.id, decision: "approve", reason: "ok",
     });
     await executeApprovedProposal(harness.env, {
-      actor: human(JARVIS), proposalId: proposal.id, reason: "go",
+      actor: human(JARVIS), proposalId: proposal.id,
     });
 
     harness.db.exec(`UPDATE users SET status = 'deactivated' WHERE id = '${JARVIS}'`);
 
     // The completed audit record remains readable to a still-authorized caller.
     const replay = await executeApprovedProposal(harness.env, {
-      actor: human(RESEARCHER), proposalId: proposal.id, reason: "retry",
+      actor: human(RESEARCHER), proposalId: proposal.id,
     });
     expect(replay.proposalId).toBe(proposal.id);
     // Exactly one version change happened: the entry is still at revision 2.
