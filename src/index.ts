@@ -81,7 +81,18 @@ export default {
         url.pathname === "/oauth/token" ||
         url.pathname === "/oauth/register"
       ) {
-        return new Response("OAuth issuance is disabled for the team pilot. Use a personal API key as the Bearer token.", { status: 404 });
+        // OAuth issuance is off; personal API keys are the supported path. Name
+        // the deployment so the next step is unambiguous, without leaking a secret.
+        const canonical = typeof (env as any).SLM_PUBLIC_BASE_URL === "string"
+          ? String((env as any).SLM_PUBLIC_BASE_URL).trim().replace(/\/+$/, "")
+          : "";
+        const suffix = canonical
+          ? ` Create or copy your personal API key at ${canonical}/ and send it as \`Authorization: Bearer <personal-api-key>\`.`
+          : " Create or copy your personal API key in the dashboard and send it as `Authorization: Bearer <personal-api-key>`.";
+        return new Response(
+          `OAuth issuance is disabled for this deployment, and personal API keys are accepted instead.${suffix}`,
+          { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } },
+        );
       }
     }
     return oauthProvider.fetch(req, env as any, ctx);

@@ -27,6 +27,19 @@ import { verifyServiceActor } from "./service-actor";
 import { resolveServiceCredential } from "./service-identities";
 import { resolveUserByApiKey } from "./auth";
 import { TOOL_PROFILE_HEADER, isToolProfile, type ToolProfile } from "./config";
+import { readDeploymentMetadata } from "./mcp-results";
+
+/**
+ * A safe, deployment-specific next step for an authentication failure. The
+ * server cannot know whether an unknown key came from another workspace, so the
+ * message never guesses a reason and never performs a second lookup.
+ */
+function identityMessage(env: Env, base: string): string {
+  const canonical = readDeploymentMetadata(env as unknown as Record<string, unknown>).metadata.canonical_url;
+  return canonical
+    ? `${base} Use a personal API key as the Bearer token for ${canonical}.`
+    : `${base} Use a personal API key as the Bearer token.`;
+}
 
 function mcpIdentityError(status: 401 | 503, message: string): Response {
   const headers: Record<string, string> = {
@@ -197,7 +210,7 @@ const apiHandler = {
     }
 
     if (!resolution) {
-      return mcpIdentityError(401, "Authenticated MCP actor required");
+      return mcpIdentityError(401, identityMessage(env, "Authenticated MCP actor required."));
     }
 
     const { actor } = resolution;
