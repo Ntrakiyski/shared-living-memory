@@ -1695,6 +1695,7 @@
       #menu-sheet,
       #integrations-sheet,
       #services-sheet,
+      #connection-sheet,
       #history-sheet,
       #view-sheet {
         display: none;
@@ -1716,6 +1717,7 @@
       #menu-sheet.open,
       #integrations-sheet.open,
       #services-sheet.open,
+      #connection-sheet.open,
       #history-sheet.open,
       #view-sheet.open {
         display: flex;
@@ -2924,6 +2926,7 @@
         #menu-sheet,
         #integrations-sheet,
         #services-sheet,
+        #connection-sheet,
         #history-sheet,
         #view-sheet {
           align-items: center;
@@ -2977,6 +2980,139 @@
         pointer-events: none;
       }
 
+      /* ============ CONNECTION SHEET + WHOAMI + STATUS ============ */
+      #auth-overlay .auth-step-note {
+        font-size: 12px;
+        color: var(--text-secondary);
+        text-align: left;
+        line-height: 1.5;
+        margin: 2px 0 10px;
+        max-width: none;
+      }
+
+      .connection-code {
+        display: block;
+        font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+        font-size: 12.5px;
+        color: var(--accent-ink);
+        background: var(--surface-2);
+        border-radius: 8px;
+        padding: 10px 12px;
+        word-break: break-all;
+        margin-bottom: 8px;
+      }
+
+      .whoami-list {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        margin: 6px 0 0;
+      }
+      .whoami-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        font-size: 12.5px;
+        line-height: 1.45;
+        border-bottom: 0.5px solid var(--line-soft);
+        padding-bottom: 6px;
+      }
+      .whoami-key {
+        color: var(--text-secondary);
+        flex-shrink: 0;
+      }
+      .whoami-val {
+        color: var(--text-primary);
+        text-align: right;
+        word-break: break-word;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .view-status {
+        margin-top: 18px;
+        padding-top: 16px;
+        border-top: 0.5px solid var(--line-soft);
+        flex-shrink: 0;
+      }
+      .view-status-current {
+        font-size: 12px;
+        color: var(--text-secondary);
+        margin: 4px 0 10px;
+        line-height: 1.4;
+      }
+      .status-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .status-field {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        min-width: 0;
+      }
+      .status-field > label {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-secondary);
+      }
+      .status-field select,
+      .status-field textarea {
+        width: 100%;
+        padding: 10px 12px;
+        background: var(--bg-card);
+        border: 0.5px solid var(--border-input);
+        border-radius: 10px;
+        font-family: var(--font-sans);
+        font-size: 13.5px;
+        color: var(--text-primary);
+        outline: none;
+      }
+      .status-field select:focus,
+      .status-field textarea:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-soft);
+      }
+      .status-field textarea {
+        resize: vertical;
+        min-height: 64px;
+      }
+      .status-help {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        line-height: 1.4;
+      }
+      .status-required {
+        color: var(--accent-ink);
+        font-weight: 500;
+      }
+      .status-error {
+        font-size: 12.5px;
+        color: var(--danger);
+        margin: 8px 0;
+        line-height: 1.45;
+      }
+      .status-submit {
+        width: 100%;
+        padding: 13px;
+        border: none;
+        border-radius: 13px;
+        background: var(--accent);
+        color: var(--on-accent);
+        font-family: var(--font-sans);
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .status-submit:hover {
+        background: var(--accent-press);
+      }
+      .status-submit:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+
       @media (prefers-reduced-motion: reduce) {
         *,
         *::before,
@@ -2995,26 +3131,30 @@
           <i class="ti ti-brain"></i>
         </div>
         <h1>Shared Living Memory</h1>
-        <!-- Bootstrap: workspace key + create first admin -->
+        <p>Sign in with your personal API key. The workspace key is reserved for the one-time first-administrator bootstrap.</p>
+        <!-- First-admin bootstrap: workspace key + create first admin (POST /api/bootstrap) -->
         <div id="auth-bootstrap-step" class="field-group" style="display:none">
+          <p class="auth-step-note">First-admin bootstrap &mdash; this workspace has no active account yet. Enter the workspace key, then create the first administrator. This only succeeds while no active account exists.</p>
           <label class="sr-only" for="auth-bootstrap-token">Workspace key</label>
           <input type="password" id="auth-bootstrap-token" placeholder="Workspace key" autocomplete="current-password" />
           <button id="auth-bootstrap-btn" type="button" onclick="bootstrapConnect()">Continue</button>
         </div>
         <div id="auth-bootstrap-user" class="field-group" style="display:none">
-          <p style="color:var(--text-secondary);font-size:12px;margin:-4px 0 8px 0">This workspace has no active users yet. Create the first administrator.</p>
+          <p style="color:var(--text-secondary);font-size:12px;margin:-4px 0 8px 0">This workspace has no active users yet. Create the first administrator via <code>POST /api/bootstrap</code>, which requires the workspace key and only succeeds while no active account exists.</p>
           <label class="sr-only" for="auth-bootstrap-username">Administrator username</label>
           <input type="text" id="auth-bootstrap-username" placeholder="Administrator username" autocomplete="off" maxlength="32" />
           <button id="auth-bootstrap-create-btn" type="button" onclick="bootstrapCreateAdmin()">Create Administrator</button>
         </div>
-        <!-- Personal-key sign-in (non-bootstrap) -->
+        <!-- Personal-key sign-in (normal, non-bootstrap) -->
         <div id="auth-signin-step" class="field-group" style="display:none">
+          <p class="auth-step-note">Normal sign-in. Your key is sent as <code>Authorization: Bearer &lt;key&gt;</code> &mdash; no workspace key or user headers are needed.</p>
           <label class="sr-only" for="auth-signin-key">Personal API key</label>
           <input type="password" id="auth-signin-key" placeholder="Personal API key" autocomplete="current-password" />
           <button id="auth-signin-btn" type="button" onclick="signInWithKey()">Sign In</button>
         </div>
         <!-- Legacy connect + login — shown when bootstrap check cannot reach the server -->
         <form id="auth-connect-step" class="field-group" onsubmit="connect(); return false">
+          <p class="auth-step-note">Legacy sign-in (workspace key + account key). Prefer a personal API key above when one is available.</p>
           <input type="text" name="username" value="workspace" autocomplete="username" hidden />
           <label class="sr-only" for="auth-url">Shared Living Memory server URL</label>
           <input type="url" id="auth-url" placeholder="Shared Living Memory server URL" autocomplete="url" autocapitalize="none" />
@@ -3447,6 +3587,32 @@
           <button class="btn-view-visibility" id="view-btn-visibility"><i class="ti ti-world"></i> Publish</button>
           <button class="btn-view-forget" id="view-btn-forget"><i class="ti ti-trash"></i> Forget</button>
         </div>
+        <div class="view-status" id="view-status-panel" style="display: none">
+          <div class="digest-section-label">Status</div>
+          <div class="view-status-current" id="view-status-current"></div>
+          <div class="status-grid">
+            <div class="status-field">
+              <label for="status-lifecycle-select">Lifecycle</label>
+              <select id="status-lifecycle-select" aria-describedby="status-lifecycle-help">
+                <option value="canonical">canonical</option>
+                <option value="draft">draft</option>
+                <option value="deprecated">deprecated</option>
+              </select>
+              <p class="status-help" id="status-lifecycle-help">canonical · draft · deprecated</p>
+            </div>
+            <div class="status-field">
+              <label for="status-epistemic-select">Epistemic</label>
+              <select id="status-epistemic-select" aria-describedby="status-epistemic-help"></select>
+              <p class="status-help" id="status-epistemic-help"></p>
+            </div>
+          </div>
+          <div class="status-field">
+            <label for="status-reason">Reason <span class="status-required">(required)</span></label>
+            <textarea id="status-reason" placeholder="Why this status change?" aria-describedby="status-error"></textarea>
+          </div>
+          <div class="status-error" id="status-error" role="alert"></div>
+          <button class="status-submit" id="status-submit" type="button" disabled>Apply status</button>
+        </div>
       </div>
     </div>
 
@@ -3495,6 +3661,9 @@
         <button class="menu-item" onclick="openIntegrations()"><i class="ti ti-plug"></i> Integrations</button>
         <button class="menu-item" id="service-identities-menu-item" onclick="openServiceIdentities()" style="display: none">
           <i class="ti ti-robot"></i> Service identities
+        </button>
+        <button class="menu-item" id="connection-menu-item">
+          <i class="ti ti-plug-connected"></i> Connection
         </button>
         <label class="digest-note" for="export-mode">Export contents</label>
         <select class="filter-field" id="export-mode">
@@ -3584,6 +3753,43 @@
 
         <div class="digest-section-label">Existing identities</div>
         <div id="service-identities-list"><p class="digest-note">Loading&hellip;</p></div>
+      </div>
+    </div>
+
+    <div id="connection-sheet">
+      <div class="menu-inner">
+        <div class="view-header">
+          <div style="display: flex; align-items: center; gap: 10px">
+            <button class="btn-close-icon" id="connection-back-btn" title="Back to settings" aria-label="Back to settings"><i class="ti ti-arrow-left"></i></button>
+            <h3 style="margin-bottom: 0">Connection</h3>
+          </div>
+          <button class="btn-close-icon" id="connection-close-btn" title="Close" aria-label="Close connection"><i class="ti ti-x"></i></button>
+        </div>
+        <p class="digest-note">Connect an MCP-capable agent (Claude, Codex, ChatGPT) to this deployment using a personal API key.</p>
+
+        <div class="digest-section-label">Canonical MCP URL</div>
+        <code class="connection-code" id="connection-mcp-url">—</code>
+        <p class="digest-note">Append exactly one <code>/mcp</code> to the deployment origin, then authenticate with <code>Authorization: Bearer &lt;personal-api-key&gt;</code>.</p>
+
+        <div class="digest-section-label">Tool profile</div>
+        <label class="service-field" for="connection-profile-select">
+          <span>Profile</span>
+          <select id="connection-profile-select">
+            <option value="full" selected>full — every tool</option>
+            <option value="review">review — capture tools plus curated edits</option>
+            <option value="capture">capture — read and capture only</option>
+          </select>
+        </label>
+        <p class="digest-note">Sent as the <code>X-SLM-Tool-Profile</code> header (<code>capture</code>, <code>review</code>, or <code>full</code>). Omitted means <code>full</code>.</p>
+
+        <div class="digest-section-label">Connection JSON</div>
+        <button class="digest-btn" id="connection-download-btn" type="button">Download connection JSON</button>
+        <div class="integration-error" id="connection-download-error" style="display: none" role="alert"></div>
+        <p class="digest-note" id="connection-download-note">The download only happens when you click. A browser download cannot guarantee Unix file permissions. For a file written with mode 0600, use the secure CLI method instead: <code>scripts/export-mcp-connection.mjs</code> (pass the key on stdin or with <code>--key-file</code>; it writes the file with mode 0600).</p>
+
+        <div class="digest-section-label">Your identity</div>
+        <div class="whoami-list" id="whoami-list"><p class="digest-note">Loading&hellip;</p></div>
+        <div class="integration-error" id="whoami-error" style="display: none" role="alert"></div>
       </div>
     </div>
 
@@ -4052,6 +4258,11 @@
         document.getElementById('auth-connect-step').style.display = ''
         document.getElementById('auth-user-step').style.display = 'none'
         document.getElementById('key-reveal').style.display = 'none'
+        // A revealed key is transient state: clear it whenever the user leaves.
+        document.getElementById('key-reveal-value').textContent = ''
+        document.getElementById('connection-sheet').classList.remove('open')
+        document.getElementById('view-status-panel').style.display = 'none'
+        statusTarget = null
         document.getElementById('auth-url').value = window.location.origin
         document.getElementById('auth-token').value = ''
         document.getElementById('auth-key').value = ''
@@ -5723,9 +5934,12 @@
           historyBtn.style.display = 'none'
         }
         document.getElementById('view-sheet').classList.add('open')
+        if (typeof setupStatusPanel === 'function') setupStatusPanel(entry)
       }
       function closeView() {
         document.getElementById('view-sheet').classList.remove('open')
+        document.getElementById('view-status-panel').style.display = 'none'
+        statusTarget = null
       }
 
       async function openEntryHistory(entry) {
@@ -6634,6 +6848,332 @@
         if (graphState && graphState.api) graphState.api.redraw() // repaint the graph in the new theme's ink
       }
       _prefersDark.addEventListener('change', applyTheme)
+
+      // ── Connection sheet: canonical MCP setup, whoami, secure export ──────
+      let statusTarget = null
+      const EPISTEMIC_VALUES = ['candidate', 'reviewed', 'canonical', 'qualified', 'stale', 'superseded', 'retracted']
+      const EPISTEMIC_TRANSITIONS = {
+        candidate: ['reviewed'],
+        reviewed: ['canonical'],
+        canonical: ['qualified', 'superseded'],
+        qualified: ['canonical', 'superseded'],
+        stale: ['reviewed', 'retracted'],
+        superseded: ['retracted'],
+        retracted: [],
+      }
+      const LIFECYCLE_VALUES = ['canonical', 'draft', 'deprecated']
+
+      function openConnection() {
+        closeMenu()
+        document.getElementById('connection-sheet').classList.add('open')
+        const base = (WORKER_URL || '').replace(/\/$/, '')
+        document.getElementById('connection-mcp-url').textContent = base ? base + '/mcp' : '/mcp'
+        loadWhoami()
+      }
+
+      function closeConnection() {
+        document.getElementById('connection-sheet').classList.remove('open')
+      }
+
+      function backToMenuFromConnection() {
+        closeConnection()
+        openMenu()
+      }
+
+      function whoamiDisplay(value) {
+        if (value === null || value === undefined || value === '') return '—'
+        if (Array.isArray(value)) return value.join(', ')
+        if (typeof value === 'object') return JSON.stringify(value)
+        return String(value)
+      }
+
+      function whoamiRow(list, label, value) {
+        const row = document.createElement('div')
+        row.className = 'whoami-row'
+        const key = document.createElement('span')
+        key.className = 'whoami-key'
+        key.textContent = label
+        const val = document.createElement('span')
+        val.className = 'whoami-val'
+        val.textContent = whoamiDisplay(value)
+        row.appendChild(key)
+        row.appendChild(val)
+        list.appendChild(row)
+      }
+
+      async function loadWhoami() {
+        const list = document.getElementById('whoami-list')
+        const err = document.getElementById('whoami-error')
+        if (!list) return
+        list.innerHTML = ''
+        err.textContent = ''
+        err.style.display = 'none'
+        list.textContent = 'Loading identity…'
+        try {
+          const res = await fetch(`${WORKER_URL}/api/whoami`, { headers: authHeaders() })
+          let body = null
+          try { body = await res.json() } catch {}
+          if (!res.ok || !body || body.ok === false) {
+            const message = body && body.error ? (body.error.message || body.error) : ('whoami failed (HTTP ' + res.status + ')')
+            throw new Error(typeof message === 'string' ? message : 'Could not load identity')
+          }
+          const data = (body && body.data) || body
+          list.innerHTML = ''
+          whoamiRow(list, 'Principal', data.principal && data.principal.name)
+          whoamiRow(list, 'Credential type', data.credential_type)
+          whoamiRow(list, 'Auth method', data.auth_method)
+          whoamiRow(list, 'Role', data.role)
+          whoamiRow(list, 'Tool profile', data.tool_profile)
+          whoamiRow(list, 'Effective tools', data.effective_tools)
+          whoamiRow(list, 'Capabilities', data.capabilities)
+          whoamiRow(list, 'Default visibility', data.default_visibility)
+          const deployment = data.deployment || {}
+          whoamiRow(list, 'Deployment id', deployment.id)
+          whoamiRow(list, 'Environment', deployment.environment)
+          whoamiRow(list, 'Canonical URL', deployment.canonical_url)
+          whoamiRow(list, 'Release id', deployment.release_id)
+          whoamiRow(list, 'Write mode', deployment.write_mode)
+        } catch (e) {
+          list.innerHTML = ''
+          err.textContent = e && e.message ? e.message : 'Could not load identity.'
+          err.style.display = ''
+        }
+      }
+
+      function downloadConnectionJson() {
+        const err = document.getElementById('connection-download-error')
+        if (err) { err.textContent = ''; err.style.display = 'none' }
+        if (!USER_API_KEY) {
+          if (err) { err.textContent = 'No API key is held in memory for this session. Sign in with a personal API key, or use the CLI method below.'; err.style.display = '' }
+          return
+        }
+        const profile = document.getElementById('connection-profile-select').value || 'full'
+        const base = (WORKER_URL || '').replace(/\/$/, '')
+        const headers = { Authorization: 'Bearer ' + USER_API_KEY }
+        if (profile !== 'full') headers['X-SLM-Tool-Profile'] = profile
+        const config = {
+          mcpServers: {
+            'shared-living-memory': {
+              url: base ? base + '/mcp' : '/mcp',
+              headers,
+            },
+          },
+        }
+        const blob = new Blob([JSON.stringify(config, null, 2) + '\n'], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = 'shared-living-memory.mcp.json'
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+      }
+
+      // ── Status controls (lifecycle + epistemic) ────────────────────────────
+      function lifecycleStatusFromTags(tags) {
+        if (!Array.isArray(tags)) return null
+        const tag = tags.find((t) => typeof t === 'string' && t.startsWith('status:'))
+        if (!tag) return null
+        const value = tag.slice('status:'.length)
+        return LIFECYCLE_VALUES.indexOf(value) >= 0 ? value : null
+      }
+
+      function statusReasonValue() {
+        const el = document.getElementById('status-reason')
+        return el ? el.value.trim() : ''
+      }
+
+      function syncStatusSubmit() {
+        const reason = statusReasonValue()
+        let hasChange = false
+        if (statusTarget) {
+          const life = document.getElementById('status-lifecycle-select').value
+          const epi = document.getElementById('status-epistemic-select').value
+          hasChange = (life && life !== statusTarget.lifecycle) || (epi && epi !== statusTarget.epistemic)
+        }
+        document.getElementById('status-submit').disabled = reason.length === 0 || !hasChange
+      }
+
+      function syncStatusHelp() {
+        const epiHelp = document.getElementById('status-epistemic-help')
+        document.getElementById('status-lifecycle-help').textContent = 'canonical · draft · deprecated'
+        const epiSel = document.getElementById('status-epistemic-select')
+        if (!statusTarget) {
+          epiHelp.textContent = ''
+          return
+        }
+        const valid = EPISTEMIC_TRANSITIONS[statusTarget.epistemic] || []
+        epiHelp.textContent = valid.length ? 'Valid next: ' + valid.join(', ') : 'Terminal — no transitions'
+        Array.from(epiSel.options).forEach((opt) => {
+          opt.disabled = opt.value === statusTarget.epistemic || valid.indexOf(opt.value) < 0
+        })
+        if (epiSel.selectedOptions[0] && epiSel.selectedOptions[0].disabled) epiSel.selectedIndex = -1
+      }
+
+      async function setupStatusPanel(entry) {
+        const panel = document.getElementById('view-status-panel')
+        if (!panel) return
+        if (!entry || !entry.id || entry.is_owned !== true) {
+          panel.style.display = 'none'
+          statusTarget = null
+          return
+        }
+        const isNewTarget = !statusTarget || statusTarget.id !== entry.id
+        panel.style.display = ''
+        statusTarget = {
+          id: entry.id,
+          revision: 0,
+          epistemic: 'canonical',
+          lifecycle: lifecycleStatusFromTags(entry.tags),
+          tags: entry.tags || [],
+        }
+        if (isNewTarget) {
+          document.getElementById('status-error').textContent = ''
+          document.getElementById('status-reason').value = ''
+        }
+
+        const lifeSel = document.getElementById('status-lifecycle-select')
+        lifeSel.innerHTML = ''
+        LIFECYCLE_VALUES.forEach((value) => {
+          const opt = document.createElement('option')
+          opt.value = value
+          opt.textContent = value
+          if (value === statusTarget.lifecycle) opt.selected = true
+          lifeSel.appendChild(opt)
+        })
+
+        const epiSel = document.getElementById('status-epistemic-select')
+        epiSel.innerHTML = ''
+        EPISTEMIC_VALUES.forEach((value) => {
+          const opt = document.createElement('option')
+          opt.value = value
+          opt.textContent = value
+          epiSel.appendChild(opt)
+        })
+
+        const current = document.getElementById('view-status-current')
+        current.textContent = 'Loading current status…'
+        try {
+          const res = await fetch(`${WORKER_URL}/entries/${encodeURIComponent(entry.id)}/history`, { headers: authHeaders() })
+          let data = null
+          try { data = await res.json() } catch {}
+          if (!res.ok || !data || !data.ok) throw new Error(data && data.error ? data.error : 'Could not load current status')
+          statusTarget.revision = Number((data.projection && data.projection.revision) || 0)
+          const snapshots = Array.isArray(data.snapshots) ? data.snapshots : []
+          if (snapshots.length && EPISTEMIC_VALUES.indexOf(snapshots[0].epistemic_status) >= 0) {
+            statusTarget.epistemic = snapshots[0].epistemic_status
+          }
+          epiSel.value = statusTarget.epistemic
+          current.textContent = 'Current — lifecycle: ' + (statusTarget.lifecycle || '—') + ' · epistemic: ' + statusTarget.epistemic + ' · revision ' + statusTarget.revision
+        } catch (e) {
+          current.textContent = 'Could not load current status: ' + (e && e.message ? e.message : 'unknown error')
+        }
+        syncStatusHelp()
+        syncStatusSubmit()
+      }
+
+      async function refreshStatusRevision() {
+        if (!statusTarget) return
+        try {
+          const res = await fetch(`${WORKER_URL}/entries/${encodeURIComponent(statusTarget.id)}/history`, { headers: authHeaders() })
+          let data = null
+          try { data = await res.json() } catch {}
+          if (res.ok && data && data.ok && data.projection) {
+            statusTarget.revision = Number(data.projection.revision || 0)
+          }
+        } catch {}
+      }
+
+      async function postStatus(path, body) {
+        const res = await fetch(`${WORKER_URL}${path}`, {
+          method: 'POST',
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify(body),
+        })
+        let data = null
+        try { data = await res.json() } catch {}
+        if (res.ok && data && data.ok) return data
+        const code = (data && data.code) || (res.status === 409 ? 'revision_conflict' : 'status_failed')
+        const message = (data && data.error) ? data.error : ('Status change failed (HTTP ' + res.status + ')')
+        throw {
+          code,
+          message,
+          details: data && data.details ? data.details : null,
+          validNextStates: data && Array.isArray(data.valid_next_states) ? data.valid_next_states : null,
+        }
+      }
+
+      function handleStatusError(e) {
+        const err = document.getElementById('status-error')
+        if (!e) { err.textContent = 'Status change failed.'; return }
+        if (e.code === 'revision_conflict') {
+          const current = e.details && (e.details.actual_revision != null ? e.details.actual_revision : e.details.current_revision)
+          err.textContent = current != null
+            ? 'The record changed since it was read — its current revision is ' + current + '. Refresh and retry.'
+            : 'The record changed since it was read. Refresh and retry.'
+          if (statusTarget) setupStatusPanel({ id: statusTarget.id, tags: statusTarget.tags, is_owned: true })
+          return
+        }
+        if (e.code === 'invalid_transition') {
+          const valid = e.validNextStates || (e.details && (e.details.allowed_next_states || e.details.valid_next_states))
+          err.textContent = 'That transition is not allowed.' + (Array.isArray(valid) && valid.length ? ' Valid next states: ' + valid.join(', ') : '')
+          return
+        }
+        err.textContent = e.message || 'Status change failed.'
+      }
+
+      async function applyStatusFromView() {
+        const err = document.getElementById('status-error')
+        err.textContent = ''
+        if (!statusTarget) return
+        const reason = statusReasonValue()
+        if (!reason) { err.textContent = 'A reason is required before changing status.'; return }
+        const newLife = document.getElementById('status-lifecycle-select').value
+        const newEpi = document.getElementById('status-epistemic-select').value
+        const lifeChanged = Boolean(newLife) && newLife !== statusTarget.lifecycle
+        const epiChanged = Boolean(newEpi) && newEpi !== statusTarget.epistemic
+        if (!lifeChanged && !epiChanged) { err.textContent = 'Choose a new status first.'; return }
+        const btn = document.getElementById('status-submit')
+        btn.disabled = true
+        let expectedRevision = statusTarget.revision
+        try {
+          if (lifeChanged) {
+            const result = await postStatus('/status', { id: statusTarget.id, status: newLife, reason, expected_revision: expectedRevision })
+            statusTarget.lifecycle = result.status
+            await refreshStatusRevision()
+            expectedRevision = statusTarget.revision
+          }
+          if (epiChanged) {
+            const result = await postStatus('/epistemic-status', { id: statusTarget.id, status: newEpi, reason, expected_revision: expectedRevision })
+            statusTarget.epistemic = result.to
+            if (result.revision != null) expectedRevision = result.revision
+          }
+          statusTarget.revision = expectedRevision
+          document.getElementById('status-reason').value = ''
+          const nextTags = statusTarget.lifecycle
+            ? ['status:' + statusTarget.lifecycle].concat((statusTarget.tags || []).filter((t) => !String(t).startsWith('status:')))
+            : statusTarget.tags
+          await setupStatusPanel({ id: statusTarget.id, tags: nextTags, is_owned: true })
+          if (typeof loadRecent === 'function') loadRecent()
+        } catch (e) {
+          handleStatusError(e)
+        } finally {
+          syncStatusSubmit()
+        }
+      }
+
+      document.getElementById('connection-menu-item').addEventListener('click', openConnection)
+      document.getElementById('connection-back-btn').addEventListener('click', backToMenuFromConnection)
+      document.getElementById('connection-close-btn').addEventListener('click', closeConnection)
+      document.getElementById('connection-download-btn').addEventListener('click', downloadConnectionJson)
+      document.getElementById('connection-sheet').addEventListener('click', (e) => {
+        if (e.target === document.getElementById('connection-sheet')) closeConnection()
+      })
+      document.getElementById('status-reason').addEventListener('input', syncStatusSubmit)
+      document.getElementById('status-lifecycle-select').addEventListener('change', syncStatusSubmit)
+      document.getElementById('status-epistemic-select').addEventListener('change', syncStatusSubmit)
+      document.getElementById('status-submit').addEventListener('click', applyStatusFromView)
 
       init()
     </script>
