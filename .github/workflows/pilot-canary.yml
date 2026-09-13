@@ -151,8 +151,6 @@ jobs:
       SLM_URL: ${{ secrets.SLM_STAGING_URL }}
       SLM_EXPECTED_DEPLOYMENT_ID: slm-fractals-staging
       SLM_EXPECTED_RELEASE_ID: ${{ vars.SLM_STAGING_RELEASE_ID }}
-      SLM_KEY_FILE: ${{ runner.temp }}/slm-canary/admin.key
-      SLM_MANIFEST_FILE: ${{ runner.temp }}/slm-canary/stage-manifest.json
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
@@ -168,6 +166,8 @@ jobs:
 
       - name: Verify deployed staging bindings before writes
         env:
+          SLM_KEY_FILE: ${{ runner.temp }}/slm-canary/admin.key
+          SLM_MANIFEST_FILE: ${{ runner.temp }}/slm-canary/stage-manifest.json
           STAGING_ADMIN_KEY: ${{ secrets.SLM_STAGING_ADMIN_KEY }}
           STAGING_USER_KEY: ${{ secrets.SLM_STAGING_USER_KEY }}
         run: |
@@ -185,6 +185,8 @@ jobs:
       - name: Staging semantic canary
         env:
           SLM_BASE_URL: ${{ secrets.SLM_STAGING_URL }}
+          SLM_KEY_FILE: ${{ runner.temp }}/slm-canary/admin.key
+          SLM_MANIFEST_FILE: ${{ runner.temp }}/slm-canary/stage-manifest.json
           SLM_ADMIN_KEY_FILE: ${{ runner.temp }}/slm-canary/admin.key
           SLM_PRODUCTION_URL: ${{ secrets.SLM_PRODUCTION_URL }}
         run: |
@@ -199,6 +201,7 @@ jobs:
         env:
           SLM_URL: ${{ secrets.SLM_STAGING_URL }}
           SLM_KEY_FILE: ${{ runner.temp }}/slm-canary/user.key
+          SLM_MANIFEST_FILE: ${{ runner.temp }}/slm-canary/stage-manifest.json
           SLM_EXPECTED_DEPLOYMENT_ID: slm-fractals-staging
         run: |
           echo "staging/mcp-lifecycle" > "$GITHUB_WORKSPACE/.canary-failure-code"

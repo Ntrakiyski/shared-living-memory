@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 
 interface WorkflowStep {
   name: string | null;
+  env: string | null;
   /** The raw `if:` expression, when present. */
   condition: string | null;
   /** The step's `run:` body, or a github-script step's `script:` body. */
@@ -27,6 +28,7 @@ interface WorkflowJob {
   id: string;
   /** The human-readable `name:` label, when present. */
   name: string | null;
+  env: string | null;
   needs: string[];
   condition: string | null;
   steps: WorkflowStep[];
@@ -118,7 +120,7 @@ function parseWorkflow(source: string): Workflow {
     if (indent === 2 && trimmed.endsWith(":")) {
       flushStep();
       if (job) jobs.push(job);
-      job = { id: trimmed.slice(0, -1), name: null, needs: [], condition: null, steps: [] };
+      job = { id: trimmed.slice(0, -1), name: null, env: null, needs: [], condition: null, steps: [] };
       continue;
     }
     if (!job) continue;
@@ -126,6 +128,12 @@ function parseWorkflow(source: string): Workflow {
     // Job-level fields.
     if (indent === 4) {
       if (trimmed === "steps:") { flushStep(); continue; }
+      if (trimmed === "env:") {
+        const parsed = scalarOrFold(lines, index, indent);
+        job.env = parsed.value;
+        index = parsed.next - 1;
+        continue;
+      }
       if (trimmed.startsWith("name:")) { job.name = trimmed.slice(5).trim(); continue; }
       if (trimmed.startsWith("needs:")) {
         const rest = trimmed.slice("needs:".length).trim();
@@ -143,13 +151,19 @@ function parseWorkflow(source: string): Workflow {
 
     if (indent === 6 && trimmed.startsWith("- ")) {
       flushStep();
-      step = { name: null, condition: null, run: null };
+      step = { name: null, env: null, condition: null, run: null };
       const inline = trimmed.slice(2);
       if (inline.startsWith("name:")) step.name = inline.slice(5).trim();
       continue;
     }
     if (!step) continue;
 
+    if (trimmed === "env:" && indent === 8) {
+      const parsed = scalarOrFold(lines, index, indent);
+      step.env = parsed.value;
+      index = parsed.next - 1;
+      continue;
+    }
     if (trimmed.startsWith("name:") && indent >= 8) { step.name = trimmed.slice(5).trim(); continue; }
     if (trimmed.startsWith("if:") && indent >= 8) {
       const parsed = scalarOrFold(lines, index, indent);
@@ -251,6 +265,20 @@ describe("canary workflow structure", () => {
     }
     expect(source).toContain("SLM_EXPECTED_RELEASE_ID: ${{ vars.SLM_STAGING_RELEASE_ID }}");
     expect(source).toContain("SLM_MANIFEST_FILE:");
+  });
+
+  it("resolves runner paths only in step environments and shares the verified manifest", () => {
+    for (const definition of workflow.jobs) expect(definition.env ?? "").not.toMatch(/\brunner\s*(?:\.|\[)/);
+    const stage = job("staging-canary");
+    for (const [name, key] of [
+      [/Verify deployed staging bindings/, "admin"],
+      [/Staging semantic canary/, "admin"],
+      [/Staging MCP full lifecycle/, "user"],
+    ] as const) {
+      const env = stepMatching(stage, name).env ?? "";
+      expect(env).toContain(`SLM_KEY_FILE: \${{ runner.temp }}/slm-canary/${key}.key`);
+      expect(env).toContain("SLM_MANIFEST_FILE: ${{ runner.temp }}/slm-canary/stage-manifest.json");
+    }
   });
 
   it("records incident metadata without raw responses or keys", () => {
