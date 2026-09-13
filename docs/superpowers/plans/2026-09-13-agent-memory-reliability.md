@@ -150,7 +150,7 @@ Every capture/read descriptor has these named fields, never a bare ambiguous `id
 {
   entry_id: string,
   revision: number,
-  owner: { id: string, username: string },
+  owner: { id: string, username: string | null },
   visibility: "private" | "public",
   lifecycle_status: "canonical" | "draft" | "deprecated" | null,
   epistemic_status: "candidate" | "reviewed" | "canonical" |
@@ -161,6 +161,8 @@ Every capture/read descriptor has these named fields, never a bare ambiguous `id
   }
 }
 ```
+
+Legacy entries can retain an owner ID after that account is removed. Preserve the stored owner ID and return username:null when its account name is unavailable. Never fabricate a username, reassign ownership, or fail an otherwise authorized page solely because the name is missing. Database query failures still fail normally.
 
 Calculate permissions using verified actor + owner + current policy, not role name alone. Service read_history is allowed only for the service owner's entry and current memory:read authorization. Proposal approval/execution permission is proposal-specific and must not be asserted as a blanket per-entry ability.
 

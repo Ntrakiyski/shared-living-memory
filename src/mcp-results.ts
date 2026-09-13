@@ -309,7 +309,7 @@ export interface EntryDescriptorPermissions {
 export interface EntryDescriptor {
   entry_id: string;
   revision: number;
-  owner: { id: string; username: string };
+  owner: { id: string; username: string | null };
   visibility: "private" | "public";
   lifecycle_status: LifecycleStatus;
   epistemic_status: string;
@@ -393,7 +393,7 @@ export interface DescriptorRow {
 
 export function buildEntryDescriptor(
   row: DescriptorRow,
-  ownerUsername: string,
+  ownerUsername: string | null,
   actor: DescriptorActor,
 ): EntryDescriptor {
   let tags: string[] = [];
@@ -406,7 +406,7 @@ export function buildEntryDescriptor(
   return {
     entry_id: row.id,
     revision: Number(row.revision ?? 0),
-    owner: { id: row.owner_user_id, username: ownerUsername },
+    owner: { id: row.owner_user_id, username: ownerUsername || null },
     visibility: row.visibility === "public" ? "public" : "private",
     lifecycle_status: lifecycleStatusFromTags(tags),
     epistemic_status: row.epistemic_status ?? "canonical",
@@ -416,10 +416,9 @@ export function buildEntryDescriptor(
 
 export function listingEntry(
   row: DescriptorRow & { content: string; created_at: number; source: string },
-  ownerUsername: string,
+  ownerUsername: string | null,
   actor: DescriptorActor,
 ) {
-  if (!ownerUsername) throw Object.assign(new Error("Owner metadata is unavailable"), { code: "storage_unavailable" });
   return {
     ...buildEntryDescriptor(row, ownerUsername, actor),
     ...boundContentExcerpt(row.content),
@@ -439,8 +438,9 @@ export async function loadEntryDescriptor(env: Pick<Env, "DB">, entryId: string,
   }
   const owner = await env.DB.prepare(`SELECT username FROM users WHERE id = ?`)
     .bind(row.owner_user_id).first<{ username: string }>();
-  if (!owner?.username) throw Object.assign(new Error("Owner metadata is unavailable"), { code: "storage_unavailable" });
-  return buildEntryDescriptor(row, owner.username, actor);
+  // Legacy ownership survives a missing user record; display metadata never
+  // changes the owner ID or grants that owner's permissions to the reader.
+  return buildEntryDescriptor(row, owner?.username ?? null, actor);
 }
 
 export interface RememberData {

@@ -19,6 +19,7 @@ import {
   entryPermissions,
   fitWithinBudget,
   lifecycleStatusFromTags,
+  loadEntryDescriptor,
   pageCounts,
   utf8Bytes,
 } from "../../src/mcp-results";
@@ -78,6 +79,23 @@ function listRecent(harness: Harness, input: Record<string, unknown> = {}) {
   const server = buildMcpServer(harness.env, ctx, ALICE, "full") as any;
   return server._registeredTools.list_recent.handler(input, {});
 }
+
+function seedMissingOwner(harness: Harness): void {
+  for (const visibility of ["public", "private"]) {
+    harness.db.sqlite.prepare(
+      `INSERT INTO entries (id, content, tags, source, created_at, vector_ids, owner_user_id,
+                            visibility, revision, epistemic_status)
+       VALUES (?, ?, ?, 'api', 6000, '[]', 'missing-owner', ?, 0, 'canonical')`,
+    ).run(`orphan-${visibility}`, `retrieval legacy ${visibility}`, JSON.stringify(visibility === "private" ? ["work", "private"] : ["work"]), visibility);
+  }
+}
+
+const NON_OWNER_PERMISSIONS = {
+  read_current: true,
+  read_history: false,
+  mutate_directly: false,
+  submit_change_proposal: false,
+};
 
 describe("entry descriptor contract", () => {
   it("derives permissions from the verified actor and the entry owner", () => {
@@ -244,6 +262,38 @@ describe("MCP list_recent structured result (E5)", () => {
     expect(result.content[0].text).toContain("next_cursor");
   });
 
+  it("keeps public legacy owners without usernames readable without exposing private entries or granting ownership", async () => {
+    seedMissingOwner(harness);
+    const result = await listRecent(harness, { n: 50 });
+    expect(result.structuredContent.ok).toBe(true);
+    const entries = result.structuredContent.data.entries;
+    expect(entries).toHaveLength(13);
+    expect(entries.map((entry: any) => entry.entry_id)).toContain("entry-011");
+    expect(entries.map((entry: any) => entry.entry_id)).not.toContain("orphan-private");
+    expect(entries.find((entry: any) => entry.entry_id === "orphan-public")).toMatchObject({
+      owner: { id: "missing-owner", username: null }, visibility: "public", permissions: NON_OWNER_PERMISSIONS,
+    });
+    const actor = { actorId: ALICE.actorId, ownerUserId: ALICE.userId, isService: false };
+    expect(await loadEntryDescriptor(harness.env, "orphan-public", actor)).toMatchObject({
+      owner: { id: "missing-owner", username: null }, permissions: NON_OWNER_PERMISSIONS,
+    });
+    expect(await loadEntryDescriptor(harness.env, "orphan-private", actor)).toBeNull();
+    expect(harness.db.count("users")).toBe(2);
+    expect(harness.db.all("SELECT owner_user_id, revision FROM entries WHERE owner_user_id = 'missing-owner'"))
+      .toEqual([{ owner_user_id: "missing-owner", revision: 0 }, { owner_user_id: "missing-owner", revision: 0 }]);
+  });
+
+  it("still propagates a failed owner query instead of disguising a database error as a missing username", async () => {
+    seedMissingOwner(harness);
+    harness.db.exec("ALTER TABLE users RENAME TO unavailable_users");
+    const actor = { actorId: ALICE.actorId, ownerUserId: ALICE.userId, isService: false };
+    await expect(loadEntryDescriptor(harness.env, "orphan-public", actor)).rejects.toThrow(/no such table: users/);
+    const result = await listRecent(harness);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent.ok).toBe(false);
+    expect(result.structuredContent.error.code).toBe("ERR_SQLITE_ERROR");
+  });
+
   it("walks every row without repeats and stops with a null cursor", async () => {
     const seen: string[] = [];
     let cursor: string | null = null;
@@ -323,6 +373,19 @@ describe("MCP recall structured result (Section 4.4/11)", () => {
     expect(["hybrid", "keyword_fallback"]).toContain(data.retrieval_mode);
     expect(data.semantic_available).toBe(data.retrieval_mode === "hybrid");
     expect(Array.isArray(data.matches)).toBe(true);
+  });
+
+  it("recalls a public entry with a missing owner record alongside safe entries and excludes the private sibling", async () => {
+    seedMissingOwner(harness);
+    const result = await recall(harness, { include_insight: false });
+    expect(result.structuredContent.ok).toBe(true);
+    const matches = result.structuredContent.data.matches;
+    expect(matches.map((match: any) => match.entry.entry_id)).toContain("orphan-public");
+    expect(matches.map((match: any) => match.entry.entry_id)).toContain("entry-002");
+    expect(matches.map((match: any) => match.entry.entry_id)).not.toContain("orphan-private");
+    expect(matches.find((match: any) => match.entry.entry_id === "orphan-public").entry).toMatchObject({
+      owner: { id: "missing-owner", username: null }, visibility: "public", permissions: NON_OWNER_PERMISSIONS,
+    });
   });
 
   it("returns a valid no-results success rather than a failure", async () => {
