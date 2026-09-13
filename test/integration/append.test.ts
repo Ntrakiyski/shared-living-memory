@@ -203,7 +203,7 @@ describe("POST /append", () => {
     expect(db.vector_cleanup_queue[0]).toMatchObject({ attempts: 1 });
   });
 
-  it("preserves per-tag metadata on version-scoped vectors", async () => {
+  it("preserves the tags array on version-scoped vectors", async () => {
     const upsertMock = vi.fn().mockResolvedValue({ mutationId: "m" });
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({ upsert: upsertMock }),
@@ -219,7 +219,7 @@ describe("POST /append", () => {
     expect(res.status).toBe(200);
     const vectors = upsertMock.mock.calls[0][0] as any[];
     expect(vectors[0].id).toMatch(/^ev:/);
-    expect(vectors[0].metadata).toMatchObject({ tag_work: true, tag_idea: true });
+    expect(vectors[0].metadata.tags).toEqual(["work", "idea"]);
   });
 
   it("auto-links a similar neighbor after the version commit", async () => {

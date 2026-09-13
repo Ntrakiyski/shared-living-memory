@@ -151,6 +151,39 @@ describe("capture receipt identity", () => {
     harness.db.close();
   });
 
+  it("captures and replays literal tags with Vectorize's metadata-key restrictions enforced", async () => {
+    const tags = [
+      "semantic-diag-bb694bc7-cc2e-4fe4-9cd6-2bf803275ce6",
+      'literal%/_"quoted"\\tag',
+      "release.v1",
+    ];
+    const upsert = vi.mocked(harness.env.VECTORIZE.upsert);
+    upsert.mockImplementation(async items => {
+      for (const item of items) {
+        for (const key of Object.keys(item.metadata ?? {})) {
+          if (!key || key.startsWith("$") || /[."]/.test(key) || Buffer.byteLength(key) > 512) {
+            throw new Error("VECTOR_UPSERT_ERROR 40018: invalid metadata object key");
+          }
+        }
+        harness.vectors.set(item.id, item);
+      }
+      return { mutationId: "upsert", count: items.length, ids: items.map(item => item.id) };
+    });
+
+    const first = await keyedCapture(harness, "literal-tag-receipt", { meaning: { tags } });
+    const replay = await keyedCapture(harness, "literal-tag-receipt", { meaning: { tags } });
+
+    expect(first.lookup.status).toBe("replayed");
+    expect(replay.lookup).toEqual(first.lookup);
+    expect(upsert).toHaveBeenCalledTimes(1);
+    expect(harness.db.count("entries")).toBe(1);
+    const stored = harness.db.one<{ tags: string }>("SELECT tags FROM entries");
+    expect(JSON.parse(stored.tags)).toEqual(normalizedCaptureTags(tags));
+    const entryVector = (upsert.mock.calls[0][0]).find(item => item.id.startsWith("ev:"));
+    expect(entryVector?.metadata?.tags).toEqual(normalizedCaptureTags(tags));
+    expect(harness.db.count("vector_cleanup_queue")).toBe(0);
+  });
+
   it("trims only, and hashes the same key identically across attempts", async () => {
     expect(normalizeIdempotencyKey("  key-1  ")).toBe("key-1");
     expect(normalizeIdempotencyKey("Key-1")).toBe("Key-1");

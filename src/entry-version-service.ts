@@ -516,13 +516,13 @@ export async function stageVersionVectors(
         mutationId: details.mutationId,
         chunkIndex: index,
         totalChunks: entryChunks.length,
+        // Quoted and dotted tags are valid values, but invalid metadata keys.
         tags: details.tags,
         source: details.source,
         created_at: details.now,
         owner_user_id: details.ownerUserId,
         is_private: isPrivate,
       };
-      for (const tag of details.tags) metadata[`tag_${tag}`] = true;
       return {
         id: entryVectorIds[index],
         values: await embed(chunk, env),
