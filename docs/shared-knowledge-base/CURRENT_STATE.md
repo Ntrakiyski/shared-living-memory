@@ -14,7 +14,7 @@ A personal, self-hosted memory layer for AI tools. It gives Claude, ChatGPT, Cur
 | Database | Cloudflare D1 (SQLite) |
 | Vector search | Cloudflare Vectorize (384-dim, cosine) |
 | AI inference | Workers AI (Llama 4 Scout for classification/merge, BGE-small-en-v1.5 for embeddings) |
-| Auth | Static AUTH_TOKEN + OAuth 2.0 via `@cloudflare/workers-oauth-provider` |
+| Auth | Personal Bearer API key (default), scoped service credentials, and OAuth 2.0 via `@cloudflare/workers-oauth-provider`. The static `AUTH_TOKEN` is a transport/bootstrap key only and is never a user principal. |
 | Protocol | MCP via `@modelcontextprotocol/sdk` |
 | Language | TypeScript |
 | Tests | Vitest |
@@ -24,38 +24,79 @@ A personal, self-hosted memory layer for AI tools. It gives Claude, ChatGPT, Cur
 
 ```
 shared-living-memory/
-├── src/
-│   ├── index.ts              # Single-file Worker: all routes, MCP tools, core logic
+├── src/                      # Modular Worker backend (~41 modules)
+│   ├── index.ts              # Cloudflare entrypoint: OAuthProvider wiring + cron
+│   ├── api-handler.ts        # /mcp actor resolution, tool profile transport
+│   ├── routes.ts             # All REST routes + static assets
+│   ├── mcp.ts                # MCP server, tool registration, profile gating
+│   ├── mcp-results.ts        # Shared result envelope, error mapping, output bounds
+│   ├── auth.ts               # Key generation/rotation, credential resolution
+│   ├── entry-version-service.ts  # Atomic versioned writes (the write authority)
+│   ├── capture-receipts.ts   # Idempotency receipts, stage fencing, erasure tombstones
+│   ├── ingest.ts             # Capture, keyed create-only capture, batch capture
+│   ├── recall.ts, graph.ts, tags.ts, lifecycle.ts, erasure.ts, db.ts, ...
 │   └── integrations/
 │       ├── framework.ts       # Provider-agnostic sync/mirror interface
 │       ├── index.ts           # Provider registry
 │       └── notion.ts          # Notion provider implementation
 ├── db/
-│   └── schema.sql            # D1 schema (entries + edges tables)
+│   └── schema.sql            # Full D1 schema (entries, edges, versioning, receipts, ...)
 ├── public/                   # Dashboard SPA (served as static assets)
 │   ├── index.html
 │   └── utils.js
 ├── test/
-│   ├── unit/                 # 27 unit test files
-│   ├── integration/
-│   ├── ui/
-│   └── helpers/
-├── scripts/                  # Client connection scripts
+│   ├── unit/                 # 46 unit test files
+│   ├── integration/          # 72 integration test files
+│   ├── ui/                   # 9 dashboard-markup test files
+│   └── helpers/              # D1Mock plus a real-SQLite harness
+├── scripts/                  # Client connection, export, staging and smoke scripts
 ├── integrations/             # External integrations (iOS shortcuts, bookmarklet)
-├── wrangler.jsonc            # Cloudflare Worker config
+├── wrangler.jsonc            # Cloudflare Worker config (production + staging envs)
 ├── vitest.config.ts
 └── package.json
 ```
 
 ## Core Architecture
 
-### Single-File Worker (`src/index.ts`)
+### Modular Worker (entrypoint `src/index.ts`)
 
-The entire backend lives in one ~3,500-line Worker. It exposes two handler paths wrapped in an OAuth provider:
+`src/index.ts` only wires the handlers; the behaviour lives in the modules listed
+above. It exposes two handler paths wrapped in an OAuth provider:
 
 1. **`apiHandler`** — serves `/mcp` (MCP protocol endpoint)
 2. **`defaultHandler`** — serves all REST routes and static assets
 3. **`scheduled`** — nightly cron for compression, graph maintenance, and integration sync
+
+`src/index.ts` deliberately has no named exports beyond `default`, because
+Cloudflare treats named exports from the entry module as extra entrypoints.
+
+### Authentication
+
+| Path | Credential | Notes |
+|---|---|---|
+| Default | `Authorization: Bearer slm_<account-id>.<secret>` | Personal API key. Resolved against the `users` table by stable account id; the secret is compared to an HMAC-SHA-256 hash. |
+| Services | `Authorization: Bearer <service key>` | Scoped service credential, resolved by `resolveServiceCredential`, then re-verified per operation. |
+| Legacy (labelled legacy) | `Authorization: Bearer <workspace key>` + `X-Shared-Living-Memory-User` + `X-Shared-Living-Memory-User-Key` | Still supported. The workspace key alone is never a principal. |
+| OAuth | OAuth 2.0 | Only when `MCP_OAUTH_ENABLED=true`; issuance is disabled by default. |
+
+Rotating a personal key replaces **only its secret**. The account id and every
+entry it owns are preserved, so ownership and history survive rotation.
+
+### Tool profiles
+
+A connection may request a reduced set with the `X-SLM-Tool-Profile` header:
+
+| Profile | Tools |
+|---|---|
+| `capture` | exactly 10: `whoami`, `remember`, `remember_batch`, `recall`, `list_recent`, `passages`, `history`, `connections`, `create_action_proposal`, `list_action_proposals` |
+| `review` | exactly 16: the capture set plus `append`, `update`, `set_status`, `set_epistemic_status`, `review_action_proposal`, `execute_approved_action` |
+| `full` (default when the header is absent) | everything registered (29 for a personal principal) |
+
+Profiles restrict the **current connection's** exposed and callable tools. They
+are a convenience subset, not a reduction of the key's privileges, because the
+key holder can always select `full`. Server authorization is still enforced on
+every tool call, and a disallowed tool is never registered at all, so
+`tools/list` and `tools/call` can never disagree.
 
 ### Data Model
 
@@ -88,12 +129,39 @@ The entire backend lives in one ~3,500-line Worker. It exposes two handler paths
 
 **Edge types:** `relates_to`, `supersedes`, `caused_by`, `decided`, `about_person`, `part_of_project`, `follows`
 
-### Memory Lifecycle Tags
+### Memory Status: Two Axes
 
-Tags prefixed with `status:` and `kind:` are reserved system tags — no schema change needed:
+`status:` and `kind:` tags remain reserved system tags with no schema column
+behind them, and the stored `epistemic_status` column carries the second axis.
+The two axes are independent and are never auto-synchronized:
 
-- **Status** (`status:canonical`, `status:draft`, `status:deprecated`) — lifecycle state
-- **Kind** (`kind:episodic`, `kind:semantic`) — memory type classification
+- **Legacy lifecycle** (`status:canonical`, `status:draft`, `status:deprecated`)
+  — an overwrite/retention marker. An entry with no `status:` tag reports
+  `lifecycle_status: null`, not a fabricated `draft`.
+- **Epistemic** (`epistemic_status` column: `candidate`, `reviewed`, `canonical`,
+  `qualified`, `stale`, `superseded`, `retracted`) — confidence/review state, with
+  an explicit transition table: `candidate → reviewed → canonical → qualified/
+  superseded → retracted`, plus `stale → reviewed/retracted`.
+- **Kind** (`kind:episodic`, `kind:semantic`) — memory type classification, not a status.
+
+Entry is protection from automatic overwrite when `importance_score >= 4`, the
+legacy tag is `status:canonical`, **or** the epistemic status is `canonical` or
+`qualified`. A legacy `status:draft` tag cannot un-protect a canonically reviewed
+entry.
+
+### Keyed capture, receipts and erased keys
+
+- A capture carrying an `idempotency_key` — including every batch item — is
+  **create-only**: it never merges, replaces, deprecates or suppresses a similar
+  memory. Different keys may intentionally create similar memories.
+- The retry key is namespaced by the authenticated actor, so two accounts can use
+  the same key independently, and rotation does not change retry identity.
+- Reusing a key with different content is `idempotency_conflict`.
+- A permanently erased key stays terminal: a replay returns `capture_erased` and
+  never recreates the content. Receipts are tombstoned in the same atomic batch as
+  the deletion.
+- Batch limits: 1–10 items, 131,072 bytes of serialized items, a 262,144-byte
+  request body, and 32,768 bytes per item.
 
 ### MCP Tools
 
@@ -110,11 +178,25 @@ Registered in `buildMcpServer()`:
 | `link` | Create an explicit edge between two memories |
 | `unlink` | Remove an edge between two memories |
 | `connections` | List 1-hop neighbors of an entry |
-| `set_status` | Set lifecycle status (canonical/draft/deprecated) |
+| `set_status` | Set lifecycle status (canonical/draft/deprecated), with an optional required-in-practice reason and `expected_revision` |
+| `set_epistemic_status` | Transition the epistemic axis with an optional reason and `expected_revision` |
+| `remember_batch` | Capture 1–10 create-only items in one ordered request |
+| `whoami` | Verified identity, credential type, role, capabilities, profile and deployment |
+| `passages` | Passage-level evidence and citations for an entry |
+| `history` | Bounded, owner-only episodes and snapshots with per-episode status metadata |
+| `restore` | Create a new entry from a snapshot (never an in-place rollback) |
+| `reinforce` | Strengthen retention when the user asks to keep a memory salient |
+| `propose_edge`, `list-proposals` / `list_edge_proposals`, `approve-proposal` / `approve_edge_proposal`, `reject-proposal` / `reject_edge_proposal` | Governed edge proposals (the explicit alias names exist only in the `full` profile) |
+| `create_action_proposal`, `list_action_proposals`, `review_action_proposal`, `execute_approved_action` | Governed action proposals, with an optional designated `reviewer_username` |
+| `rate_recall` | Record helpful/not-helpful recall feedback (telemetry only) |
+
+See **Tool profiles** above for exactly which tools a reduced connection sees.
 
 ### REST API Routes
 
-All routes require `Authorization: Bearer <AUTH_TOKEN>`:
+Routes authenticate with a personal Bearer API key by default (the legacy
+workspace-key plus user-header pair is still accepted), except `/health`,
+`/ready`, `/api/bootstrap-status` and the OAuth endpoints:
 
 | Method | Path | Description |
 |---|---|---|
