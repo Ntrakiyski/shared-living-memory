@@ -22,6 +22,7 @@ import { commitEntryVersion } from "../../src/entry-version-service";
 import type { Env, HumanActorContext, ServiceScope } from "../../src/types";
 
 const SCOPES: ServiceScope[] = ["memory:read", "proposal:read", "proposal:create", "audit:write", "run:write"];
+const ctxStub = { waitUntil: (_: Promise<unknown>) => {}, passThroughOnException: () => {} } as never;
 
 interface Harness {
   db: SqliteD1;
@@ -285,5 +286,69 @@ describe("designated reviewer binding (G2/G3)", () => {
     const other = human(OTHER_ADMIN);
     const visible = await listActionProposals(harness.env, { actor: other });
     expect(visible.map((entry) => entry.id)).toContain(legacy.id);
+  });
+});
+
+describe("proposal tool structured results (Section 4.4)", () => {
+  let harness: Harness;
+  let entryId: string;
+
+  beforeEach(async () => {
+    harness = makeHarness();
+    entryId = await seedCandidate(harness);
+  });
+
+  afterEach(() => {
+    harness.db.close();
+  });
+
+  async function tool(
+    harnessIn: Harness,
+    name: string,
+    input: Record<string, unknown>,
+    actor: HumanActorContext = human(RESEARCHER),
+  ) {
+    const { buildMcpServer } = await import("../../src/mcp");
+    const server = buildMcpServer(harnessIn.env, ctxStub, actor, "full") as any;
+    return server._registeredTools[name].handler(input, {});
+  }
+
+  it("wraps each proposal tool in its documented outer field", async () => {
+    const created = await tool(harness, "create_action_proposal", {
+      action_type: "entry.epistemic-status.set",
+      payload_json: JSON.stringify({ entryId, status: "reviewed" }),
+      target_ids: [entryId],
+      expected_revision: 1,
+      visibility_scope: "team",
+      reason: "Evidence checked",
+      idempotency_key: "structured-1",
+      reviewer_username: "jarvis",
+    });
+    const createdData = created.structuredContent.data;
+    expect(Object.keys(createdData)).toEqual(["proposal"]);
+    // The mapped proposal carries the audience and designated reviewer.
+    expect(createdData.proposal.audience).toEqual({
+      mode: "designated",
+      designated_reviewer_id: "user-jarvis",
+    });
+    expect(createdData.proposal.designatedReviewerId).toBe("user-jarvis");
+
+    const listed = await tool(harness, "list_action_proposals", {});
+    expect(Object.keys(listed.structuredContent.data)).toEqual(["proposals"]);
+    expect(listed.structuredContent.data.proposals[0].audience.mode).toBe("designated");
+
+    const reviewed = await tool(harness, "review_action_proposal", {
+      proposal_id: createdData.proposal.id,
+      decision: "approve",
+      reason: "Approved",
+    }, human(JARVIS));
+    expect(Object.keys(reviewed.structuredContent.data)).toEqual(["proposal"]);
+    expect(reviewed.structuredContent.data.proposal.reviewerId).toBe("user-jarvis");
+
+    const executed = await tool(harness, "execute_approved_action", {
+      proposal_id: createdData.proposal.id,
+    }, human(JARVIS));
+    expect(Object.keys(executed.structuredContent.data)).toEqual(["execution"]);
+    expect(executed.structuredContent.data.execution.proposalId).toBe(createdData.proposal.id);
   });
 });

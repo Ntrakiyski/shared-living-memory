@@ -850,7 +850,10 @@ export function buildMcpServer(
           expiresAt: expires_at,
           reviewerUsername: reviewer_username,
         });
-        return { content: [{ type: "text", text: JSON.stringify(proposal, null, 2) }] };
+        return {
+          structuredContent: okResult({ proposal }) as unknown as Record<string, unknown>,
+          content: [{ type: "text" as const, text: JSON.stringify(proposal, null, 2) }],
+        };
       }),
     );
 
@@ -870,7 +873,10 @@ export function buildMcpServer(
           () => listActionProposals(env, { actor: serviceActor, statuses: statuses as ActionProposal["status"][] | undefined, limit }),
           (value) => ({ proposalCount: value.length }),
         );
-        return { content: [{ type: "text", text: JSON.stringify(proposals, null, 2) }] };
+        return {
+          structuredContent: okResult({ proposals }) as unknown as Record<string, unknown>,
+          content: [{ type: "text" as const, text: JSON.stringify(proposals, null, 2) }],
+        };
       }),
     );
 
@@ -882,7 +888,10 @@ export function buildMcpServer(
       },
       safe(async ({ proposal_id }) => {
         const result = await executeApprovedProposal(env, { actor: serviceActor, proposalId: proposal_id });
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        return {
+          structuredContent: okResult({ execution: result }) as unknown as Record<string, unknown>,
+          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        };
       }),
     );
 
@@ -2095,7 +2104,10 @@ export function buildMcpServer(
           expiresAt: expires_at,
           reviewerUsername: reviewer_username,
         });
-        return { content: [{ type: "text", text: JSON.stringify(proposal, null, 2) }] };
+        return {
+          structuredContent: okResult({ proposal }) as unknown as Record<string, unknown>,
+          content: [{ type: "text" as const, text: JSON.stringify(proposal, null, 2) }],
+        };
       }),
     );
 
@@ -2110,7 +2122,10 @@ export function buildMcpServer(
       },
       governedTool(async ({ statuses, limit }) => {
         const proposals = await listActionProposals(env, { actor, statuses: statuses as ActionProposal["status"][] | undefined, limit });
-        return { content: [{ type: "text", text: JSON.stringify(proposals, null, 2) }] };
+        return {
+          structuredContent: okResult({ proposals }) as unknown as Record<string, unknown>,
+          content: [{ type: "text" as const, text: JSON.stringify(proposals, null, 2) }],
+        };
       }),
     );
 
@@ -2131,7 +2146,10 @@ export function buildMcpServer(
           decision,
           reason,
         });
-        return { content: [{ type: "text", text: JSON.stringify(proposal, null, 2) }] };
+        return {
+          structuredContent: okResult({ proposal }) as unknown as Record<string, unknown>,
+          content: [{ type: "text" as const, text: JSON.stringify(proposal, null, 2) }],
+        };
       }),
     );
 
@@ -2143,7 +2161,10 @@ export function buildMcpServer(
       },
       governedTool(async ({ proposal_id }) => {
         const result = await executeApprovedProposal(env, { actor, proposalId: proposal_id });
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        return {
+          structuredContent: okResult({ execution: result }) as unknown as Record<string, unknown>,
+          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        };
       }),
     );
 
