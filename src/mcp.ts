@@ -915,12 +915,18 @@ export function buildMcpServer(
       toolCount++;
       const t0 = Date.now();
       let error: string | undefined;
-      let result: { content: { type: string; text: string }[] };
+      let result: { content: { type: string; text: string }[]; isError?: boolean };
       try {
         result = await handler(input, extra);
       } catch (e) {
-        error = e instanceof Error ? e.message : String(e);
-        result = { content: [{ type: "text", text: `Error: ${error}` }] };
+        // A failed tool sets isError explicitly, and the caller learns a safe
+        // code — never a raw SQL or internal exception message (Sections 4.1, 9.3).
+        const mapped = mapDomainError(e);
+        error = mapped.code;
+        result = {
+          isError: true,
+          content: [{ type: "text", text: `Error ${mapped.code}: ${mapped.message}` }],
+        };
       }
       const durationMs = Date.now() - t0;
       // Audit shape and outcome only. Tool arguments/results routinely contain

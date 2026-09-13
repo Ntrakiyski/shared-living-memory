@@ -166,9 +166,11 @@ export function mapDomainError(error: unknown): MappedError {
       break;
   }
 
+  // An unrecognized failure is treated as a transient storage problem, so the
+  // caller may retry it rather than being told it is permanently invalid.
   const retryable = typeof candidate?.retryable === "boolean"
     ? candidate.retryable
-    : RETRYABLE_CODES.has(code ?? "");
+    : code === null || RETRYABLE_CODES.has(code);
   return {
     code: code ?? "storage_unavailable",
     message: "The operation could not be completed.",
