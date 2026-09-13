@@ -316,3 +316,84 @@ describe("legacy service capture replay", () => {
     expect(harness.db.count("vector_cleanup_queue")).toBe(0);
   });
 });
+
+describe("concurrent legacy replay and erase (C4, Section 8.6)", () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    harness = makeHarness();
+  });
+
+  afterEach(() => {
+    harness.db.close();
+    restorePrepare();
+  });
+
+  let restorePrepare: () => void = () => {};
+
+  /**
+   * Arm an erase at the exact race window the guard protects: the moment the
+   * legacy backfill statement is prepared, which is after the provenance read
+   * and before the guarded insert runs.
+   */
+  function eraseOnBackfillArm(entryId: string, opts: { withErasureReceipt: boolean }): void {
+    const original = harness.db.prepare.bind(harness.db);
+    restorePrepare = () => { (harness.db as any).prepare = original; };
+    (harness.db as any).prepare = (sql: string) => {
+      if (sql.includes("INSERT INTO capture_receipts") && sql.includes("NOT EXISTS")) {
+        // Disarm immediately: the race happens once.
+        (harness.db as any).prepare = original;
+        if (opts.withErasureReceipt) {
+          harness.db.exec(
+            `INSERT INTO erasure_receipts (
+               operation_id, entry_id, owner_user_id, actor_user_id, vector_count,
+               status, created_at, updated_at, completed_at
+             ) VALUES ('race-op', '${entryId}', 'user-owner', 'user-owner', 0,
+                       'complete', 1, 1, 1)`,
+          );
+        }
+        harness.db.exec(`DELETE FROM episodes WHERE entry_id = '${entryId}'`);
+        harness.db.exec(`DELETE FROM entries WHERE id = '${entryId}'`);
+      }
+      return original(sql);
+    };
+  }
+
+  it("loses the backfill race to a concurrent erase and never recreates the entry", async () => {
+    const legacy = await seedLegacyCapture(harness, {
+      key: "race-legacy",
+      content: "Legacy text about to be erased",
+      tags: ["team"],
+    });
+    eraseOnBackfillArm(legacy.entryId, { withErasureReceipt: true });
+
+    await expect(captureServicePrivateDraft(
+      harness.env,
+      draftRequest("race-legacy", "Legacy text about to be erased"),
+    )).rejects.toBeInstanceOf(OperatorDraftErasedError);
+
+    // The guard lost, so nothing was backfilled and nothing was created.
+    expect(harness.db.count("entries")).toBe(0);
+    expect(harness.db.count("episodes")).toBe(0);
+    expect(harness.db.count("capture_receipts")).toBe(0);
+  });
+
+  it("does not backfill a receipt for an entry that vanished before the insert", async () => {
+    const legacy = await seedLegacyCapture(harness, {
+      key: "vanish-legacy",
+      content: "Legacy text that vanishes",
+      tags: ["team"],
+    });
+    eraseOnBackfillArm(legacy.entryId, { withErasureReceipt: false });
+
+    // The entry-existence guard loses; the caller is told the capture cannot be
+    // replayed, and crucially no NEW entry is created in its place.
+    await expect(captureServicePrivateDraft(
+      harness.env,
+      draftRequest("vanish-legacy", "Legacy text that vanishes"),
+    )).rejects.toBeInstanceOf(OperatorDraftErasedError);
+
+    expect(harness.db.count("entries")).toBe(0);
+    expect(harness.db.count("capture_receipts")).toBe(0);
+  });
+});
