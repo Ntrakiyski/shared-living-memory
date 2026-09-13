@@ -464,3 +464,126 @@ describe("batch capture execution", () => {
     expect(await captureKeyHash("日本語のメモ")).toHaveLength(64);
   });
 });
+
+describe("POST /capture/batch transport boundaries", () => {
+  let harness: Harness;
+  let aliceKey = "";
+
+  beforeEach(async () => {
+    harness = makeHarness();
+    const { initializeDatabase, _resetDbReady } = await import("../../src/testing");
+    _resetDbReady();
+    await initializeDatabase(harness.env);
+    const { hmacKey, AUTH_PEPPER } = await import("../../src/auth");
+    const hash = await hmacKey("alice-secret", AUTH_PEPPER);
+    harness.db.exec(
+      `INSERT INTO users (id, username, normalized_username, auth_key_hash, auth_key_prefix, status, created_at, role)
+       VALUES ('user-alice', 'alice', 'alice', '${hash}', 'slm_user-alice.', 'active', 1, 'member')`,
+    );
+    aliceKey = "slm_user-alice.alice-secret";
+  });
+
+  afterEach(() => {
+    harness.db.close();
+  });
+
+  function batchRequest(body: BodyInit, headers: Record<string, string> = {}): Request {
+    return new Request("http://localhost/capture/batch", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${aliceKey}`,
+        "Content-Type": "application/json",
+        ...headers,
+      },
+      body,
+      // Required by the runtime when the body is a stream (chunked transfer).
+      ...(body && typeof body === "object" && "getReader" in body ? { duplex: "half" } : {}),
+    } as RequestInit);
+  }
+
+  async function post(harnessIn: Harness, body: BodyInit, headers: Record<string, string> = {}) {
+    const worker = (await import("../../src/testing")).default;
+    const response = await worker.fetch(batchRequest(body, headers), harnessIn.env, {
+      waitUntil: () => {},
+    } as never);
+    return { status: response.status, body: await response.json() as any };
+  }
+
+  it("accepts a chunked body with no content-length", async () => {
+    const payload = JSON.stringify({
+      items: [{ client_item_id: "chunked", idempotency_key: "chunk-1", content: "Chunked item" }],
+    });
+    // A stream body makes the runtime use chunked transfer encoding, so there is
+    // no Content-Length to pre-check against.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const bytes = new TextEncoder().encode(payload);
+        controller.enqueue(bytes.slice(0, 10));
+        controller.enqueue(bytes.slice(10));
+        controller.close();
+      },
+    });
+    const result = await post(harness, stream);
+    expect(result.status).toBe(200);
+    expect(result.body.data.summary).toEqual({ created: 1, replayed: 0, failed: 0 });
+    expect(harness.db.count("entries")).toBe(1);
+  });
+
+  it("rejects an oversized chunked body and writes nothing", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        // Larger than the 262144-byte request-body cap.
+        controller.enqueue(encoder.encode('{"items":['));
+        for (let index = 0; index < 40; index++) {
+          controller.enqueue(encoder.encode(JSON.stringify({
+            client_item_id: `i${index}`,
+            idempotency_key: `k${index}`,
+            content: "x".repeat(10_000),
+          }) + (index < 39 ? "," : "")));
+        }
+        controller.enqueue(encoder.encode("]}"));
+        controller.close();
+      },
+    });
+    const result = await post(harness, stream);
+    expect(result.status).toBe(413);
+    expect(result.body.error.code).toBe("content_too_large");
+    expect(harness.db.count("entries")).toBe(0);
+  });
+
+  it("rejects a malformed chunked body as invalid JSON without crashing", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"items": [{"client_item_id":'));
+        controller.enqueue(new TextEncoder().encode('"x"'));
+        controller.close();
+      },
+    });
+    const result = await post(harness, stream);
+    expect(result.status).toBe(400);
+    expect(result.body.error.code).toBe("invalid_request");
+    expect(harness.db.count("entries")).toBe(0);
+  });
+
+  it("rejects an oversized declared content-length before reading the body", async () => {
+    const result = await post(harness, JSON.stringify({ items: [] }), {
+      "Content-Length": String(300_000),
+    });
+    expect(result.status).toBe(413);
+    expect(result.body.error.code).toBe("content_too_large");
+  });
+
+  it("measures multibyte content in UTF-8 bytes", async () => {
+    const result = await post(harness, JSON.stringify({
+      items: [{
+        client_item_id: "multibyte",
+        idempotency_key: "mb-1",
+        content: "日本語のメモ " + "😀".repeat(50),
+      }],
+    }));
+    expect(result.status).toBe(200);
+    const episode = harness.db.one<{ content: string }>("SELECT content FROM episodes LIMIT 1");
+    expect(episode.content).toContain("日本語のメモ");
+  });
+});

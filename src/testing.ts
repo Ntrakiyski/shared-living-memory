@@ -87,6 +87,7 @@ export {
   withStatus,
   getKind,
   withKind,
+  isRecallEligible,
   buildVisibilityClause,
   buildEntryFilterQuery,
 } from "./tags";
