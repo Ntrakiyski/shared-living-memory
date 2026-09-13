@@ -152,7 +152,7 @@ describe("ordered database migrations", () => {
     await initializeDatabase(makeEnv(db));
 
     expect(getDbReady()).toBe(true);
-    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     expect(db.columns("entries")).toEqual(expect.arrayContaining([
       "owner_user_id",
       "retention_score",
@@ -212,7 +212,7 @@ describe("ordered database migrations", () => {
     expect(db.versions()).toEqual([]);
     await initializeDatabase(makeEnv(db));
 
-    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     expect(db.sqlite.prepare(
       `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_entries_owner'`,
     ).get()).toMatchObject({ name: "idx_entries_owner" });
@@ -287,11 +287,11 @@ describe("ordered database migrations", () => {
       "last_mutation_kind",
       "last_mutation_id",
     ]));
-    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
 
     _resetDbReady();
     await initializeDatabase(makeEnv(db));
-    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     expect(db.sqlite.prepare(
       `SELECT COUNT(*) AS count FROM users WHERE username = '_system'`,
     ).get()).toMatchObject({ count: 1 });
@@ -438,7 +438,7 @@ describe("ordered database migrations", () => {
 
     db.failOn = null;
     await initializeDatabase(makeEnv(db));
-    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     expect(db.columns("entries")).toContain("visibility");
     expect(db.columns("edge_proposals")).toContain("resolved_by");
   });
@@ -596,7 +596,7 @@ describe("ordered database migrations", () => {
 
     db.failOn = null;
     await initializeDatabase(makeEnv(db));
-    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     expect(db.columns("agent_runs")).toContain("actor_kind");
     expect(db.columns("agent_events")).toContain("sequence");
     expect(db.sqlite.prepare(
@@ -621,7 +621,7 @@ describe("ordered database migrations", () => {
 
     db.failOn = null;
     await initializeDatabase(makeEnv(db));
-    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     expect(db.sqlite.prepare(
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'awareness_events'`,
     ).get()).toEqual({ name: "awareness_events" });
@@ -655,7 +655,7 @@ describe("ordered database migrations", () => {
 
     db.failOn = null;
     await initializeDatabase(makeEnv(db));
-    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     const documents = db.sqlite.prepare(
       `SELECT episode_id, owner_user_id, content_type, content_hash, version
        FROM documents WHERE episode_id = 'episode-doc-backfill'`,
@@ -694,7 +694,7 @@ describe("ordered database migrations", () => {
     db.failOn = null;
     await initializeDatabase(makeEnv(db));
 
-    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     expect(db.sqlite.prepare(`
       SELECT title_origin, version FROM documents WHERE id = 'legacy-title'
     `).get()).toEqual({
@@ -738,7 +738,7 @@ describe("ordered database migrations", () => {
 
     db.failOn = null;
     await initializeDatabase(makeEnv(db));
-    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     expect(db.columns("edges")).toContain("revision");
     expect(db.sqlite.prepare(`
       SELECT edge_id, revision, is_deleted, mutation_kind, actor_kind,
@@ -791,7 +791,7 @@ describe("ordered database migrations", () => {
     await initializeDatabase(makeEnv(db));
 
     expect(getDbReady()).toBe(true);
-    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     expect(db.columns("entries")).toContain("owner_user_id");
   });
 
@@ -852,7 +852,7 @@ describe("ordered database migrations", () => {
     await initializeDatabase(makeEnv(db));
 
     expect(getDbReady()).toBe(true);
-    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     expect(db.columns("entries")).toContain("current_episode_id");
     expect(db.columns("episodes")).toContain("materialized_content");
   });
@@ -895,5 +895,175 @@ describe("ordered database migrations", () => {
       owner_user_id: "owner-1",
     });
     expect(entry).toEqual({ current_episode_id: null, revision: 0 });
+  });
+});
+
+describe("migration 16 — capture receipts, status metadata and stage fencing", () => {
+  let db: SqliteD1;
+
+  beforeEach(() => {
+    _resetDbReady();
+    db = new SqliteD1();
+  });
+
+  afterEach(() => {
+    _resetDbReady();
+    db.close();
+  });
+
+  it("is the next ordered migration and keeps earlier versions contiguous", async () => {
+    await initializeDatabase(makeEnv(db));
+    expect(db.versions()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+  });
+
+  it("adds a nullable status_change_json to episodes", async () => {
+    await initializeDatabase(makeEnv(db));
+    const columns = db.sqlite.prepare(`PRAGMA table_info(episodes)`).all() as
+      { name: string; notnull: number; dflt_value: string | null }[];
+    const statusChange = columns.find((column) => column.name === "status_change_json");
+    expect(statusChange).toMatchObject({ notnull: 0, dflt_value: null });
+
+    db.sqlite.exec(`INSERT INTO episodes (id, entry_id, content, created_at)
+      VALUES ('ep-1', 'entry-1', 'x', 1)`);
+    const row = db.sqlite.prepare(`SELECT status_change_json FROM episodes WHERE id = 'ep-1'`)
+      .get() as Record<string, unknown>;
+    expect(row.status_change_json).toBeNull();
+  });
+
+  it("creates capture_receipts with the exact contract columns and primary key", async () => {
+    await initializeDatabase(makeEnv(db));
+    const columns = db.sqlite.prepare(`PRAGMA table_info(capture_receipts)`).all() as
+      { name: string; type: string; notnull: number; pk: number }[];
+    expect(columns.map((column) => column.name).sort()).toEqual([
+      "actor_id",
+      "actor_kind",
+      "created_at",
+      "entry_id",
+      "episode_id",
+      "erased_at",
+      "key_hash",
+      "mutation_id",
+      "request_hash",
+      "revision",
+      "state",
+    ]);
+    expect(columns.filter((column) => column.pk > 0).map((column) => column.name).sort())
+      .toEqual(["actor_id", "actor_kind", "key_hash"]);
+    for (const name of ["actor_kind", "actor_id", "key_hash", "entry_id", "state", "created_at"]) {
+      expect(columns.find((column) => column.name === name)?.notnull).toBe(1);
+    }
+
+    const tables = db.sqlite.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table'`,
+    ).all() as { name: string }[];
+    expect(tables.map((row) => row.name)).toContain("capture_receipts");
+
+    const indexes = db.sqlite.prepare(
+      `SELECT name, tbl_name AS tableName FROM sqlite_master WHERE type = 'index'`,
+    ).all() as { name: string; tableName: string }[];
+    expect(indexes.some((row) => row.tableName === "capture_receipts" && row.name.includes("entry")))
+      .toBe(true);
+  });
+
+  it("enforces the receipt state and actor-kind domains", async () => {
+    await initializeDatabase(makeEnv(db));
+    const insert = (state: string, actorKind: string) => db.sqlite.prepare(
+      `INSERT INTO capture_receipts (actor_kind, actor_id, key_hash, entry_id, state, created_at)
+       VALUES (?, 'actor', ?, 'entry', ?, 1)`,
+    ).run(actorKind, `hash-${state}-${actorKind}`, state);
+
+    expect(() => insert("committed", "human")).not.toThrow();
+    expect(() => insert("erased", "service")).not.toThrow();
+    expect(() => insert("pending", "human")).toThrow(/CHECK/i);
+    expect(() => insert("committed", "robot")).toThrow(/CHECK/i);
+  });
+
+  it("rejects a duplicate retry key inside the same actor namespace only", async () => {
+    await initializeDatabase(makeEnv(db));
+    const insert = (actorKind: string, actorId: string, keyHash: string) => db.sqlite.prepare(
+      `INSERT INTO capture_receipts (actor_kind, actor_id, key_hash, entry_id, state, created_at)
+       VALUES (?, ?, ?, 'entry', 'committed', 1)`,
+    ).run(actorKind, actorId, keyHash);
+
+    insert("human", "alice", "same-key");
+    expect(() => insert("human", "alice", "same-key")).toThrow(/UNIQUE/i);
+    expect(() => insert("human", "bob", "same-key")).not.toThrow();
+    expect(() => insert("service", "alice", "same-key")).not.toThrow();
+  });
+
+  it("adds capture-stage fencing columns that default existing delete rows", async () => {
+    await initializeDatabase(makeEnv(db));
+    const columns = db.sqlite.prepare(`PRAGMA table_info(vector_cleanup_queue)`).all() as
+      { name: string; notnull: number; dflt_value: string | null }[];
+    for (const name of [
+      "kind",
+      "stage_entry_id",
+      "stage_episode_id",
+      "lease_expires_at",
+      "claim_token",
+    ]) {
+      expect(columns.map((column) => column.name)).toContain(name);
+    }
+    expect(columns.find((column) => column.name === "kind"))
+      .toMatchObject({ notnull: 1, dflt_value: "'delete'" });
+    for (const name of ["stage_entry_id", "stage_episode_id", "lease_expires_at", "claim_token"]) {
+      expect(columns.find((column) => column.name === name)?.notnull).toBe(0);
+    }
+
+    // An unspecified kind is a legacy delete job, never an unconditional stage.
+    db.sqlite.exec(`INSERT INTO vector_cleanup_queue (id, vector_ids, reason, created_at, updated_at)
+      VALUES ('job-1', '["v1"]', 'entry-version:e:m', 1, 1)`);
+    expect(db.sqlite.prepare(`SELECT kind FROM vector_cleanup_queue WHERE id = 'job-1'`)
+      .get()).toEqual({ kind: "delete" });
+    expect(() => db.sqlite.prepare(`INSERT INTO vector_cleanup_queue
+      (id, vector_ids, reason, kind, created_at, updated_at) VALUES ('job-2', '[]', 'r', 'bogus', 1, 1)`)
+      .run()).toThrow(/CHECK/i);
+  });
+
+  it("provides a stable entry-list index for cursor pagination", async () => {
+    await initializeDatabase(makeEnv(db));
+    const indexes = db.sqlite.prepare(
+      `SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'entries'`,
+    ).all() as { name: string; sql: string }[];
+    const ordered = indexes.find((row) =>
+      /created_at\s+DESC/i.test(row.sql ?? "") && /\bid\s+DESC/i.test(row.sql ?? ""));
+    expect(ordered).toBeTruthy();
+  });
+
+  it("is safe to run repeatedly and converges with the schema.sql bootstrap", async () => {
+    await initializeDatabase(makeEnv(db));
+    const first = db.schemaSignature();
+    _resetDbReady();
+    await initializeDatabase(makeEnv(db));
+    expect(db.schemaSignature()).toEqual(first);
+    expect(db.versions()).toHaveLength(16);
+  });
+
+  it("upgrades a database that stopped at migration 15 without losing rows", async () => {
+    await initializeDatabase(makeEnv(db));
+    // Simulate a pre-16 deployment: drop the new artifacts and forget version 16.
+    db.sqlite.exec(`
+      DELETE FROM schema_migrations WHERE version = 16;
+      DROP TABLE capture_receipts;
+      ALTER TABLE episodes DROP COLUMN status_change_json;
+      INSERT INTO vector_cleanup_queue (id, vector_ids, reason, created_at, updated_at)
+        VALUES ('legacy-job', '["v-legacy"]', 'entry-version:e:m', 5, 5);
+    `);
+    _resetDbReady();
+    await initializeDatabase(makeEnv(db));
+
+    expect(db.versions()).toContain(16);
+    expect(db.columns("episodes")).toContain("status_change_json");
+    expect(db.columns("capture_receipts")).toContain("key_hash");
+    expect(db.sqlite.prepare(
+      `SELECT kind, stage_entry_id, stage_episode_id, lease_expires_at, claim_token
+       FROM vector_cleanup_queue WHERE id = 'legacy-job'`,
+    ).get()).toEqual({
+      kind: "delete",
+      stage_entry_id: null,
+      stage_episode_id: null,
+      lease_expires_at: null,
+      claim_token: null,
+    });
   });
 });

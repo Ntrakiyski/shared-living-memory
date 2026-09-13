@@ -16,6 +16,7 @@
 import type { ActorContext, Env } from "./types";
 import { INTEGRATION_PROVIDERS, loadIntegration, saveIntegration } from "./integrations";
 import { sqlChanges } from "./governance-utils";
+import { captureReceiptTombstoneStatement } from "./capture-receipts";
 
 export const ERASURE_CLEANUP_REASON_PREFIX = "erasure:";
 
@@ -335,6 +336,10 @@ export function buildErasureStatements(
       env.DB.prepare(`DELETE FROM vector_cleanup_queue WHERE id = ?`).bind(queueId),
     );
   }
+  // Capture receipts become metadata-only tombstones in the same atomic batch as
+  // the deletion. A retry of an erased key must never recreate deleted content,
+  // so the erased state outlives the entry and clears every non-tombstone field.
+  statements.push(captureReceiptTombstoneStatement(env, entryId));
   if (opts.deleteEntry) {
     let sql = `DELETE FROM entries WHERE id = ?`;
     const bindings: string[] = [entryId];

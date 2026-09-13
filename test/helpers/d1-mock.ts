@@ -139,6 +139,12 @@ export class D1Mock {
   action_proposals: any[] = [];
   proposal_events: any[] = [];
   erasure_receipts: any[] = [];
+  capture_receipts: any[] = [];
+
+  /** True when this attempt's committed receipt exists in the mock store. */
+  hasCommittedReceipt(): boolean {
+    return this.capture_receipts.some((row: any) => row.state === "committed");
+  }
 
   prepare(sql: string) {
     const s = sql.replace(/\s+/g, " ").trim();
@@ -622,8 +628,10 @@ export class D1Mock {
           return { meta: { changes: 1 } };
         }
         if (s.startsWith("INSERT INTO episodes")) {
-          if (s.includes("materialized_content") && s.includes("SELECT")) {
-            if (s.includes("current_episode_id IS NULL")) {
+          // Three distinct shapes: the legacy baseline SELECT, the guarded
+          // per-revision SELECT ... FROM entries, and the create-path
+          // (VALUES or an equivalent SELECT with only a receipt guard).
+          if (s.includes("materialized_content") && s.includes("current_episode_id IS NULL")) {
               const [id, content_hash, mutation_id, entryId, ownerUserId, revision] = args;
               const entry = guardedEntry(db.entries, entryId, ownerUserId, revision, true);
               if (!entry) return { meta: { changes: 0 } };
@@ -646,10 +654,12 @@ export class D1Mock {
               return { meta: { changes: 1 } };
             }
 
+          if (s.includes("FROM entries") && s.includes("materialized_content")) {
             const [
               id, content, content_type, source, created_at,
               materialized_content, content_hash, mutation_id, mutation_kind,
               parent_episode_id, restored_from_snapshot_id, source_url,
+              status_change_json,
               entryId, ownerUserId, revision,
             ] = args;
             const entry = guardedEntry(db.entries, entryId, ownerUserId, revision);
@@ -669,6 +679,7 @@ export class D1Mock {
               restored_from_snapshot_id,
               owner_user_id: entry.owner_user_id,
               source_url,
+              status_change_json: status_change_json ?? null,
             });
             return { meta: { changes: 1 } };
           }
@@ -678,11 +689,13 @@ export class D1Mock {
               id, entry_id, content, content_type, source, created_at,
               materialized_content, content_hash, mutation_id, mutation_kind,
               parent_episode_id, restored_from_snapshot_id, owner_user_id, source_url,
+              status_change_json,
             ] = args;
             db.episodes.push({
               id, entry_id, content, content_type, source, created_at,
               materialized_content, content_hash, mutation_id, mutation_kind,
               parent_episode_id, restored_from_snapshot_id, owner_user_id, source_url,
+              status_change_json: status_change_json ?? null,
             });
             return { meta: { changes: 1 } };
           }
@@ -709,8 +722,22 @@ export class D1Mock {
               section, page, page_end, start_offset, end_offset, vector_ids, created_at,
             ] = values;
             if (s.includes("SELECT")) {
-              const [guardId, ownerUserId, revision] = args.slice(13);
-              if (!guardedEntry(db.entries, guardId, ownerUserId, revision)) {
+              // Three guard shapes reach the mock:
+              //  - no FROM at all: a bare create-path SELECT, never guarded;
+              //  - FROM capture_receipts: the keyed-capture receipt fence;
+              //  - FROM entries with trailing id/owner/revision bindings.
+              // Data-driven backfills (FROM episodes, no bindings) are not
+              // modeled and insert nothing.
+              if (s.includes("FROM capture_receipts")) {
+                if (!db.hasCommittedReceipt()) return { meta: { changes: 0 } };
+              } else if (!/\bFROM\b/i.test(s)) {
+                // unguarded create path
+              } else if (args.length > 13) {
+                const [guardId, ownerUserId, revision] = args.slice(13);
+                if (!guardedEntry(db.entries, guardId, ownerUserId, revision)) {
+                  return { meta: { changes: 0 } };
+                }
+              } else {
                 return { meta: { changes: 0 } };
               }
             }
@@ -762,8 +789,17 @@ export class D1Mock {
             ] = values;
             const title_origin = hasBoundTitleOrigin ? values[9] : "generated";
             if (s.includes("SELECT")) {
-              const [guardId, guardOwner, revision] = args.slice(valueCount);
-              if (!guardedEntry(db.entries, guardId, guardOwner, revision)) {
+              // See INSERT INTO passages for the three guard shapes.
+              if (s.includes("FROM capture_receipts")) {
+                if (!db.hasCommittedReceipt()) return { meta: { changes: 0 } };
+              } else if (!/\bFROM\b/i.test(s)) {
+                // unguarded create path
+              } else if (args.length > valueCount) {
+                const [guardId, guardOwner, revision] = args.slice(valueCount);
+                if (!guardedEntry(db.entries, guardId, guardOwner, revision)) {
+                  return { meta: { changes: 0 } };
+                }
+              } else {
                 return { meta: { changes: 0 } };
               }
             }
@@ -786,8 +822,17 @@ export class D1Mock {
               created_at, page_start, page_end, start_offset, end_offset,
             ] = values;
             if (s.includes("SELECT")) {
-              const [guardId, ownerUserId, revision] = args.slice(11);
-              if (!guardedEntry(db.entries, guardId, ownerUserId, revision)) {
+              // See INSERT INTO passages for the three guard shapes.
+              if (s.includes("FROM capture_receipts")) {
+                if (!db.hasCommittedReceipt()) return { meta: { changes: 0 } };
+              } else if (!/\bFROM\b/i.test(s)) {
+                // unguarded create path
+              } else if (args.length > 11) {
+                const [guardId, ownerUserId, revision] = args.slice(11);
+                if (!guardedEntry(db.entries, guardId, ownerUserId, revision)) {
+                  return { meta: { changes: 0 } };
+                }
+              } else {
                 return { meta: { changes: 0 } };
               }
             }

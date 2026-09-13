@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS entries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_entries_created_at_id
+  ON entries(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(source);
 -- idx_entries_owner and idx_entries_temporal are created by runtime migration 2
 -- after it has verified that legacy entries tables contain the required columns.
@@ -173,7 +175,8 @@ CREATE TABLE IF NOT EXISTS episodes (
   parent_episode_id         TEXT,
   restored_from_snapshot_id TEXT,
   owner_user_id             TEXT NOT NULL DEFAULT '',
-  source_url                TEXT
+  source_url                TEXT,
+  status_change_json        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_episodes_entry_id ON episodes(entry_id);
@@ -593,8 +596,29 @@ CREATE TABLE IF NOT EXISTS vector_cleanup_queue (
   attempts   INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  kind             TEXT NOT NULL DEFAULT 'delete' CHECK (kind IN ('delete', 'capture_stage')),
+  stage_entry_id   TEXT,
+  stage_episode_id TEXT,
+  lease_expires_at INTEGER,
+  claim_token      TEXT
 );
+
+CREATE TABLE IF NOT EXISTS capture_receipts (
+  actor_kind TEXT NOT NULL CHECK (actor_kind IN ('human', 'service')),
+  actor_id   TEXT NOT NULL,
+  key_hash   TEXT NOT NULL,
+  request_hash TEXT,
+  entry_id   TEXT NOT NULL,
+  episode_id TEXT,
+  mutation_id TEXT,
+  revision   INTEGER,
+  state      TEXT NOT NULL CHECK (state IN ('committed', 'erased')),
+  created_at INTEGER NOT NULL,
+  erased_at  INTEGER,
+  PRIMARY KEY (actor_kind, actor_id, key_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_capture_receipts_entry ON capture_receipts(entry_id);
 
 CREATE TABLE IF NOT EXISTS erasure_receipts (
   operation_id  TEXT PRIMARY KEY,

@@ -1211,6 +1211,70 @@ const MIGRATIONS: readonly Migration[] = [
        )`,
     ),
   },
+  {
+    version: 16,
+    name: "capture_receipts_and_status_metadata",
+    statements: async (db) => {
+      const statements: string[] = [];
+
+      // Two status axes are recorded per immutable episode. Nullable so every
+      // pre-existing episode stays explicitly unknown rather than fabricated.
+      const episodeColumns = await tableColumns(db, "episodes");
+      addColumnIfMissing(
+        statements,
+        episodeColumns,
+        "episodes",
+        "status_change_json",
+        "TEXT",
+      );
+
+      statements.push(
+        // Retry identity for keyed capture. Tombstones deliberately survive entry
+        // deletion, so there is no cascading foreign key to entries. Only the
+        // original entry id is retained as erasure metadata; the erased state
+        // clears request_hash, episode_id, mutation_id and revision.
+        `CREATE TABLE IF NOT EXISTS capture_receipts (
+           actor_kind TEXT NOT NULL CHECK (actor_kind IN ('human', 'service')),
+           actor_id   TEXT NOT NULL,
+           key_hash   TEXT NOT NULL,
+           request_hash TEXT,
+           entry_id   TEXT NOT NULL,
+           episode_id TEXT,
+           mutation_id TEXT,
+           revision   INTEGER,
+           state      TEXT NOT NULL CHECK (state IN ('committed', 'erased')),
+           created_at INTEGER NOT NULL,
+           erased_at  INTEGER,
+           PRIMARY KEY (actor_kind, actor_id, key_hash)
+         )`,
+        `CREATE INDEX IF NOT EXISTS idx_capture_receipts_entry ON capture_receipts(entry_id)`,
+      );
+
+      // Durable capture-stage intent rides the existing cleanup queue. Existing
+      // rows are delete jobs; stage rows carry their planned entry/episode and a
+      // time-bounded lease that the repair worker may fence with a claim token.
+      const queueColumns = await tableColumns(db, "vector_cleanup_queue");
+      addColumnIfMissing(
+        statements,
+        queueColumns,
+        "vector_cleanup_queue",
+        "kind",
+        "TEXT NOT NULL DEFAULT 'delete' CHECK (kind IN ('delete', 'capture_stage'))",
+      );
+      addColumnIfMissing(statements, queueColumns, "vector_cleanup_queue", "stage_entry_id", "TEXT");
+      addColumnIfMissing(statements, queueColumns, "vector_cleanup_queue", "stage_episode_id", "TEXT");
+      addColumnIfMissing(statements, queueColumns, "vector_cleanup_queue", "lease_expires_at", "INTEGER");
+      addColumnIfMissing(statements, queueColumns, "vector_cleanup_queue", "claim_token", "TEXT");
+
+      // Stable keyset pagination order: created_at DESC, id DESC.
+      statements.push(
+        `CREATE INDEX IF NOT EXISTS idx_entries_created_at_id
+           ON entries(created_at DESC, id DESC)`,
+      );
+
+      return statements;
+    },
+  },
 ] as const;
 
 async function ensureMigrationTable(db: D1Database): Promise<void> {
@@ -1288,7 +1352,8 @@ async function validateCurrentSchema(db: D1Database): Promise<void> {
       status, created_at, last_used_at, role FROM users LIMIT 0`,
     `SELECT id, entry_id, content, content_type, source, created_at,
       materialized_content, content_hash, mutation_id, mutation_kind,
-      parent_episode_id, restored_from_snapshot_id, owner_user_id, source_url
+      parent_episode_id, restored_from_snapshot_id, owner_user_id, source_url,
+      status_change_json
       FROM episodes LIMIT 0`,
     `SELECT id, entry_id, content, tags, source, created_at, episode_id,
       mutation_id, mutation_kind, recorded_at, valid_from, valid_to,
@@ -1353,8 +1418,12 @@ async function validateCurrentSchema(db: D1Database): Promise<void> {
       expected_new_owner_user_id, expected_matched_owner_user_id,
       similarity, status, attempts, last_error, created_at, updated_at,
       completed_at FROM overlap_awareness_reconciliation LIMIT 0`,
-    `SELECT id, vector_ids, reason, attempts, last_error, created_at, updated_at
+    `SELECT id, vector_ids, reason, attempts, last_error, created_at, updated_at,
+      kind, stage_entry_id, stage_episode_id, lease_expires_at, claim_token
       FROM vector_cleanup_queue LIMIT 0`,
+    `SELECT actor_kind, actor_id, key_hash, request_hash, entry_id, episode_id,
+      mutation_id, revision, state, created_at, erased_at
+      FROM capture_receipts LIMIT 0`,
     `SELECT operation_id, entry_id, owner_user_id, actor_user_id,
       vector_count, status, created_at, updated_at, completed_at
       FROM erasure_receipts LIMIT 0`,

@@ -18,8 +18,44 @@ import {
   type Env,
   type EpistemicStatus,
 } from "./types";
+import { getStatus } from "./tags";
+import {
+  assertCaptureStageIntact,
+  beginCaptureStage,
+  CAPTURE_STAGE_LEASE_MS,
+  CaptureStageLostError,
+  captureArtifactGuard,
+  captureReceiptInsertStatement,
+  captureStageReleaseStatement,
+  captureReceiptInserted,
+  type CaptureReceiptCommitDescriptor,
+} from "./capture-receipts";
 
 export type VersionedMutationKind = Exclude<EntryMutationKind, "legacy">;
+
+/** Trusted status-change metadata supplied only by server handlers. */
+export interface CommitStatusChangeInput {
+  axis: "lifecycle" | "epistemic";
+  reason: string | null;
+  actor: { kind: "human" | "service" | "system"; id: string };
+  reviewer: { kind: "human"; id: string } | null;
+  proposalId: string | null;
+}
+
+/** The persisted status_change_json envelope. */
+export interface EpisodeStatusChange {
+  version: 1;
+  axis: "lifecycle" | "epistemic";
+  from: string | null;
+  to: string;
+  reason: string | null;
+  reason_status: "provided" | "not_provided";
+  actor: { kind: "human" | "service" | "system"; id: string };
+  reviewer: { kind: "human"; id: string } | null;
+  proposal_id: string | null;
+  revision: number;
+  recorded_at: number;
+}
 
 export interface CommitEntryVersionInput {
   kind: VersionedMutationKind;
@@ -46,6 +82,17 @@ export interface CommitEntryVersionInput {
   mutationId?: string;
   /** Injectable clock for deterministic maintenance jobs and tests. */
   now?: number;
+  /**
+   * Keyed-capture retry identity. When present the capture is create-only,
+   * fenced by a durable stage intent, and records exactly one receipt.
+   */
+  captureReceipt?: CaptureReceiptCommitDescriptor;
+  /**
+   * Trusted status-change metadata for an actual axis change. Only the axis,
+   * reason, actor, reviewer and proposal id are accepted; from/to/revision and
+   * the timestamp are derived here from loaded and proposed state.
+   */
+  statusChange?: CommitStatusChangeInput;
 }
 
 export interface CommitEntryVersionResult {
@@ -405,6 +452,31 @@ export interface StageVersionVectorsInput {
   now: number;
   passages: PlannedPassage[];
   cleanupOnFailure?: boolean;
+  /**
+   * Durable capture-stage intent that must still be intact before and after the
+   * remote upsert. A lost fence never commits and never leaves orphan vectors.
+   */
+  fenceAttemptId?: string;
+}
+
+/**
+ * Every vector id this version will write. Computed separately from the upsert
+ * so the durable stage intent can record the planned ids before any remote
+ * write happens.
+ */
+export function planVersionVectorIds(
+  episodeId: string,
+  content: string,
+  passages: PlannedPassage[],
+): { entryVectorIds: string[]; allVectorIds: string[] } {
+  const entryChunks = chunkText(content);
+  // Vectorize IDs are capped at 64 bytes. The immutable episode UUID is enough
+  // to namespace every projection chunk without including the mutable entry ID.
+  const entryVectorIds = entryChunks.map((_, index) => `ev:${episodeId}:${index}`);
+  return {
+    entryVectorIds,
+    allVectorIds: [...entryVectorIds, ...passages.map((passage) => passage.vectorId)],
+  };
 }
 
 export async function stageVersionVectors(
@@ -412,16 +484,19 @@ export async function stageVersionVectors(
   details: StageVersionVectorsInput,
 ): Promise<{ entryVectorIds: string[]; allVectorIds: string[] }> {
   const entryChunks = chunkText(details.content);
-  // Vectorize IDs are capped at 64 bytes. The immutable episode UUID is enough
-  // to namespace every projection chunk without including the mutable entry ID.
-  const entryVectorIds = entryChunks.map(
-    (_, index) => `ev:${details.episodeId}:${index}`,
+  const { entryVectorIds, allVectorIds } = planVersionVectorIds(
+    details.episodeId,
+    details.content,
+    details.passages,
   );
-  const allVectorIds = [
-    ...entryVectorIds,
-    ...details.passages.map((passage) => passage.vectorId),
-  ];
   let writeAttempted = false;
+
+  const assertFence = async (): Promise<void> => {
+    if (!details.fenceAttemptId) return;
+    await assertCaptureStageIntact(env, details.fenceAttemptId);
+  };
+  const cleanup = async (): Promise<unknown | undefined> =>
+    details.cleanupOnFailure === false ? undefined : await cleanupStagedVectors(env, allVectorIds);
 
   try {
     const isPrivate = details.visibility === "private";
@@ -463,13 +538,19 @@ export async function stageVersionVectors(
       },
     })));
 
+    await assertFence();
     writeAttempted = true;
     await env.VECTORIZE.upsert([...entryVectors, ...passageVectors]);
+    // A fence lost while the upsert was in flight must not commit. This
+    // attempt's vector ids are episode-scoped, so no winner can share them and
+    // removing them is always safe.
+    await assertFence();
     return { entryVectorIds, allVectorIds };
   } catch (cause) {
-    const cleanupError = writeAttempted && details.cleanupOnFailure !== false
-      ? await cleanupStagedVectors(env, allVectorIds)
-      : undefined;
+    const cleanupError = writeAttempted ? await cleanup() : undefined;
+    if (cause instanceof CaptureStageLostError) {
+      throw new EntryVersionVectorStageError(cause, cleanupError);
+    }
     throw new EntryVersionVectorStageError(cause, cleanupError);
   }
 }
@@ -712,11 +793,81 @@ export async function commitEntryVersion(
       ? (current?.current_document_title_origin ?? "generated")
       : "generated";
 
+  // ── Trusted status-change metadata ─────────────────────────────────────────
+  // from/to, revision and the timestamp are derived here from loaded and
+  // proposed state. A caller can never submit arbitrary actor or reviewer data.
+  let statusChangeJson: string | null = null;
+  if (input.statusChange) {
+    const axis = input.statusChange.axis;
+    let from: string | null;
+    let to: string | null;
+    if (axis === "epistemic") {
+      from = current?.epistemic_status ?? null;
+      to = epistemicStatus;
+    } else {
+      from = current ? getStatus(parseJsonArray(current.tags)) : null;
+      to = getStatus(tags);
+    }
+
+    if (axis === "epistemic" && from === to) {
+      throw new EntryVersionValidationError(
+        `Epistemic self-transition ${String(to)} is not a valid status change`,
+      );
+    }
+    if (axis === "lifecycle" && to === null) {
+      throw new EntryVersionValidationError(
+        "A lifecycle status change requires a lifecycle status tag",
+      );
+    }
+    if (to !== null) {
+      const payload: EpisodeStatusChange = {
+        version: 1,
+        axis,
+        from,
+        to,
+        reason: input.statusChange.reason,
+        reason_status: input.statusChange.reason === null ? "not_provided" : "provided",
+        actor: input.statusChange.actor,
+        reviewer: input.statusChange.reviewer,
+        proposal_id: input.statusChange.proposalId,
+        revision: newRevision,
+        recorded_at: now,
+      };
+      statusChangeJson = JSON.stringify(payload);
+    }
+  }
+
+  const captureReceipt = input.captureReceipt;
+  if (captureReceipt) {
+    if (input.kind !== "capture") {
+      throw new EntryVersionValidationError(
+        "A capture receipt may only be recorded by a capture mutation",
+      );
+    }
+    if (!captureReceipt.attemptId || !captureReceipt.keyHash || !captureReceipt.requestHash) {
+      throw new EntryVersionValidationError("Capture receipt metadata is incomplete");
+    }
+  }
+
   // Historical passage vectors are immutable episode evidence used by knownAt
   // recall. Only the mutable entry projection vectors become stale here.
   const oldVectorIds = current
     ? [...new Set(parseJsonArray(current.vector_ids))]
     : [];
+
+  // A keyed capture records its durable stage intent before the first remote
+  // upsert. If that insert fails, no vector write happens at all.
+  if (captureReceipt) {
+    const planned = planVersionVectorIds(episodeId, input.materializedContent, passages);
+    await beginCaptureStage(env, {
+      attemptId: captureReceipt.attemptId,
+      entryId: targetEntryId,
+      episodeId,
+      vectorIds: planned.allVectorIds,
+      reason: `capture-stage:${captureReceipt.attemptId}:${targetEntryId}`,
+      leaseMs: CAPTURE_STAGE_LEASE_MS,
+    });
+  }
 
   const staged = await stageVersionVectors(env, {
     entryId: targetEntryId,
@@ -729,11 +880,37 @@ export async function commitEntryVersion(
     visibility,
     now,
     passages,
+    fenceAttemptId: captureReceipt?.attemptId,
   });
+
+  if (captureReceipt) {
+    // Fast fail before building the batch; the batch still re-checks the fence.
+    await assertCaptureStageIntact(env, captureReceipt.attemptId);
+  }
+
+  const artifactGuardSuffix = captureReceipt
+    ? ` WHERE ${captureArtifactGuard(captureReceipt)}`
+    : "";
+  const artifactGuardAnd = captureReceipt
+    ? ` AND ${captureArtifactGuard(captureReceipt)}`
+    : "";
 
   const statements: D1PreparedStatement[] = [];
   let guardedUpdateIndex: number | null = null;
+  let receiptInsertIndex: number | null = null;
   const cleanupQueueId = oldVectorIds.length > 0 ? uuid() : null;
+
+  if (captureReceipt) {
+    // Statement 0: the receipt is the authority every later insert is guarded
+    // on. A lost fence inserts nothing here and therefore inserts nothing at all.
+    receiptInsertIndex = 0;
+    statements.push(captureReceiptInsertStatement(env, captureReceipt, {
+      entryId: targetEntryId,
+      episodeId,
+      mutationId,
+      revision: newRevision,
+    }));
+  }
 
   if (!current) {
     statements.push(env.DB.prepare(
@@ -742,7 +919,7 @@ export async function commitEntryVersion(
          valid_from, valid_to, recorded_at, epistemic_status,
          current_episode_id, revision, created_by_user_id, visibility,
          vector_sync_pending, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+       ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?${artifactGuardSuffix}`,
     ).bind(
       targetEntryId,
       input.materializedContent,
@@ -765,8 +942,9 @@ export async function commitEntryVersion(
       `INSERT INTO episodes (
          id, entry_id, content, content_type, source, created_at,
          materialized_content, content_hash, mutation_id, mutation_kind,
-         parent_episode_id, restored_from_snapshot_id, owner_user_id, source_url
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         parent_episode_id, restored_from_snapshot_id, owner_user_id, source_url,
+         status_change_json
+       ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${artifactGuardSuffix}`,
     ).bind(
       episodeId,
       targetEntryId,
@@ -782,6 +960,7 @@ export async function commitEntryVersion(
       input.restoredFromSnapshotId ?? null,
       input.actorUserId,
       sourceUrl,
+      statusChangeJson,
     ));
   } else {
     const guard = [targetEntryId, input.actorUserId, guardedRevision] as const;
@@ -850,11 +1029,12 @@ export async function commitEntryVersion(
       `INSERT INTO episodes (
          id, entry_id, content, content_type, source, created_at,
          materialized_content, content_hash, mutation_id, mutation_kind,
-         parent_episode_id, restored_from_snapshot_id, owner_user_id, source_url
+         parent_episode_id, restored_from_snapshot_id, owner_user_id, source_url,
+         status_change_json
        )
-       SELECT ?, id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, owner_user_id, ?
+       SELECT ?, id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, owner_user_id, ?, ?
        FROM entries
-       WHERE id = ? AND owner_user_id = ? AND revision = ?`,
+       WHERE id = ? AND owner_user_id = ? AND revision = ?${artifactGuardAnd}`,
     ).bind(
       episodeId,
       input.rawContent,
@@ -868,6 +1048,7 @@ export async function commitEntryVersion(
       parentEpisodeId,
       input.restoredFromSnapshotId ?? null,
       sourceUrl,
+      statusChangeJson,
       ...guard,
     ));
   }
@@ -899,7 +1080,7 @@ export async function commitEntryVersion(
         `INSERT INTO documents (
            id, title, source_url, content_type, created_at, episode_id,
            owner_user_id, content_hash, version, title_origin
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${artifactGuardSuffix}`,
       ).bind(...documentBindings));
     }
 
@@ -931,7 +1112,7 @@ export async function commitEntryVersion(
           `INSERT INTO document_sections (
              id, document_id, parent_section_id, title, level, order_index,
              created_at, page_start, page_end, start_offset, end_offset
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${artifactGuardSuffix}`,
         ).bind(...sectionBindings));
       }
     }
@@ -967,7 +1148,7 @@ export async function commitEntryVersion(
         `INSERT INTO passages (
            id, entry_id, episode_id, document_id, section_id, content,
            section, page, page_end, start_offset, end_offset, vector_ids, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${artifactGuardSuffix}`,
       ).bind(...passageBindings));
     }
   }
@@ -1017,12 +1198,29 @@ export async function commitEntryVersion(
     ));
   }
 
+  // The stage intent is released in the same batch that records the receipt, so
+  // a committed capture can never leave a live intent behind and an abandoned
+  // attempt can never remove its own fence.
+  if (captureReceipt) {
+    statements.push(captureStageReleaseStatement(env, captureReceipt.attemptId));
+  }
+
   let results: D1Result<unknown>[];
   try {
     results = await env.DB.batch(statements);
   } catch (cause) {
     const cleanupError = await cleanupStagedVectors(env, staged.allVectorIds);
     throw new EntryVersionCommitError(cause, cleanupError);
+  }
+
+  if (receiptInsertIndex !== null && !captureReceiptInserted(results)) {
+    // The fence was claimed or expired between staging and commit. Nothing was
+    // written; this attempt's own vectors are unreferenced and are removed.
+    const cleanupError = await cleanupStagedVectors(env, staged.allVectorIds);
+    throw new EntryVersionCommitError(
+      new CaptureStageLostError(captureReceipt!.attemptId),
+      cleanupError,
+    );
   }
 
   if (guardedUpdateIndex !== null && sqlChangeCount(results[guardedUpdateIndex]) !== 1) {
