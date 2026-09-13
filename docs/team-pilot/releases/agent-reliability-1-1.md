@@ -133,13 +133,13 @@ All commands run from the project directory.
 | --- | --- |
 | `npm ci` | exit 0 |
 | `npm test` (baseline, before any edit) | exit 0 — 1124 passed / 106 files |
-| `npm test` (final) | exit 0 — **1400 passed / 124 files** |
+| `npm test` (final) | exit 0 — **1403 passed / 124 files** |
 | `npm run typecheck` (final, runs `wrangler types` then `tsc --noEmit`) | exit 0, zero errors |
 | `npx tsc --noEmit` | exit 0; zero errors under `src/` |
 | `npm run smoke:workerd` | **exit 1, blocked** — `setsid: command not found` (see §7) |
 | `node --check scripts/*.mjs` | exit 0 for each script delivered by WP8/WP9 |
 
-Net change on the branch: **63 files changed, ~14,500 insertions, ~300 deletions** relative to `origin/main` (tracked files; `tasks/` agent notes remain untracked). The release specification itself is committed on the branch so it is preserved with the work; `tasks/` (agent working notes) remains untracked.
+Net change on the branch: **65 files changed, ~15,100 insertions, ~300 deletions** relative to `origin/main` (tracked files; `tasks/` agent notes remain untracked). The release specification itself is committed on the branch so it is preserved with the work; `tasks/` (agent working notes) remains untracked.
 
 Secret scan of the committed diff: one match, and it is a **synthetic test vector** for the secret detector (`sk_live_0123…` inside `status-metadata.test.ts`). No live key, hash, prefix or credential appears anywhere in the diff.
 
@@ -156,7 +156,7 @@ Secret scan of the committed diff: one match, and it is a **synthetic test vecto
 | WP5 Identity/results/profiles | **COMPLETE (one gap)** | whoami (MCP + REST), trusted `authMethod`, exact profiles and aliases, `/health` + `/ready` metadata, the shared `SlmResult` envelope, actor-based source defaults, safe deployment-specific auth guidance, and the structured entry-descriptor contract on `list_recent`, `recall`, `history`, the four direct mutations and all proposal tools. `rate_recall` is also structured. Open: `passages` still returns text only, which Section 4.4 does not list. |
 | WP6 Status/review | **COMPLETE** | reasons, revision preconditions, atomic `status_change_json`, designated-reviewer binding and audience, overwrite protection and the staleness restriction. |
 | WP7 Pagination | **COMPLETE** | versioned cursor, context hash, keyset query, `paginateRows`, REST `/list` opt-in |
-| WP8 Export/UI/docs | **COMPLETE (dashboard in review)** | `scripts/export-mcp-connection.mjs` (28 tests) and `scripts/connect-ai-clients.sh` (9 tests, personal-key default, `--oauth` labelled legacy, `--print-only`, `--profile`); README, AGENTS, `src/mcp-onboarding.ts`, `docs/mcp-onboarding.md` and the project agent skill agree on personal-Bearer/legacy/profile vocabulary. The Section 12 dashboard changes were delegated and are still being verified — see §6 item 7. |
+| WP8 Export/UI/docs | **COMPLETE** | `scripts/export-mcp-connection.mjs` (28 tests) and `scripts/connect-ai-clients.sh` (9 tests: personal-key default, `--oauth` labelled legacy, `--print-only`, `--profile`, and a key is never accepted as an argument); README, AGENTS, `src/mcp-onboarding.ts`, `docs/mcp-onboarding.md` and the project agent skill agree on personal-Bearer/legacy/profile vocabulary; the Section 12 dashboard changes and the participant guide's designated-reviewer recipe landed and were verified independently (96/96 UI tests). |
 | WP9 Stage/operations | **PARTIAL / BLOCKED** | `scripts/check-staging-bindings.mjs`, `scripts/staging-agent-load.mjs`, `scripts/mcp-protocol-smoke.mjs --discovery-only`, a `wrangler.jsonc` staging environment with placeholder ids, corrected `pilot-canary.yml` (missing config now fails; close-on-recovery requires a successful canary; 15-minute production / 6-hour staging schedules; incident metadata without raw responses or keys) and 19 unit tests. Maintenance write mode is implemented and tested. Every remote staging, load and canary gate is blocked. |
 | WP10 Integrated release audit | **THIS DOCUMENT** | see §6 and §7 |
 
@@ -172,7 +172,7 @@ Items 1 and 2 are deviations inside otherwise-complete features; items 3-8 are u
 4. **REST batch capture authenticates personal accounts only.** MCP `remember_batch` is available to personal *and* service principals (each item re-verifies the actor); the REST `POST /capture/batch` route uses the personal-key auth gate, so a service must use MCP for batch capture.
 5. **The Section 4.5 output bounds are implemented for `list_recent` and `recall`** (2048-byte excerpts cut at a complete code-point boundary with `content_truncated`/`original_content_bytes`, and the 131,072-byte data cap with the cursor re-derived from the final emitted row). They are not applied to `passages`, whose output shape the specification never asked to change.
 6. **The recall/graph exclusion list (part of G5) is now verified.** `test/integration/recall-eligibility.test.ts` pins the shared gate: legacy-deprecated and epistemic superseded/retracted are excluded while candidate/reviewed/canonical/qualified/stale stay recallable (including the no-value case), and graph traversal at one and two hops never enters a terminal node. The epistemic axis had no coverage before this round; the legacy-deprecated axis already did (`edges.test.ts`, `multi-hop.test.ts`).
-7. **The Section 12 dashboard changes are in progress.** They were delegated to a separate workstream and are still being verified; nothing about them is claimed here until that verification lands. The `public/index.html` file is not touched by any commit on this branch yet.
+7. **Deliberate scope limit — no dashboard proposal editor.** Section 12 says that if no proposal editing surface exists, document the MCP recipe rather than build a full proposal application. None exists, so the designated-reviewer flow is documented in `docs/team-pilot/participant-guide.md` instead. The dashboard's Connection sheet, whoami panel and status-control reason inputs are implemented.
 8. **`POST /chat` was not converted to the shared envelope.** It is a streaming SSE endpoint, and Section 4.1 explicitly scopes the new envelope to new/modified MCP handlers and the new REST endpoints while preserving existing REST shapes. It is blocked in maintenance (see item 2).
 
 ---
@@ -208,6 +208,5 @@ The branch is ready for review as an incremental, tested change set. Every funct
 Recommended next actions, in order:
 
 1. Run `npm test`, `npm run typecheck` and `npm run smoke:workerd` in Linux CI and record the exit codes. The Workerd smoke is the only release gate that is blocked purely by local tooling.
-2. Finish and verify the Section 12 dashboard changes (§6 item 7), then re-run `npm test` and `npm run typecheck`.
-3. Provision staging with distinct D1/Vectorize/KV resources and run the binding preflight, the four/eight-writer load scenarios and the semantic canary — including the raw p95 ≤ 3000 ms and generated p95 ≤ 10000 ms latency gates, which are currently **unmeasured**.
+2. Provision staging with distinct D1/Vectorize/KV resources and run the binding preflight, the four/eight-writer load scenarios and the semantic canary — including the raw p95 ≤ 3000 ms and generated p95 ≤ 10000 ms latency gates, which are currently **unmeasured**.
 5. Request explicit owner authorization for the concrete production release, then deploy once, with `SLM_WRITE_MODE=read-only` prepared as the compatible recovery version.
