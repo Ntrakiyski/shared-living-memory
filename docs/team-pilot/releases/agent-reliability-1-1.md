@@ -149,6 +149,32 @@ All commands run from the project directory.
 
 Net change on the branch: **66 files changed, 15,034 insertions, 376 deletions** relative to `origin/main` (tracked files; `tasks/` agent notes remain untracked). The release specification itself is committed on the branch so it is preserved with the work; `tasks/` (agent working notes) remains untracked.
 
+### Existing-test modification audit
+
+The specification forbids weakening a test to make a failure disappear, so every
+change to a pre-existing test file was reviewed and counted. Ten test files were
+modified; no new test was deleted and every removal has a strictly stronger or
+equivalent replacement:
+
+| File | Net assertions | What changed |
+| --- | --- | --- |
+| `database-migrations.test.ts` | +39 / −12 | the 12 removals are all the same `db.versions()` assertion widened from `[1..15]` to `[1..16]`; the rest are new migration-16 coverage |
+| `set-status.test.ts` | +7 / −4 | `toBe(true)` / `toBe(false)` replaced by assertions on the returned committed version (entry id, revision, and `toBeNull()` for a missing entry) |
+| `deprecate-entry.test.ts` | +3 / −2 | same boolean → committed-version strengthening |
+| `health.test.ts` | +21 / −0 | `/ready` now requires deployment metadata; the old single success case became a suite covering success, missing metadata, read-only mode, invalid mode and storage failure |
+| `deactivation-service.test.ts` | +6 / −0 | tombstone assertions added |
+| `smart-merge.test.ts` | +6 / −0 | two new integration tests proving both sides of the overwrite rule |
+| `operator-surfaces.test.ts`, `auto-link.test.ts`, `mcp-identity.test.ts`, `d1-mock.ts` | ±0 assertions | fixtures and required fields only (`toolProfile`, `authMethod`, an epistemic-status fixture value, and additional registered tools) |
+
+Three test-visible behaviour changes were made deliberately because the
+specification requires them, and each is recorded in §6 rather than hidden: direct
+mutations return the committed version, `/ready` requires deployment metadata, and
+canonical/qualified entries are protected from automatic overwrite. The
+`smart-merge` and `auto-link` fixture changes were the riskiest of these, so
+`smart-merge.test.ts` gained an explicit test on each side of the rule (a
+canonically reviewed target is protected; an ordinary candidate is still
+replaced) to prove the merge path is reachable rather than dead code.
+
 Secret scan of the committed diff: one match, and it is a **synthetic test vector** for the secret detector (`sk_live_0123…` inside `status-metadata.test.ts`). No live key, hash, prefix or credential appears anywhere in the diff.
 
 ---
