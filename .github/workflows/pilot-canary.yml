@@ -2,42 +2,97 @@ name: Pilot Canary
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    # Production: read-only readiness + authenticated whoami/MCP tool discovery.
+    - cron: "*/15 * * * *"
+    # Staging: semantic / full-lifecycle canary.
+    - cron: "0 */6 * * *"
   workflow_dispatch:
+  release:
+    types: [published, prereleased, released]
+
+permissions:
+  contents: read
+  issues: write
 
 jobs:
-  canary:
+  production-canary:
+    name: Production readiness + whoami/tool discovery (read-only)
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    if: github.event_name == 'schedule' && github.event.schedule == '*/15 * * * *'
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Required checks run even when their secret is absent — a missing canary
+      # configuration is a failure, never a skip.
       - name: Check readiness
-        if: env.SLM_READINESS_URL != ''
         env:
           SLM_READINESS_URL: ${{ secrets.SLM_READINESS_URL }}
-          SLM_READINESS_TOKEN: ${{ secrets.SLM_READINESS_TOKEN }}
         run: |
+          echo "production/readiness" > "$GITHUB_WORKSPACE/.canary-failure-code"
+          if [ -z "$SLM_READINESS_URL" ]; then
+            echo "SLM_READINESS_URL is required but not configured." >&2
+            exit 1
+          fi
           status=$(curl -sf -o /dev/null -w "%{http_code}" "$SLM_READINESS_URL/ready")
           if [ "$status" != "200" ]; then
-            echo "Readiness check failed with HTTP $status"
+            echo "Readiness check failed with HTTP $status" >&2
             exit 1
           fi
           echo "Readiness: OK"
 
+      - name: Authenticated whoami + MCP tool discovery
+        env:
+          SLM_URL: ${{ secrets.SLM_READINESS_URL }}
+          SLM_USER_KEY: ${{ secrets.SLM_CANARY_USER_KEY }}
+        run: |
+          echo "production/whoami-discovery" > "$GITHUB_WORKSPACE/.canary-failure-code"
+          if [ -z "$SLM_URL" ] || [ -z "$SLM_USER_KEY" ]; then
+            echo "SLM_READINESS_URL and SLM_CANARY_USER_KEY are required." >&2
+            exit 1
+          fi
+          node scripts/mcp-protocol-smoke.mjs --discovery-only
+
       - name: Report failure
         if: failure()
+        env:
+          CANARY_STAGE: production
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require("fs");
+            const code = (() => {
+              try { return fs.readFileSync(`${process.env.GITHUB_WORKSPACE}/.canary-failure-code`, "utf8").trim(); }
+              catch { return "unknown"; }
+            })();
+            const stage = process.env.CANARY_STAGE;
+            const sha = process.env.GITHUB_SHA || context.sha;
+            let pkgVersion = "unknown";
+            try {
+              pkgVersion = JSON.parse(fs.readFileSync(`${process.env.GITHUB_WORKSPACE}/package.json`, "utf8")).version;
+            } catch {}
+            const time = new Date().toISOString();
+            const workflow = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const title = `[Pilot Canary] Failure at ${time}`;
+            const body = [
+              "Canary check failed.",
+              "",
+              `Stage: ${stage}`,
+              `Code: ${code}`,
+              `Version: ${pkgVersion} (${sha})`,
+              `Time: ${time}`,
+              `Workflow: ${workflow}`,
+            ].join("\n");
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               labels: ["pilot-incident"],
               state: "open",
             });
-            const title = `[Pilot Canary] Failure at ${new Date().toISOString()}`;
-            const body = `Canary check failed.\n\nWorkflow: ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
             const existing = issues.data.find((i) => i.title.startsWith("[Pilot Canary]"));
             if (existing) {
               await github.rest.issues.update({
@@ -56,8 +111,109 @@ jobs:
               });
             }
 
+  staging-canary:
+    name: Staging semantic / full-lifecycle canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 */6 * * *') ||
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Staging semantic canary
+        env:
+          SLM_BASE_URL: ${{ secrets.SLM_STAGING_URL }}
+          SLM_ADMIN_KEY: ${{ secrets.SLM_STAGING_ADMIN_KEY }}
+          SLM_PRODUCTION_URL: ${{ secrets.SLM_PRODUCTION_URL }}
+        run: |
+          echo "staging/semantic-canary" > "$GITHUB_WORKSPACE/.canary-failure-code"
+          if [ -z "$SLM_BASE_URL" ] || [ -z "$SLM_ADMIN_KEY" ]; then
+            echo "SLM_STAGING_URL and SLM_STAGING_ADMIN_KEY are required." >&2
+            exit 1
+          fi
+          node scripts/staging-semantic-canary.mjs
+
+      - name: Staging MCP full lifecycle
+        env:
+          SLM_URL: ${{ secrets.SLM_STAGING_URL }}
+          SLM_USER_KEY: ${{ secrets.SLM_STAGING_USER_KEY }}
+        run: |
+          echo "staging/mcp-lifecycle" > "$GITHUB_WORKSPACE/.canary-failure-code"
+          if [ -z "$SLM_URL" ] || [ -z "$SLM_USER_KEY" ]; then
+            echo "SLM_STAGING_URL and SLM_STAGING_USER_KEY are required." >&2
+            exit 1
+          fi
+          node scripts/mcp-protocol-smoke.mjs
+
+      - name: Report failure
+        if: failure()
+        env:
+          CANARY_STAGE: staging
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const code = (() => {
+              try { return fs.readFileSync(`${process.env.GITHUB_WORKSPACE}/.canary-failure-code`, "utf8").trim(); }
+              catch { return "unknown"; }
+            })();
+            const stage = process.env.CANARY_STAGE;
+            const sha = process.env.GITHUB_SHA || context.sha;
+            let pkgVersion = "unknown";
+            try {
+              pkgVersion = JSON.parse(fs.readFileSync(`${process.env.GITHUB_WORKSPACE}/package.json`, "utf8")).version;
+            } catch {}
+            const time = new Date().toISOString();
+            const workflow = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const title = `[Pilot Canary] Failure at ${time}`;
+            const body = [
+              "Canary check failed.",
+              "",
+              `Stage: ${stage}`,
+              `Code: ${code}`,
+              `Version: ${pkgVersion} (${sha})`,
+              `Time: ${time}`,
+              `Workflow: ${workflow}`,
+            ].join("\n");
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ["pilot-incident"],
+              state: "open",
+            });
+            const existing = issues.data.find((i) => i.title.startsWith("[Pilot Canary]"));
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `${existing.body}\n\n---\n${body}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["pilot-incident"],
+              });
+            }
+
+  # A failed canary keeps the incident open: close-on-recovery requires every
+  # canary job (that actually ran) to have succeeded.
   close-on-recovery:
     runs-on: ubuntu-latest
+    needs: [production-canary, staging-canary]
     if: success()
     steps:
       - uses: actions/checkout@v4

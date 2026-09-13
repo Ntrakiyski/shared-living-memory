@@ -40,5 +40,44 @@
 		"crons": [
 			"0 1 * * *"
 		]
+	},
+	"envs": {
+		"staging": {
+			"name": "shared-living-memory-staging",
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "shared-living-memory-staging-db",
+					"database_id": "REPLACE_WITH_STAGING_D1_ID"
+				}
+			],
+			"vectorize": [
+				{
+					"binding": "VECTORIZE",
+					"index_name": "shared-living-memory-staging-vectors"
+				}
+			],
+			"kv_namespaces": [
+				{
+					"binding": "OAUTH_KV",
+					"id": "REPLACE_WITH_STAGING_KV_ID"
+				}
+			],
+			"ai": {
+				"binding": "AI"
+			},
+			"vars": {
+				"VECTORIZE_GRACE_MS": "300000",
+				"MCP_OAUTH_ENABLED": "false",
+				"SLM_DEPLOYMENT_ID": "slm-fractals-staging",
+				"SLM_ENVIRONMENT": "staging",
+				"SLM_PUBLIC_BASE_URL": "REPLACE_WITH_STAGING_WORKER_URL",
+				"SLM_RELEASE_ID": "REPLACE_WITH_CANDIDATE_SHA",
+				"SLM_WRITE_MODE": "enabled"
+			},
+			"assets": {
+				"directory": "./public"
+			}
+		}
 	}
 }
