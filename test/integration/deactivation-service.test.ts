@@ -221,6 +221,15 @@ describe("user deactivation service", () => {
          'entry-version:a-private:mutation', 1, 1
        )`,
     ).run();
+    // A capture receipt for the private entry: the deactivation purge must
+    // tombstone it so a retry of that key can never recreate the deleted content.
+    db.sqlite.prepare(
+      `INSERT INTO capture_receipts (
+         actor_kind, actor_id, key_hash, request_hash, entry_id, episode_id,
+         mutation_id, revision, state, created_at, erased_at
+       ) VALUES ('human', 'member', 'member-key-hash', 'member-request-hash',
+                 'a-private', 'private-episode', 'member-mutation', 1, 'committed', 1, NULL)`,
+    ).run();
     db.sqlite.prepare(
       `INSERT INTO edges (
          id, source_id, target_id, created_at, updated_at
@@ -316,6 +325,22 @@ describe("user deactivation service", () => {
     expect(receipt).toBeTruthy();
     expect(receipt.status).toBe("pending_cleanup");
     expect(receipt.vector_count).toBe(3);
+
+    // C4: the private purge tombstones the capture receipt in the same atomic
+    // batch, clearing every non-tombstone field so nothing can be replayed.
+    const tombstone = db.sqlite.prepare(
+      `SELECT state, request_hash, episode_id, mutation_id, revision, erased_at
+         FROM capture_receipts WHERE actor_id = 'member' AND key_hash = 'member-key-hash'`,
+    ).get() as {
+      state: string; request_hash: string | null; episode_id: string | null;
+      mutation_id: string | null; revision: number | null; erased_at: number | null;
+    };
+    expect(tombstone.state).toBe("erased");
+    expect(tombstone.request_hash).toBeNull();
+    expect(tombstone.episode_id).toBeNull();
+    expect(tombstone.mutation_id).toBeNull();
+    expect(tombstone.revision).toBeNull();
+    expect(tombstone.erased_at).toBeGreaterThan(0);
 
     // Step 2 — resume again: the public entry is transferred to the admin,
     // all remaining owned entries are cleared, and the deactivation finalizes.
