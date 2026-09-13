@@ -238,3 +238,46 @@ describe("read-only maintenance over MCP", () => {
     writable.db.close();
   });
 });
+
+describe("MCP transport stays reachable in maintenance", () => {
+  let harness: Harness;
+
+  beforeEach(async () => {
+    harness = makeHarness("read-only");
+    await seedAlice(harness);
+  });
+
+  afterEach(() => {
+    harness.db.close();
+  });
+
+  it("does not gate the /mcp protocol endpoint at the REST boundary", async () => {
+    // /mcp is served by apiHandler under OAuthProvider, so the REST safe-route
+    // allowlist must not intercept protocol negotiation. Per-tool gating happens
+    // inside the server instead (see the tools/call assertions above).
+    const response = await worker.fetch(new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${ALICE_KEY}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+    }), harness.env, ctx);
+    expect(response.status).not.toBe(503);
+    const text = await response.text();
+    expect(text).not.toContain("maintenance_read_only");
+  });
+
+  it("keeps authenticated identity readable in maintenance", async () => {
+    const response = await worker.fetch(new Request("http://localhost/api/whoami", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${ALICE_KEY}` },
+    }), harness.env, ctx);
+    expect(response.status).toBe(200);
+    expect((await response.json() as any).data.deployment.write_mode).toBe("read-only");
+  });
+
+  it("serves the read-only dashboard asset", async () => {
+    const response = await worker.fetch(new Request("http://localhost/", {
+      method: "GET",
+    }), harness.env, ctx);
+    expect(response.status).not.toBe(503);
+  });
+});
