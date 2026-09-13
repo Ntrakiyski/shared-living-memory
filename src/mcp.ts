@@ -62,7 +62,13 @@ import { startRun, endRun, logToolCall } from "./audit";
 import { isValidMcpActorId } from "./auth";
 import { captureServicePrivateDraft } from "./operator-memory";
 import { captureEntryBatch, captureEntryKeyed, validateBatchEnvelope } from "./ingest";
-import { mapDomainError, okResult } from "./mcp-results";
+import {
+  EDGE_TOOL_ALIASES,
+  profileAllowsTool,
+  toolsRegisteredForProfile,
+  type ToolProfile,
+} from "./config";
+import { mapDomainError, okResult, readDeploymentMetadata } from "./mcp-results";
 import {
   createActionProposal,
   executeApprovedProposal,
@@ -340,7 +346,12 @@ function renderBoundedMcpHistory(history: LoadedMcpHistory): string {
   }
 }
 
-export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorContext): McpServer {
+export function buildMcpServer(
+  env: Env,
+  ctx: ExecutionContext,
+  actor: ActorContext,
+  profile: ToolProfile = "full",
+): McpServer {
   const userId = actor.kind === "human"
     ? actor.userId
     : actor.kind === "service" ? actor.ownerUserId : actor.systemId;
@@ -365,6 +376,28 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
 
   const server = new McpServer({ name: "shared-living-memory", version: "1.0.0" });
 
+  // Profile-disallowed tools are never registered, so tools/list and tools/call
+  // can never disagree and an unknown name has no hidden handler. The canonical
+  // edge-proposal names also answer their explicit edge_* aliases with the SAME
+  // handler function, so no backend logic is duplicated.
+  // The wrapper keeps the SDK's generic signature so call sites still infer
+  // their input/handler types; only the profile gate is added.
+  type RegisterTool = McpServer["registerTool"];
+  const rawRegisterTool: RegisterTool = server.registerTool.bind(server) as RegisterTool;
+  const registerUnderProfile = (name: string, config: unknown, handler: unknown): void => {
+    if (profileAllowsTool(profile, name)) {
+      rawRegisterTool(name as never, config as never, handler as never);
+    }
+    const alias = EDGE_TOOL_ALIASES[name];
+    if (alias && profileAllowsTool(profile, alias)) {
+      const aliased = config && typeof config === "object"
+        ? { ...(config as Record<string, unknown>), title: alias }
+        : config;
+      rawRegisterTool(alias as never, aliased as never, handler as never);
+    }
+  };
+  const registerTool: RegisterTool = registerUnderProfile as unknown as RegisterTool;
+
   server.registerResource(
     "shared-living-memory-mcp-onboarding",
     MCP_ONBOARDING_RESOURCE_URI,
@@ -380,6 +413,78 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
         text: MCP_ONBOARDING_MARKDOWN,
       }],
     }),
+  );
+
+  // ── whoami ──────────────────────────────────────────────────────────────
+  // Available to every valid principal, on every profile. Read-only.
+  registerTool(
+    "whoami",
+    {
+      description: "Report the verified identity, credential type, role, capabilities, tool profile and deployment this connection is using. Read-only.",
+      inputSchema: {},
+    },
+    async () => {
+      const deployment = readDeploymentMetadata(env as unknown as Record<string, unknown>);
+      const name = await resolveOwnerUsername();
+      const owner = actor.kind === "service"
+        ? await env.DB.prepare(
+          `SELECT id, username FROM users WHERE id = ?`,
+        ).bind(actor.ownerUserId).first<{ id: string; username: string }>()
+        : null;
+      const serviceName = actor.kind === "service"
+        ? await env.DB.prepare(
+          `SELECT name FROM service_identities WHERE id = ?`,
+        ).bind(actor.serviceIdentityId).first<{ name: string }>()
+        : null;
+
+      const capabilities = actor.kind === "service"
+        ? {
+          read_public: true,
+          read_owner_private: true,
+          direct_mutation_scope: "private_drafts",
+          proposal_review: "none",
+          erase_owned_entries: false,
+        }
+        : {
+          read_public: true,
+          read_owner_private: true,
+          direct_mutation_scope: "owned_entries",
+          proposal_review: actor.kind === "human" && actor.role === "admin"
+            ? "account_policy"
+            : "none",
+          erase_owned_entries: true,
+        };
+
+      const data = {
+        principal: {
+          id: actor.actorId,
+          name: actor.kind === "service" ? serviceName?.name ?? actor.actorId : name,
+          kind: "human" as const,
+        },
+        credential_type: actor.kind === "service" ? "service_api_key" : "personal_api_key",
+        auth_method: actor.authMethod,
+        owner: owner ? { id: owner.id, username: owner.username } : null,
+        role: actor.kind === "human" ? actor.role : null,
+        scopes: actor.kind === "service" ? [...actor.scopes].sort() : [],
+        capabilities,
+        tool_profile: profile,
+        // The actual callable subset for THIS request, sorted lexically.
+        effective_tools: toolsRegisteredForProfile(profile, actor.kind).sort(),
+        default_visibility: "private" as const,
+        deployment: deployment.metadata,
+        human_presence_verified: false as const,
+      };
+      const envelope = okResult(data, deployment.missing.length
+        ? [`deployment_metadata_incomplete: ${deployment.missing.join(", ")}`]
+        : []);
+      return {
+        structuredContent: envelope as unknown as Record<string, unknown>,
+        content: [{
+          type: "text" as const,
+          text: `Signed in as ${data.principal.name} (${data.credential_type}, ${data.auth_method}) on ${data.deployment.environment || "unknown"} profile ${profile}.`,
+        }],
+      };
+    },
   );
 
   if (actor.kind === "service") {
@@ -419,7 +524,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       }, read, summarize);
     }
 
-    server.registerTool(
+    registerTool(
       "remember",
       {
         description: "Capture a private draft candidate. This is the operator's only direct memory write; it never merges, promotes, deprecates, or publishes.",
@@ -442,7 +547,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       }),
     );
 
-    server.registerTool(
+    registerTool(
       "recall",
       {
         description: "Read-only semantic and temporal recall over memory visible to the service owner.",
@@ -479,7 +584,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       }),
     );
 
-    server.registerTool(
+    registerTool(
       "list_recent",
       {
         description: "List recent memory visible to the service owner without mutating recall state.",
@@ -508,7 +613,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       }),
     );
 
-    server.registerTool(
+    registerTool(
       "connections",
       {
         description: "Read the one-hop knowledge graph around a visible memory.",
@@ -534,7 +639,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       }),
     );
 
-    server.registerTool(
+    registerTool(
       "history",
       {
         description: "Read immutable episodes and snapshots for a memory owned by the service owner.",
@@ -561,7 +666,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       }),
     );
 
-    server.registerTool(
+    registerTool(
       "create_action_proposal",
       {
         description: "Propose a governed memory or graph action for explicit human review.",
@@ -597,7 +702,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       }),
     );
 
-    server.registerTool(
+    registerTool(
       "list_action_proposals",
       {
         description: "List action proposals visible to this service identity.",
@@ -617,7 +722,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       }),
     );
 
-    server.registerTool(
+    registerTool(
       "execute_approved_action",
       {
         description: "Execute an already human-approved proposal. Requires explicit execute-approved scopes.",
@@ -667,7 +772,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   }
 
   // ── remember ────────────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "remember",
     {
       description: "Store an idea, task, or note in your shared living memory. Call this automatically whenever the user shares context, goals, decisions, or preferences.",
@@ -750,7 +855,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── remember_batch ──────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "remember_batch",
     {
       description: "Capture up to 10 memories in one bounded, ordered request. Every item needs its own retry key and is CREATE-ONLY: items never merge, replace or suppress similar memories. Envelope problems reject the whole request with no writes; a bad item is reported in place and later items still run.",
@@ -795,7 +900,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
         return `- ${item.client_item_id}: ${item.status} (entry ${item.data?.entry_id}, revision ${item.data?.current_revision})`;
       });
       return {
-        structuredContent: envelope,
+        structuredContent: envelope as unknown as Record<string, unknown>,
         content: [{
           type: "text" as const,
           text: [
@@ -808,7 +913,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── append ───────────────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "append",
     {
       description: "Append new information to an existing entry in your shared living memory. Use when something has changed or been updated — preserves the original and adds the update with a timestamp. Get the entry ID from recall or list_recent first.",
@@ -866,7 +971,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── update ───────────────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "update",
     {
       description: "Replace the full content of an existing memory. Use when information has changed entirely — a preference reversed, a decision overturned, or content is outdated. Use append instead if you're adding new information rather than replacing. Get the entry ID from recall or list_recent first.",
@@ -928,7 +1033,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── set_status ─────────────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "set_status",
     {
       description: "Set a memory's lifecycle status. 'canonical' = confirmed/authoritative (protected from auto-overwrite), 'draft' = tentative, 'deprecated' = no longer accurate (removed from recall, kept for audit). Get the entry ID from recall or list_recent first.",
@@ -951,7 +1056,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── set_epistemic_status ──────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "set_epistemic_status",
     {
       description: "Transition an entry's epistemic lifecycle state. Validates transitions — returns error with valid next states if transition is invalid. States: candidate → reviewed → canonical → qualified → superseded → retracted.",
@@ -997,7 +1102,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── recall ───────────────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "recall",
     {
       description: "Recall: semantically search your shared living memory for relevant notes and context. Call recall automatically at the start of every conversation and every 3-4 messages.",
@@ -1038,7 +1143,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   // Explicit human retention signal. Service actors return before this block,
   // and the owner predicate in reinforceOwnedEntry prevents cross-user use.
   if (actor.kind === "human") {
-    server.registerTool(
+    registerTool(
       "reinforce",
       {
         description: "Explicitly reinforce one memory you own so it remains salient. Use only when the user asks to reinforce or keep that memory important. Every invocation increments the reinforcement count once; recall itself never does this.",
@@ -1062,7 +1167,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   }
 
   // ── list_recent ──────────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "list_recent",
     {
       description: "list_recent: List the most recent entries by date from your shared living memory. Use when you need to browse recent entries or find an entry ID. Not the same as recall — returns entries by time, not by meaning.",
@@ -1100,7 +1205,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   // Permanent deletion is a compliance/erasure operation routed through the
   // mandatory-audit envelope (intent persisted before mutation). It is NOT the
   // ordinary correction path — agents must prefer deprecation via set_status.
-  server.registerTool(
+  registerTool(
     "forget",
     {
       description: "Permanently delete an entry from your shared living memory by ID. This is a compliance/erasure operation, not a correction: prefer `set_status` with `status: deprecated` for ordinary mistakes, and never invoke permanent deletion implicitly. Only call `forget` when the user explicitly asks to delete something forever. Confirm the entry ID with recall or list_recent first, then pass it again as confirm_entry_id. This action cannot be undone.",
@@ -1155,7 +1260,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
     });
 
   // ── link ─────────────────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "link",
     {
       description: "Create an explicit relationship link between two memories by ID (e.g. connect a decision to its outcome). Get the IDs from recall or list_recent first.",
@@ -1192,7 +1297,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── unlink ───────────────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "unlink",
     {
       description: "Remove a relationship link between two memories by ID. Use when a link is incorrect or no longer relevant. Get the IDs from recall or connections first.",
@@ -1219,7 +1324,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── connections ──────────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "connections",
     {
       description: "List the memories directly linked to a given entry (its 1-hop neighbors in the relationship graph). Get the entry ID from recall or list_recent first.",
@@ -1244,7 +1349,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── passages ──────────────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "passages",
     {
       description: "List evidence passages for an entry. Passages are source text chunks linked to entries for citation-level recall. Get the entry ID from recall or list_recent first.",
@@ -1298,7 +1403,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── history ──────────────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "history",
     {
       description: "List an owned memory's immutable revisions and rollback snapshots. Use a snapshot ID with restore.",
@@ -1318,7 +1423,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── restore ──────────────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "restore",
     {
       description: "Restore a previous version of an entry from its most recent snapshot. Creates a NEW entry with the snapshot content (never in-place rollback) to preserve full history.",
@@ -1367,7 +1472,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── propose_edge ──────────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "propose_edge",
     {
       description: "Propose a new relationship between two entries. Creates a pending edge proposal that requires human approval. Use for contradictions, clarifications, or other relationships you're not certain about.",
@@ -1413,7 +1518,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── list-proposals ───────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "list-proposals",
     {
       description: "List pending edge proposals awaiting human approval.",
@@ -1444,7 +1549,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── approve-proposal ─────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "approve-proposal",
     {
       description: "Approve a pending edge proposal, creating the relationship edge in the graph. Requires an active administrator.",
@@ -1512,7 +1617,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
   );
 
   // ── reject-proposal ──────────────────────────────────────────────────
-  server.registerTool(
+  registerTool(
     "reject-proposal",
     {
       description: "Reject a pending edge proposal, dismissing it without creating an edge. Requires an active administrator.",
@@ -1562,7 +1667,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       }
     };
 
-    server.registerTool(
+    registerTool(
       "create_action_proposal",
       {
         description: "Create a governed action proposal with explicit payload, risk, preconditions, and retry identity.",
@@ -1598,7 +1703,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       }),
     );
 
-    server.registerTool(
+    registerTool(
       "list_action_proposals",
       {
         description: "List governed action proposals visible to this team member.",
@@ -1613,7 +1718,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       }),
     );
 
-    server.registerTool(
+    registerTool(
       "review_action_proposal",
       {
         description: "Approve or reject a visible governed action proposal. Service identities cannot use this tool.",
@@ -1634,7 +1739,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       }),
     );
 
-    server.registerTool(
+    registerTool(
       "execute_approved_action",
       {
         description: "Execute an explicitly human-approved governed action proposal.",
@@ -1647,7 +1752,7 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
     );
 
     // ── rate_recall ───────────────────────────────────────────────────────
-    server.registerTool(
+    registerTool(
       "rate_recall",
       {
         description: "Rate a recall result as helpful or not_helpful with an optional reason code. Feedback is analytics-only — it does not change future recall behavior during the pilot.",

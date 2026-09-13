@@ -42,7 +42,16 @@ const oauthProvider = new OAuthProvider({
     if (token === typedEnv.AUTH_TOKEN) return null;
     await initializeDatabase(typedEnv);
     const principal = await resolveUserByApiKey(token, typedEnv);
-    if (principal) return { props: { actorKind: "human", userId: principal.user_id } };
+    if (principal) {
+      return {
+        props: {
+          actorKind: "human",
+          userId: principal.user_id,
+          // Trusted label for whoami: this is the personal-Bearer path, not OAuth issuance.
+          authMethod: "personal_api_key",
+        },
+      };
+    }
     const service = await resolveServiceCredential(token, typedEnv);
     return service ? {
       props: {

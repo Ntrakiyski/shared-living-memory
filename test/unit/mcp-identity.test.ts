@@ -78,6 +78,9 @@ describe("MCP actor resolution", () => {
         user_id: "oauth-alice",
         username: "OAuthAlice",
         source: "oauth_props",
+        // Anything reaching the OAuth token endpoint without the explicit
+        // personal-key marker is an OAuth access token.
+        authMethod: "oauth_access_token",
       },
     });
   });
@@ -106,6 +109,7 @@ describe("MCP actor resolution", () => {
         user_id: "user-alice",
         username: "Alice",
         source: "user_credentials",
+        authMethod: "legacy_user_headers",
       },
     });
   });
@@ -213,6 +217,7 @@ describe("MCP API identity guard", () => {
           actorId: "oauth-alice",
           ownerUserId: "oauth-alice",
           actorSource: "oauth_props",
+          toolProfile: "full",
         },
       },
     });
@@ -235,6 +240,7 @@ describe("MCP API identity guard", () => {
           actorId: "user-alice",
           ownerUserId: "user-alice",
           actorSource: "user_credentials",
+          toolProfile: "full",
         },
       },
     });

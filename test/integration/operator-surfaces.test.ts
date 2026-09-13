@@ -199,6 +199,7 @@ describe("operator MCP surfaces", () => {
           actorId: "service-hermes",
           ownerUserId: "user-owner",
           actorSource: "service_api_key",
+          toolProfile: "full",
         },
       },
     });
@@ -211,6 +212,8 @@ describe("operator MCP surfaces", () => {
       "list_recent",
       "recall",
       "remember",
+      // whoami is available to every valid principal, including services.
+      "whoami",
     ]);
     expect(registeredToolNames(server)).not.toEqual(expect.arrayContaining([
       "forget",

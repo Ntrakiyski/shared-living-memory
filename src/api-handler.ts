@@ -6,8 +6,9 @@
 // Logic:   1. Await schema initialization before authentication or tool setup.
 //          2. Resolve a verified actor from per-user credentials or OAuth props.
 //          3. Fail closed before server construction when no actor is available.
-//          4. Build an MCP server scoped to that actor.
-//          5. Forward the request through createMcpHandler; if the client only
+//          4. Read and validate the requested tool profile.
+//          5. Build an MCP server scoped to that actor and profile.
+//          6. Forward the request through createMcpHandler; if the client only
 //             asked for the tool list, strip execution metadata from the response.
 
 import {
@@ -23,6 +24,9 @@ import { resolveMcpActor } from "./auth";
 import { buildMcpServer, isMcpToolsListRequest, sanitizeToolsListResponse } from "./mcp";
 import { createMcpHandler } from "agents/mcp";
 import { verifyServiceActor } from "./service-actor";
+import { resolveServiceCredential } from "./service-identities";
+import { resolveUserByApiKey } from "./auth";
+import { TOOL_PROFILE_HEADER, isToolProfile, type ToolProfile } from "./config";
 
 function mcpIdentityError(status: 401 | 503, message: string): Response {
   const headers: Record<string, string> = {
@@ -36,6 +40,21 @@ function mcpIdentityError(status: 401 | 503, message: string): Response {
     error: { code: status === 401 ? -32001 : -32002, message },
     id: null,
   }), { status, headers });
+}
+
+function mcpProfileError(message: string): Response {
+  return new Response(JSON.stringify({
+    jsonrpc: "2.0",
+    error: {
+      code: -32602,
+      message,
+      data: { code: "invalid_profile", allowed: ["capture", "review", "full"] },
+    },
+    id: null,
+  }), {
+    status: 400,
+    headers: { "Cache-Control": "no-store", "Content-Type": "application/json" },
+  });
 }
 
 function serviceActorFromProps(props: unknown): ServiceActorContext | null {
@@ -59,7 +78,12 @@ function serviceActorFromProps(props: unknown): ServiceActorContext | null {
   };
 }
 
-async function resolveActorContext(
+/**
+ * Resolve the verified actor context for an MCP request. Shared composition:
+ * service principals come from OAuthProvider props and are re-verified against
+ * the live credential, personal principals from the verified MCP actor.
+ */
+export async function resolveActorContext(
   request: Request,
   env: Env,
   props: unknown,
@@ -81,10 +105,70 @@ async function resolveActorContext(
     actorId: resolution.actor.user_id,
     userId: resolution.actor.user_id,
     role: row.role,
-    authMethod: resolution.actor.source,
+    // The trusted auth path, so whoami reports how the caller actually authenticated.
+    authMethod: resolution.actor.authMethod,
     scopes: new Set(),
   };
   return { actor, source: resolution.actor.source };
+}
+
+/**
+ * Resolve the verified ActorContext for a REST request. Personal and service
+ * credentials are both accepted; authorization stays with the caller.
+ */
+export async function resolveRestActorContext(
+  request: Request,
+  env: Env,
+): Promise<ActorContext | null> {
+  const authorization = request.headers.get("Authorization");
+  const bearer = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  if (bearer && bearer !== env.AUTH_TOKEN) {
+    const service = await resolveServiceCredential(bearer, env);
+    if (service) {
+      const resolved = await resolveActorContext(
+        request,
+        env,
+        {
+          actorKind: "service",
+          serviceIdentityId: service.serviceIdentityId,
+          credentialId: service.credentialId,
+          ownerUserId: service.ownerUserId,
+          authMethod: service.authMethod,
+          scopes: [...service.scopes],
+        },
+      );
+      if (resolved) return resolved.actor;
+    }
+    const personal = await resolveUserByApiKey(bearer, env);
+    if (personal) {
+      const row = await env.DB.prepare(
+        `SELECT role FROM users WHERE id = ? AND status = 'active'`,
+      ).bind(personal.user_id).first<{ role: string }>();
+      if (row && (row.role === "admin" || row.role === "member")) {
+        return {
+          kind: "human",
+          actorId: personal.user_id,
+          userId: personal.user_id,
+          role: row.role,
+          authMethod: "personal_api_key",
+          scopes: new Set(),
+        };
+      }
+    }
+  }
+
+  const legacy = await resolveActorContext(request, env, null);
+  return legacy ? legacy.actor : null;
+}
+
+/** Read the requested tool profile. Missing means full; an empty or other value is invalid. */
+export function readToolProfile(request: Request): { profile: ToolProfile } | { error: string } {
+  if (!request.headers.has(TOOL_PROFILE_HEADER)) return { profile: "full" };
+  const raw = request.headers.get(TOOL_PROFILE_HEADER);
+  if (!isToolProfile(raw)) {
+    return { error: `${TOOL_PROFILE_HEADER} must be exactly capture, review or full` };
+  }
+  return { profile: raw };
 }
 
 const apiHandler = {
@@ -95,6 +179,12 @@ const apiHandler = {
       console.error("Database initialization failed:", error);
       return mcpIdentityError(503, "Shared Living Memory storage is unavailable");
     }
+
+    // An invalid profile is a request-envelope failure: reject before any actor
+    // work, and never fall back to a silently different tool set.
+    const profileSelection = readToolProfile(request);
+    if ("error" in profileSelection) return mcpProfileError(profileSelection.error);
+
     // OAuthProvider injects the authenticated token principal into ctx.props.
     // Complete, verified legacy user headers may select a narrower per-user
     // actor. Any missing/invalid actor fails before an MCP server exists.
@@ -111,7 +201,7 @@ const apiHandler = {
     }
 
     const { actor } = resolution;
-    const server = buildMcpServer(env, ctx, actor);
+    const server = buildMcpServer(env, ctx, actor, profileSelection.profile);
     const isToolsList = await isMcpToolsListRequest(request);
     const response = await createMcpHandler(server, {
       authContext: {
@@ -122,6 +212,7 @@ const apiHandler = {
             ? actor.ownerUserId
             : actor.kind === "human" ? actor.userId : actor.systemId,
           actorSource: resolution.source,
+          toolProfile: profileSelection.profile,
         },
       },
     })(request, env, ctx);

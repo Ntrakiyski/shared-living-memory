@@ -14,6 +14,17 @@
 
 export interface Env extends Omit<Cloudflare.Env, "VECTORIZE_GRACE_MS"> {
   VECTORIZE_GRACE_MS?: string;
+  // Deployment metadata. These identify WHERE and WHICH release is running and
+  // are surfaced by /health, /ready and whoami. They are configured per deployed
+  // environment (dashboard vars or `wrangler deploy --var`), never inferred from
+  // the request Host header. Missing values fail readiness rather than being
+  // guessed; local fixtures report `configuration_error` instead.
+  SLM_DEPLOYMENT_ID?: string;
+  SLM_ENVIRONMENT?: string;
+  SLM_PUBLIC_BASE_URL?: string;
+  SLM_RELEASE_ID?: string;
+  /** `enabled` (default when absent) or `read-only` maintenance mode. */
+  SLM_WRITE_MODE?: string;
 }
 
 // ─── Memory lifecycle ──────────────────────────────────────────────────────────

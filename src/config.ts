@@ -15,8 +15,143 @@
 export const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, X-Shared-Living-Memory-User, X-Shared-Living-Memory-User-Key",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, X-Shared-Living-Memory-User, X-Shared-Living-Memory-User-Key, X-SLM-Tool-Profile",
 };
+
+export const TOOL_PROFILE_HEADER = "X-SLM-Tool-Profile";
+
+// ─── Tool profiles (Section 5.2) ─────────────────────────────────────────────
+// Profiles restrict the CURRENT connection's exposed and callable tool set.
+// They are convenience subsets, NOT a reduction in the underlying credential's
+// privileges: the key holder can select `full` on another connection. Server
+// authorization is therefore still enforced on every tool invocation.
+
+export const TOOL_PROFILES = ["capture", "review", "full"] as const;
+export type ToolProfile = (typeof TOOL_PROFILES)[number];
+
+export function isToolProfile(value: unknown): value is ToolProfile {
+  return typeof value === "string" && (TOOL_PROFILES as readonly string[]).includes(value);
+}
+
+/** Exactly 10 tools for both personal and service capture connections. */
+const CAPTURE_PROFILE_TOOLS = [
+  "whoami",
+  "remember",
+  "remember_batch",
+  "recall",
+  "list_recent",
+  "passages",
+  "history",
+  "connections",
+  "create_action_proposal",
+  "list_action_proposals",
+] as const;
+
+/** Exactly 16 tools: the capture set plus direct curation. */
+const REVIEW_PROFILE_TOOLS = [
+  ...CAPTURE_PROFILE_TOOLS,
+  "append",
+  "update",
+  "set_status",
+  "set_epistemic_status",
+  "review_action_proposal",
+  "execute_approved_action",
+] as const;
+
+/**
+ * The full personal inventory: the 24 pre-existing tools plus whoami,
+ * remember_batch and the three edge-proposal aliases. Asserted exactly by the
+ * profile inventory test so a newly registered tool cannot drift silently.
+ */
+export const PERSONAL_FULL_TOOLS = [
+  "whoami",
+  "remember",
+  "remember_batch",
+  "append",
+  "update",
+  "set_status",
+  "set_epistemic_status",
+  "recall",
+  "reinforce",
+  "list_recent",
+  "forget",
+  "link",
+  "unlink",
+  "connections",
+  "passages",
+  "history",
+  "restore",
+  "propose_edge",
+  "list-proposals",
+  "approve-proposal",
+  "reject-proposal",
+  "create_action_proposal",
+  "list_action_proposals",
+  "review_action_proposal",
+  "execute_approved_action",
+  "rate_recall",
+  "list_edge_proposals",
+  "approve_edge_proposal",
+  "reject_edge_proposal",
+] as const;
+
+/** Tools the service branch actually implements. */
+export const SERVICE_TOOLS = [
+  "whoami",
+  "remember",
+  "recall",
+  "list_recent",
+  "connections",
+  "history",
+  "create_action_proposal",
+  "list_action_proposals",
+  "execute_approved_action",
+] as const;
+
+/**
+ * The registered tool set for a request: the profile subset intersected with
+ * what the principal's branch actually implements.
+ */
+export function toolsRegisteredForProfile(
+  profile: ToolProfile,
+  kind: "human" | "service" | "system",
+): string[] {
+  if (kind !== "human") {
+    return SERVICE_TOOLS.filter((tool) => profileAllowsTool(profile, tool));
+  }
+  if (profile === "full") return [...PERSONAL_FULL_TOOLS];
+  return [...PERSONAL_PROFILE_TOOLS[profile]];
+}
+
+export const PERSONAL_PROFILE_TOOLS: Record<ToolProfile, readonly string[]> = {
+  capture: CAPTURE_PROFILE_TOOLS,
+  review: REVIEW_PROFILE_TOOLS,
+  // The full profile exposes everything the server registers (24 pre-existing
+  // tools plus whoami, remember_batch and the three edge-proposal aliases),
+  // so a newly registered tool is never silently missing from full.
+  full: [],
+};
+
+/**
+ * Full-profile aliases for legacy edge proposals. The alias answers with the
+ * same handler function as its canonical name; the old names remain only in the
+ * full profile.
+ */
+export const EDGE_TOOL_ALIASES: Record<string, string> = {
+  "list-proposals": "list_edge_proposals",
+  "approve-proposal": "approve_edge_proposal",
+  "reject-proposal": "reject_edge_proposal",
+};
+
+/**
+ * Whether the request profile exposes/callable-includes a tool. Full allows the
+ * whole registry; capture and review are explicit allowlists so tools/list and
+ * tools/call can never disagree.
+ */
+export function profileAllowsTool(profile: ToolProfile, toolName: string): boolean {
+  if (profile === "full") return true;
+  return PERSONAL_PROFILE_TOOLS[profile].includes(toolName);
+}
 
 export function graceMs(env: { VECTORIZE_GRACE_MS?: string }): number {
   return parseInt(env.VECTORIZE_GRACE_MS ?? "300000", 10) || 300000;

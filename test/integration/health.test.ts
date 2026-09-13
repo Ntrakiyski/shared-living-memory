@@ -6,12 +6,21 @@ import { D1Mock } from "../helpers/d1-mock";
 
 const ctx = { waitUntil: (_: Promise<any>) => {} } as any;
 
+/** Deployment metadata every deployed environment must configure. */
+const DEPLOYMENT = {
+  SLM_DEPLOYMENT_ID: "slm-test-deployment",
+  SLM_ENVIRONMENT: "test",
+  SLM_PUBLIC_BASE_URL: "https://memory.example.test",
+  SLM_RELEASE_ID: "test-sha",
+  SLM_WRITE_MODE: "enabled",
+};
+
 describe("GET /health", () => {
   let db: D1Mock;
   beforeEach(() => { db = makeTestDb(); });
 
   it("returns 200 without auth (liveness)", async () => {
-    const env = makeTestEnv(db);
+    const env = makeTestEnv(db, DEPLOYMENT);
     const res = await worker.fetch(req("GET", "/health", { token: null }), env, ctx);
     expect(res.status).toBe(200);
     const data = await res.json() as any;
@@ -19,9 +28,40 @@ describe("GET /health", () => {
   });
 
   it("accepts any auth method", async () => {
-    const env = makeTestEnv(db);
+    const env = makeTestEnv(db, DEPLOYMENT);
     const res = await worker.fetch(req("GET", "/health"), env, ctx);
     expect(res.status).toBe(200);
+  });
+
+  it("reports non-secret deployment metadata without a database query", async () => {
+    const env = makeTestEnv(db, DEPLOYMENT);
+    const res = await worker.fetch(req("GET", "/health", { token: null }), env, ctx);
+    const data = await res.json() as any;
+    expect(data.status).toBe("ok");
+    expect(data.deployment).toEqual({
+      id: "slm-test-deployment",
+      environment: "test",
+      canonical_url: "https://memory.example.test",
+      release_id: "test-sha",
+      write_mode: "enabled",
+    });
+    expect(JSON.stringify(data)).not.toMatch(/auth_key|api_key|secret|token/i);
+  });
+
+  it("stays live but reports configuration_error when metadata is missing", async () => {
+    const env = makeTestEnv(db);
+    const res = await worker.fetch(req("GET", "/health", { token: null }), env, ctx);
+    expect(res.status).toBe(200);
+    const data = await res.json() as any;
+    expect(data.status).toBe("configuration_error");
+    expect(data.missing_configuration).toEqual([
+      "SLM_DEPLOYMENT_ID",
+      "SLM_ENVIRONMENT",
+      "SLM_PUBLIC_BASE_URL",
+      "SLM_RELEASE_ID",
+    ]);
+    // Liveness never leaks a secret while reporting the gap.
+    expect(JSON.stringify(data)).not.toMatch(/auth_key|api_key|secret/i);
   });
 });
 
@@ -29,12 +69,40 @@ describe("GET /ready", () => {
   let db: D1Mock;
   beforeEach(() => { db = makeTestDb(); });
 
-  it("returns 200 when D1 is reachable", async () => {
-    const env = makeTestEnv(db);
+  it("returns 200 when configuration is valid and D1 is reachable", async () => {
+    const env = makeTestEnv(db, DEPLOYMENT);
     const res = await worker.fetch(req("GET", "/ready"), env, ctx);
     expect(res.status).toBe(200);
     const data = await res.json() as any;
     expect(data.ok).toBe(true);
     expect(data.status).toBe("ready");
+  });
+
+  it("returns 503 not_ready when required deployment metadata is missing", async () => {
+    const env = makeTestEnv(db);
+    const res = await worker.fetch(req("GET", "/ready"), env, ctx);
+    expect(res.status).toBe(503);
+    const data = await res.json() as any;
+    expect(data.status).toBe("not_ready");
+    expect(data.reason).toBe("configuration_error");
+    expect(data.missing_configuration).toContain("SLM_DEPLOYMENT_ID");
+  });
+
+  it("returns 503 maintenance_read_only in read-only mode", async () => {
+    const env = makeTestEnv(db, { ...DEPLOYMENT, SLM_WRITE_MODE: "read-only" });
+    const res = await worker.fetch(req("GET", "/ready"), env, ctx);
+    expect(res.status).toBe(503);
+    const data = await res.json() as any;
+    expect(data.status).toBe("maintenance_read_only");
+    expect(data.deployment.write_mode).toBe("read-only");
+  });
+
+  it("returns 503 not_ready for an invalid write mode", async () => {
+    const env = makeTestEnv(db, { ...DEPLOYMENT, SLM_WRITE_MODE: "sometimes" });
+    const res = await worker.fetch(req("GET", "/ready"), env, ctx);
+    expect(res.status).toBe(503);
+    const data = await res.json() as any;
+    expect(data.status).toBe("not_ready");
+    expect(data.reason).toBe("configuration_error");
   });
 });

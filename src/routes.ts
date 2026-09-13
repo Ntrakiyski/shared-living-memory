@@ -40,7 +40,12 @@ import {
   validateBatchEnvelope,
   validateSourceMetadataInput,
 } from "./ingest";
-import { okResult } from "./mcp-results";
+import {
+  okResult,
+  readDeploymentMetadata,
+} from "./mcp-results";
+import { readToolProfile, resolveRestActorContext } from "./api-handler";
+import { toolsRegisteredForProfile } from "./config";
 import {
   SOURCE_LABEL_MAX_CODE_POINTS,
   sanitizeBoundedMetadataForOutput,
@@ -408,19 +413,125 @@ export const defaultHandler = {
     }
 
     // GET /health — liveness check (no credentials, no DB).
+    // GET /health — liveness plus non-secret deployment metadata. No database
+    // query happens here, so liveness survives a storage outage.
     if (url.pathname === "/health" && request.method === "GET") {
-      return json({ ok: true, status: "ok" });
+      const { metadata, missing } = readDeploymentMetadata(env as unknown as Record<string, unknown>);
+      return json({
+        ok: true,
+        status: missing.length ? "configuration_error" : "ok",
+        deployment: metadata,
+        missing_configuration: missing,
+      });
     }
 
-    // GET /ready — readiness check (light DB probe, may gate on canary later).
+    // GET /ready — readiness. Requires valid configuration, a responsive D1 and
+    // write_mode=enabled. Read tools stay usable in maintenance even though
+    // readiness is 503.
     if (url.pathname === "/ready" && request.method === "GET") {
+      const { metadata, missing } = readDeploymentMetadata(env as unknown as Record<string, unknown>);
+      if (missing.length) {
+        return json({
+          ok: false,
+          status: "not_ready",
+          reason: "configuration_error",
+          missing_configuration: missing,
+          deployment: metadata,
+        }, 503);
+      }
+      if (metadata.write_mode !== "enabled") {
+        if (metadata.write_mode === "read-only") {
+          return json({ ok: false, status: "maintenance_read_only", deployment: metadata }, 503);
+        }
+        return json({
+          ok: false,
+          status: "not_ready",
+          reason: "configuration_error",
+          deployment: metadata,
+        }, 503);
+      }
       try {
         const row = await env.DB.prepare(`SELECT 1 AS ok`).first<{ ok: number }>();
-        if (!row) return json({ ok: false, status: "not_ready" }, 503);
-        return json({ ok: true, status: "ready" });
+        if (!row) return json({ ok: false, status: "not_ready", deployment: metadata }, 503);
+        return json({ ok: true, status: "ready", deployment: metadata });
       } catch {
-        return json({ ok: false, status: "not_ready" }, 503);
+        return json({ ok: false, status: "not_ready", deployment: metadata }, 503);
       }
+    }
+
+    // GET /api/whoami — authenticated identity, credential type, role,
+    // capabilities, profile and deployment. Read-only; never returns a secret.
+    if (url.pathname === "/api/whoami" && request.method === "GET") {
+      const actor = await resolveRestActorContext(request, env);
+      if (!actor) {
+        return new Response(JSON.stringify({
+          ok: false,
+          error: { code: "invalid_credentials", message: "Authenticated account required", retryable: false },
+          request_id: crypto.randomUUID(),
+        }), {
+          status: 401,
+          headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer", ...CORS_HEADERS },
+        });
+      }
+      const { metadata, missing } = readDeploymentMetadata(env as unknown as Record<string, unknown>);
+      const profile = readToolProfile(request);
+      const toolProfile = "profile" in profile ? profile.profile : "full";
+      const ownerUserId = actor.kind === "human"
+        ? actor.userId
+        : actor.kind === "service" ? actor.ownerUserId : actor.systemId;
+      const nameRow = await env.DB.prepare(
+        `SELECT username FROM users WHERE id = ?`,
+      ).bind(ownerUserId).first<{ username: string }>();
+      const serviceRow = actor.kind === "service"
+        ? await env.DB.prepare(
+          `SELECT id, username FROM users WHERE id = ?`,
+        ).bind(actor.ownerUserId).first<{ id: string; username: string }>()
+        : null;
+      const serviceName = actor.kind === "service"
+        ? await env.DB.prepare(
+          `SELECT name FROM service_identities WHERE id = ?`,
+        ).bind(actor.serviceIdentityId).first<{ name: string }>()
+        : null;
+
+      const data = {
+        principal: {
+          id: actor.actorId,
+          name: actor.kind === "service"
+            ? serviceName?.name ?? actor.actorId
+            : nameRow?.username ?? ownerUserId,
+          kind: "human" as const,
+        },
+        credential_type: actor.kind === "service" ? "service_api_key" : "personal_api_key",
+        auth_method: actor.authMethod,
+        owner: serviceRow ? { id: serviceRow.id, username: serviceRow.username } : null,
+        role: actor.kind === "human" ? actor.role : null,
+        scopes: actor.kind === "service" ? [...actor.scopes].sort() : [],
+        capabilities: actor.kind === "service"
+          ? {
+            read_public: true,
+            read_owner_private: true,
+            direct_mutation_scope: "private_drafts",
+            proposal_review: "none",
+            erase_owned_entries: false,
+          }
+          : {
+            read_public: true,
+            read_owner_private: true,
+            direct_mutation_scope: "owned_entries",
+            proposal_review: actor.kind === "human" && actor.role === "admin"
+              ? "account_policy"
+              : "none",
+            erase_owned_entries: true,
+          },
+        tool_profile: toolProfile,
+        effective_tools: toolsRegisteredForProfile(toolProfile, actor.kind).sort(),
+        default_visibility: "private" as const,
+        deployment: metadata,
+        human_presence_verified: false as const,
+      };
+      return json(okResult(data, missing.length
+        ? [`deployment_metadata_incomplete: ${missing.join(", ")}`]
+        : []));
     }
 
     // GET /api/bootstrap-status — unauthenticated boolean used by the

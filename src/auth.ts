@@ -194,6 +194,12 @@ export interface McpActor {
   user_id: string;
   username?: string;
   source: McpActorSource;
+  /**
+   * Trusted authentication path. Derived here, never from token appearance, so
+   * an OAuth access token is never labelled a personal API key and whoami needs
+   * no second authentication lookup.
+   */
+  authMethod: "personal_api_key" | "legacy_user_headers" | "oauth_access_token";
 }
 
 export type McpActorResolution =
@@ -217,6 +223,19 @@ export function isValidMcpActorId(value: unknown): value is string {
   if (typeof value !== "string") return false;
   if (isReservedActorId(value)) return false;
   return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+}
+
+/**
+ * The OAuthProvider records how a token was resolved. `resolveExternalToken`
+ * marks personal API keys explicitly; anything else through the OAuth token
+ * endpoint is an OAuth access token.
+ */
+function oauthMethodFromProps(props: unknown): McpActor["authMethod"] {
+  if (props && typeof props === "object" && !Array.isArray(props)) {
+    const value = (props as Record<string, unknown>).authMethod;
+    if (value === "personal_api_key" || value === "oauth_access_token") return value;
+  }
+  return "oauth_access_token";
 }
 
 function oauthActorId(props: unknown): string | null {
@@ -293,6 +312,7 @@ export async function resolveMcpActor(
         user_id: resolved.user_id,
         username: resolved.username,
         source: "user_credentials",
+        authMethod: "legacy_user_headers",
       },
     };
   }
@@ -304,6 +324,7 @@ export async function resolveMcpActor(
         user_id: oauthPrincipal.user_id,
         username: oauthPrincipal.username,
         source: "oauth_props",
+        authMethod: oauthMethodFromProps(oauthProps),
       },
     };
   }
