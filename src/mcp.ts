@@ -2180,9 +2180,23 @@ export function buildMcpServer(
         },
       },
       async ({ recall_event_id, rating, reason }) => {
-        const ok = await submitRecallFeedback(env, { recallEventId: recall_event_id, userId: userId!, rating, reason });
-        if (!ok) return { content: [{ type: "text", text: "Could not record feedback." }], isError: true };
-        return { content: [{ type: "text", text: `Feedback recorded: ${rating}` }] };
+        const recorded = await submitRecallFeedback(env, {
+          recallEventId: recall_event_id, userId: userId!, rating, reason,
+        });
+        if (!recorded) {
+          const mapped = mapDomainError({ code: "not_found_or_inaccessible" });
+          return toToolError(failResult(mapped.code, "Could not record feedback for that recall event.", false));
+        }
+        const envelope = okResult({
+          recall_event_id,
+          rating,
+          reason,
+          recorded: true as const,
+        });
+        return {
+          structuredContent: envelope as unknown as Record<string, unknown>,
+          content: [{ type: "text" as const, text: `Feedback recorded: ${rating}` }],
+        };
       },
     );
   }

@@ -215,22 +215,24 @@ export function summarizeResult(result: SlmResult<unknown>): string {
 /** MCP tool result shape for a failed tool: `isError` is explicit. */
 export function toToolError(result: SlmFailure): {
   isError: true;
-  structuredContent: SlmFailure;
+  structuredContent: Record<string, unknown>;
   content: { type: "text"; text: string }[];
 } {
   return {
     isError: true,
-    structuredContent: result,
+    // The SDK types structuredContent as an open object; the envelope is a
+    // closed interface, so it is widened at this single boundary.
+    structuredContent: result as unknown as Record<string, unknown>,
     content: [{ type: "text", text: summarizeResult(result) }],
   };
 }
 
 export function toToolSuccess<T>(result: SlmSuccess<T>, text: string): {
-  structuredContent: SlmSuccess<T>;
+  structuredContent: Record<string, unknown>;
   content: { type: "text"; text: string }[];
 } {
   return {
-    structuredContent: result,
+    structuredContent: result as unknown as Record<string, unknown>,
     content: [{ type: "text", text: text + (result.warnings.length ? `\nWarnings: ${result.warnings.join("; ")}` : "") }],
   };
 }
