@@ -103,7 +103,19 @@ Internal tools, automations, and integrations can capture or retrieve knowledge 
 
 ## Connect an AI agent
 
-Use a **personal API key** as the bearer token for an MCP-capable client:
+Use a **personal API key** as the bearer token for an MCP-capable client. The canonical, secure way to produce the configuration is the bundled exporter, which verifies the key against the deployment's `/api/whoami` endpoint and writes an owner-only file (mode `0600`):
+
+```bash
+node scripts/export-mcp-connection.mjs \
+  --url https://shared-living-memory.nikolay-trakiyski.workers.dev \
+  --profile capture \
+  --out ~/.config/shared-living-memory/mcp.json \
+  --key-file ~/.secrets/slm-key
+```
+
+Pass the key via `--key-file` or on stdin (never as a command-line argument). `--profile` accepts `capture`, `review`, or `full` (default `full`); a reduced profile is persisted as an `X-SLM-Tool-Profile` header, and the key holder can always select `full` on another connection.
+
+The emitted file is a standard `mcpServers` configuration plus non-secret metadata (`username`, `principal_id`, `deployment_id`, `canonical_url`):
 
 ```json
 {
@@ -114,9 +126,17 @@ Use a **personal API key** as the bearer token for an MCP-capable client:
         "Authorization": "Bearer slm_YOUR_USER_API_KEY"
       }
     }
+  },
+  "sharedLivingMemory": {
+    "username": "your-username",
+    "principal_id": "your-user-id",
+    "deployment_id": "slm-fractals-production",
+    "canonical_url": "https://memory.fractals-solutions.com"
   }
 }
 ```
+
+The legacy workspace-key + user-header flow (`Authorization: Bearer <workspace-key>` plus `X-Shared-Living-Memory-User` and `X-Shared-Living-Memory-User-Key`) remains supported for existing connections but is labelled legacy; new connections should use a personal Bearer key.
 
 The checked-in agent skill at [`.agents/skills/shared-living-memory-mcp-knowledgebase/SKILL.md`](.agents/skills/shared-living-memory-mcp-knowledgebase/SKILL.md) defines the intended capture, recall, privacy, history, linking, and translation behavior.
 
@@ -125,16 +145,20 @@ The checked-in agent skill at [`.agents/skills/shared-living-memory-mcp-knowledg
 
 | Tool | Purpose |
 | --- | --- |
+| `whoami` | Report the verified identity, credential type, tool profile, and deployment |
 | `remember` | Capture durable knowledge |
+| `remember_batch` | Capture up to 10 keyed items with per-item outcomes and retry keys |
 | `recall` | Semantic and temporal retrieval with citations |
 | `append` | Add information without replacing the current entry |
 | `update` | Create a new current projection |
-| `set_status` | Mark knowledge canonical, outdated, deprecated, or otherwise governed |
+| `set_status` / `set_epistemic_status` | Update the lifecycle and confidence status axes |
 | `link` / `unlink` | Manage explicit graph relationships |
 | `connections` | Inspect one-hop related entries |
 | `history` / `restore` | Inspect versions and restore from an immutable snapshot |
 | `forget` | Permanently erase an entry with explicit confirmation |
 | `rate_recall` | Record privacy-safe helpful/not-helpful pilot feedback |
+
+A connection's exposed tool set is limited by its profile (`capture`, `review`, or `full`); `full` exposes the complete inventory.
 
 </details>
 

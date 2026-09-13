@@ -533,6 +533,16 @@ export const defaultHandler = {
     // GET /api/whoami — authenticated identity, credential type, role,
     // capabilities, profile and deployment. Read-only; never returns a secret.
     if (url.pathname === "/api/whoami" && request.method === "GET") {
+      // An invalid profile is a request-envelope failure: reject it before any
+      // identity work, exactly like the MCP transport does.
+      const profile = readToolProfile(request);
+      if ("error" in profile) {
+        return json({
+          ok: false,
+          error: { code: "invalid_profile", message: profile.error, retryable: false },
+          request_id: crypto.randomUUID(),
+        }, 400);
+      }
       const actor = await resolveRestActorContext(request, env);
       if (!actor) {
         return new Response(JSON.stringify({
@@ -545,8 +555,7 @@ export const defaultHandler = {
         });
       }
       const { metadata, missing } = readDeploymentMetadata(env as unknown as Record<string, unknown>);
-      const profile = readToolProfile(request);
-      const toolProfile = "profile" in profile ? profile.profile : "full";
+      const toolProfile = profile.profile;
       const ownerUserId = actor.kind === "human"
         ? actor.userId
         : actor.kind === "service" ? actor.ownerUserId : actor.systemId;

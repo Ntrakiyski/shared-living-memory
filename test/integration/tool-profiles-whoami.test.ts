@@ -300,6 +300,15 @@ describe("whoami (A5)", () => {
     expect(body.data.capabilities.direct_mutation_scope).toBe("owned_entries");
   });
 
+  it("rejects an invalid profile header on REST whoami instead of reporting full", async () => {
+    const response = await worker.fetch(new Request("http://localhost/api/whoami", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${WORKSPACE_TOKEN}`, "X-SLM-Tool-Profile": "admin" },
+    }), harness.env, ctx);
+    expect(response.status).toBe(400);
+    expect((await response.json() as any).error.code).toBe("invalid_profile");
+  });
+
   it("returns 401 with the common boundary when unauthenticated", async () => {
     const response = await worker.fetch(new Request("http://localhost/api/whoami", {
       method: "GET",

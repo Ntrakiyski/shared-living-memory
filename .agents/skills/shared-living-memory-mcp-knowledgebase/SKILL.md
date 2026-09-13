@@ -21,15 +21,23 @@ Every entry follows this path. See `slm-memory-lifecycle` for the detailed decis
 
 ## First-run identity setup
 
-Before using memory tools, make sure the human has a user identity. The workspace key is only the workspace/transport key; useful agent memory requires a username and user API key. If the client has browser support, open the dashboard automatically as the first onboarding action; otherwise show the link and ask the human to open it.
+Before using memory tools, make sure the human has a user identity. A personal API key is the default credential: the MCP client authenticates with `Authorization: Bearer <personal-api-key>` and needs no separate user headers. If the client has browser support, open the dashboard automatically as the first onboarding action; otherwise show the link and ask the human to open it.
 
 1. Open <https://shared-living-memory.nikolay-trakiyski.workers.dev/>.
-2. Ask the human to enter the workspace key in the dashboard (first-time bootstrap) or sign in with their personal API key.
-3. For first-time setup: have them create an administrator username and copy the generated API key immediately; it is shown once.
-4. For existing workspaces: the human signs in with their personal API key directly.
-5. Ask them to provide the username and user API key to the agent or MCP client configuration.
+2. The first administrator completes the workspace key bootstrap; later users sign in with an existing personal API key.
+3. Create or select a username.
+4. Copy the generated personal API key immediately; it is shown once.
+5. Provide the personal API key to the agent or MCP client configuration.
 
-For header-based MCP clients, use:
+For header-based MCP clients, use a personal Bearer key:
+
+```json
+{
+  "Authorization": "Bearer slm_your-personal-api-key"
+}
+```
+
+A reduced tool profile (`capture`, `review`, or `full`) may be selected with the `X-SLM-Tool-Profile` header; the key holder can always select `full`. The legacy workspace key + user-header flow remains supported for existing connections but is labelled legacy:
 
 ```json
 {
@@ -39,7 +47,7 @@ For header-based MCP clients, use:
 }
 ```
 
-The personal-bearer path (API key as the Bearer token, no separate user headers) is also supported for clients that prefer a single credential. Never call `remember` with the workspace key or user API key. Secrets are setup credentials, not memories.
+Never call `remember` with the workspace key or personal API key. Secrets are setup credentials, not memories.
 
 ## Core product frame
 

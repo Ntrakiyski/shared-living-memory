@@ -15,9 +15,11 @@ You have access to Shared Living Memory through MCP. Treat it as the authoritati
 
 ### First-run identity setup
 
-- If Shared Living Memory is connected only with the workspace key, open `https://shared-living-memory.nikolay-trakiyski.workers.dev/` automatically when browser tools are available; otherwise give the human the link. Then have them enter the workspace key, create or select their username, copy the generated user API key, and provide the username + user API key to the agent or MCP client.
-- Use the workspace key as the workspace/transport key only. Use the username + user API key as the user identity for memory tools.
-- Never store the workspace key or user API key with `remember`.
+- Personal Bearer API keys are the default connection method. The MCP client authenticates with `Authorization: Bearer <personal-api-key>`; no separate user headers are required.
+- If the client does not have a personal API key yet, open `https://shared-living-memory.nikolay-trakiyski.workers.dev/` automatically when browser tools are available; otherwise give the human the link. Have them create or select their username, copy the generated personal API key, and provide it to the agent or MCP client configuration.
+- The legacy workspace-key + user-header flow remains supported but is labelled legacy: `Authorization: Bearer <workspace-key>` plus `X-Shared-Living-Memory-User` and `X-Shared-Living-Memory-User-Key` headers. Prefer a personal Bearer key for new connections.
+- A connection may expose a reduced tool profile (`capture`, `review`, or `full`) via the `X-SLM-Tool-Profile` header; the key holder can always select `full`.
+- Never store the workspace key or personal API key with `remember`.
 
 ### Mandatory memory behavior
 
@@ -97,25 +99,28 @@ npm run typecheck        # generates worker-configuration.d.ts first, then tsc
 
 ## Architecture
 
-**Single-file Worker.** The entire backend is `src/index.ts` (~4,200 lines). There is no router framework — URL pathname matching with if/else chains.
+**Modular Worker.** The backend is modular under `src/`. `src/index.ts` is only the Cloudflare entrypoint (wiring `apiHandler` and `defaultHandler` through `OAuthProvider` plus the cron handler). There is no router framework — URL pathname matching uses if/else chains.
 
 **Two handler paths** wrapped in OAuthProvider:
-- `apiHandler` — serves `/mcp` (MCP protocol), resolves per-user identity from `X-Shared-Living-Memory-User` + `X-Shared-Living-Memory-User-Key` headers
+- `apiHandler` — serves `/mcp` (MCP protocol); `resolveExternalToken` resolves personal Bearer API keys (`resolveUserByApiKey`) and service credentials (`resolveServiceCredential`)
 - `defaultHandler` — all REST routes + static assets from `public/`
 
 **Multi-user auth layers:**
-1. **Workspace key** (`AUTH_TOKEN`) — Bearer header, checked first on every request
-2. **User credentials** — `X-Shared-Living-Memory-User` (username) + `X-Shared-Living-Memory-User-Key` (`slm_xxx.yyy` format)
-3. **Visibility enforcement** — `buildVisibilityClause(userId)` adds `(owner_user_id = ? OR tags NOT LIKE '%"private"%')` to all queries
-4. **Ownership checks** — forget/link/unlink/update verify `owner_user_id` before mutating
+1. **Personal Bearer API key** (default) — `Authorization: Bearer <personal-key>`, resolved by `resolveUserByApiKey`
+2. **Service credential** — scoped service API key resolved by `resolveServiceCredential`
+3. **Workspace key** (`AUTH_TOKEN`) — bootstrap/transport key only; it is never a user principal
+4. **Legacy user headers** — `X-Shared-Living-Memory-User` + `X-Shared-Living-Memory-User-Key` (still supported, labelled legacy)
+5. **Visibility enforcement** — `buildVisibilityClause(userId)` returns `{ sql, bind }` adding `(owner_user_id = ? OR tags NOT LIKE '%"private"%')` to queries
+6. **Ownership checks** — forget/link/unlink/update verify `owner_user_id` before mutating
 
 **Key functions:**
-- `buildVisibilityClause(userId)` — returns SQL fragment for per-user scoping (`src/index.ts:~1373`)
-- `resolveUser(request, env)` — validates user headers against `users` table (`src/index.ts:~656`)
-- `requireAuthAsync(request, env)` — auth gate returning `{ error, user_id, username }` (`src/index.ts:~701`)
-- `forgetEntry(id, env)` — deletes entry + cascades edges/vectors, no ownership check (caller must check)
-- `escapeLikePattern(s)` — escapes `%` and `_` for LIKE queries (`src/index.ts:~623`)
-- `compressionEligibilitySql(prefix, ownerUserId?)` — per-user compression scope (`src/index.ts:~63`)
+- `buildVisibilityClause(userId)` — `{ sql, bind }` for per-user scoping (`src/tags.ts`)
+- `resolveUser(request, env)` — validates legacy user headers against `users` (`src/auth.ts`)
+- `resolveUserByApiKey(key, env)` — resolves a personal Bearer API key (`src/auth.ts`)
+- `requireAuthAsync(request, env)` — auth gate returning `{ error, user_id, username }` (`src/auth.ts`)
+- `forgetEntry(id, env)` — deletes entry + cascades edges/vectors, no ownership check (caller must check) (`src/lifecycle.ts`)
+- `escapeLikePattern(s)` — escapes `%` and `_` for LIKE queries (`src/helpers.ts`)
+- `compressionEligibilitySql(prefix, ownerUserId?)` — per-user compression scope (`src/config.ts`)
 
 **Database tables:**
 - `entries` — `id, content, tags, source, vector_ids, created_at, recall_count, importance_score, owner_user_id, ...`
@@ -129,8 +134,8 @@ npm run typecheck        # generates worker-configuration.d.ts first, then tsc
 
 ## Key Gotchas
 
-- **Auth is two-layer.** Every request needs `Bearer <AUTH_TOKEN>` (workspace key). User-specific requests also need `X-Shared-Living-Memory-User` + `X-Shared-Living-Memory-User-Key` headers. Neither layer is optional for user-scoped operations.
-- **`AUTH_TOKEN` is the workspace key only.** User API keys (`slm_xxx.yyy`) go in `X-Shared-Living-Memory-User-Key`, never as Bearer. Confusing these causes "Invalid credentials".
+- **Personal Bearer is the default auth.** A personal API key (`slm_xxx.yyy`) goes in `Authorization: Bearer <key>`. The legacy two-header flow (`X-Shared-Living-Memory-User` + `X-Shared-Living-Memory-User-Key`) plus the workspace transport key remains supported but is labelled legacy.
+- **`AUTH_TOKEN` is the workspace bootstrap key only.** It is never a user principal. Personal API keys go in the Bearer header; the legacy user headers carry `X-Shared-Living-Memory-User-Key`. Confusing these causes "Invalid credentials".
 - **`forgetEntry()` has no ownership check.** Always verify `owner_user_id` BEFORE calling it. The REST `POST /forget` and MCP `forget` handlers do this; direct calls don't.
 - **`_system` user** owns all pre-migration entries (public, visible to everyone). Their `status` is `'inactive'` so they can't authenticate.
 - **Visibility clause format:** `(owner_user_id = ? OR tags NOT LIKE '%"private"%')`. Private entries must include `"private"` in the JSON tags array.
@@ -138,7 +143,7 @@ npm run typecheck        # generates worker-configuration.d.ts first, then tsc
 - **No `node_modules` in tests.** `agents/mcp` and `@cloudflare/workers-oauth-provider` are mocked in `vitest.setup.ts`. If you add a new Cloudflare binding import, it likely needs a mock.
 - **`ctx.waitUntil()` is used heavily.** Async work (vectorization, classification, pattern derivation) runs outside the request lifecycle. Don't await these in request handlers.
 - **Tags are metadata.** `status:*` and `kind:*` tags are reserved prefixes — no schema column backs them. Adding new metadata is a tag convention, not a migration.
-- **Edges are code-validated.** Edge types live in `EDGE_TYPES` in `src/index.ts`, not SQL constraints. Adding a type is a one-line change.
+- **Edges are code-validated.** Edge types live in `EDGE_TYPES` in `src/graph.ts`, not SQL constraints. Adding a type is a one-line change.
 - **D1 bound params capped at 100.** All batch queries chunk IDs with `D1_MAX_BOUND_PARAMS`.
 - **Vectorize rejects >20 IDs per `getByIds` call.** Tag-scoped recall batches with `VECTORIZE_GET_BY_IDS_BATCH`.
 - **Vectorize topK capped at 50** when `returnMetadata="all"`. The recall path uses a multiplier then widens conditionally.
