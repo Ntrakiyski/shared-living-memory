@@ -323,7 +323,8 @@ export function buildEntryPageQuery(params: {
   }
 
   let sql = `SELECT id, content, tags, source, created_at, vector_ids,
-                    owner_user_id, created_by_user_id, visibility, revision
+                    owner_user_id, created_by_user_id, visibility, revision,
+                    epistemic_status
              FROM entries`;
   if (conds.length) sql += ` WHERE ` + conds.map((cond) => `(${cond})`).join(` AND `);
   sql += ` ORDER BY created_at DESC, id DESC LIMIT ?`;

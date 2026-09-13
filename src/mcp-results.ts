@@ -269,3 +269,158 @@ export function readDeploymentMetadata(env: Partial<Env> & Record<string, unknow
   ].filter(([, value]) => !value).map(([key]) => key as string);
   return { metadata, missing };
 }
+
+// ─── Entry descriptor (Section 4.3) ──────────────────────────────────────────
+// Every capture/read descriptor names its fields explicitly: never a bare
+// ambiguous `id`, and never another owner's content.
+
+export type LifecycleStatus = "canonical" | "draft" | "deprecated" | null;
+
+export interface EntryDescriptorPermissions {
+  read_current: boolean;
+  read_history: boolean;
+  mutate_directly: boolean;
+  submit_change_proposal: boolean;
+}
+
+export interface EntryDescriptor {
+  entry_id: string;
+  revision: number;
+  owner: { id: string; username: string };
+  visibility: "private" | "public";
+  lifecycle_status: LifecycleStatus;
+  epistemic_status: string;
+  permissions: EntryDescriptorPermissions;
+}
+
+export interface DescriptorActor {
+  actorId: string;
+  /** The account id that owns entries this actor writes. */
+  ownerUserId: string;
+  isService: boolean;
+}
+
+/**
+ * Permissions are derived from the verified actor, the entry's owner and the
+ * current policy — never from a role name alone. Service `read_history` is
+ * allowed only for the service owner's entry, and proposal review/execution is
+ * proposal-specific, so it is deliberately not asserted here.
+ */
+export function entryPermissions(
+  actor: DescriptorActor,
+  ownerUserId: string,
+): EntryDescriptorPermissions {
+  const actorIsOwner = Boolean(actor.ownerUserId) && actor.ownerUserId === ownerUserId;
+  return {
+    read_current: true,
+    read_history: actorIsOwner,
+    mutate_directly: actorIsOwner,
+    // Direct cross-owner mutation is never granted; a non-owner may propose.
+    submit_change_proposal: !actorIsOwner,
+  };
+}
+
+export function lifecycleStatusFromTags(tags: readonly string[]): LifecycleStatus {
+  const tag = tags.find((candidate) => candidate.startsWith("status:"));
+  if (!tag) return null;
+  const value = tag.slice("status:".length);
+  return value === "canonical" || value === "draft" || value === "deprecated" ? value : null;
+}
+
+export interface DescriptorRow {
+  id: string;
+  revision: number | null;
+  owner_user_id: string;
+  visibility: string | null;
+  tags: string | null;
+  epistemic_status: string | null;
+}
+
+export function buildEntryDescriptor(
+  row: DescriptorRow,
+  ownerUsername: string,
+  actor: DescriptorActor,
+): EntryDescriptor {
+  let tags: string[] = [];
+  try {
+    const parsed = JSON.parse(row.tags ?? "[]");
+    if (Array.isArray(parsed)) tags = parsed.filter((tag): tag is string => typeof tag === "string");
+  } catch {
+    tags = [];
+  }
+  return {
+    entry_id: row.id,
+    revision: Number(row.revision ?? 0),
+    owner: { id: row.owner_user_id, username: ownerUsername },
+    visibility: row.visibility === "public" ? "public" : "private",
+    lifecycle_status: lifecycleStatusFromTags(tags),
+    epistemic_status: row.epistemic_status ?? "canonical",
+    permissions: entryPermissions(actor, row.owner_user_id),
+  };
+}
+
+// ─── Output bounds (Section 4.5) ─────────────────────────────────────────────
+
+/** Data budget for new MCP and opt-in REST listings. */
+export const LISTING_DATA_MAX_BYTES = 131_072;
+/** Per-content-excerpt budget, cut at a complete Unicode code-point boundary. */
+export const CONTENT_EXCERPT_MAX_BYTES = 2_048;
+/** Batch data budget. */
+export const BATCH_DATA_MAX_BYTES = 32_768;
+
+export function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+export interface Excerpt {
+  content: string;
+  content_truncated: boolean;
+  original_content_bytes: number;
+}
+
+/**
+ * Cut at a complete Unicode code point. A surrogate pair is never split, so the
+ * excerpt is always valid text.
+ */
+export function boundContentExcerpt(content: string, maxBytes = CONTENT_EXCERPT_MAX_BYTES): Excerpt {
+  const originalBytes = utf8Bytes(content);
+  if (originalBytes <= maxBytes) {
+    return { content, content_truncated: false, original_content_bytes: originalBytes };
+  }
+  let used = 0;
+  let cut = "";
+  for (const codePoint of content) {
+    const codePointBytes = utf8Bytes(codePoint);
+    if (used + codePointBytes > maxBytes) break;
+    cut += codePoint;
+    used += codePointBytes;
+  }
+  return { content: cut, content_truncated: true, original_content_bytes: originalBytes };
+}
+
+/**
+ * Emit the longest prefix of `items` whose serialized form fits `maxBytes`.
+ * Always emits at least one item when the list is non-empty, because a single
+ * descriptor is bounded by construction; callers must derive any cursor from
+ * the FINAL EMITTED item so no omitted row is skipped.
+ */
+export function fitWithinBudget<T>(
+  items: readonly T[],
+  maxBytes = LISTING_DATA_MAX_BYTES,
+): { items: T[]; omitted: number } {
+  if (items.length === 0) return { items: [], omitted: 0 };
+  const emitted: T[] = [];
+  let used = 2; // the enclosing brackets
+  for (const item of items) {
+    const size = utf8Bytes(JSON.stringify(item)) + 1; // + separator
+    if (emitted.length > 0 && used + size > maxBytes) break;
+    emitted.push(item);
+    used += size;
+  }
+  return { items: emitted, omitted: items.length - emitted.length };
+}
+
+/** Report a bounded page's shape so a caller can tell truncation from absence. */
+export function pageCounts(returned: number, total: number): { returned: number; total: number; truncated: boolean } {
+  return { returned, total, truncated: total > returned };
+}

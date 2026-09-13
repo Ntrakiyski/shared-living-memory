@@ -70,7 +70,26 @@ import {
   toolsRegisteredForProfile,
   type ToolProfile,
 } from "./config";
-import { mapDomainError, okResult, readDeploymentMetadata } from "./mcp-results";
+import {
+  BROWSE_CURSOR_VERSION,
+  boundsCheckPageSize,
+  browseContextHash,
+  buildEntryPageQuery,
+  decodeBrowseCursor,
+  encodeBrowseCursor,
+  paginateRows,
+} from "./tags";
+import {
+  boundContentExcerpt,
+  buildEntryDescriptor,
+  failResult,
+  fitWithinBudget,
+  mapDomainError,
+  okResult,
+  pageCounts,
+  readDeploymentMetadata,
+  toToolError,
+} from "./mcp-results";
 import { normalizeStatusReason } from "./lifecycle";
 import {
   createActionProposal,
@@ -1242,28 +1261,110 @@ export function buildMcpServer(
         tag: z.string().optional(),
         after: z.number().int().optional().describe("Only return entries after this Unix ms timestamp"),
         before: z.number().int().optional().describe("Only return entries before this Unix ms timestamp"),
+        cursor: z.string().optional().describe("next_cursor from the previous page. Stable keyset pagination: newer entries never shift an already-read position."),
       },
     },
-    audited("list_recent", async ({ n, tag, after, before }) => {
-      const { sql, bindings } = buildEntryFilterQuery({ n, tag, after, before, userId });
-      const { results } = await env.DB.prepare(sql).bind(...bindings).all();
+    audited("list_recent", async ({ n, tag, after, before, cursor: cursorToken }) => {
+      const contextHash = await browseContextHash({
+        actorKind: actor.kind,
+        actorId: actor.actorId,
+        ownerUserId: userId,
+        tag: tag ?? null,
+        after: after ?? null,
+        before: before ?? null,
+        user: null,
+        visibility: null,
+      });
 
-      if (!results.length) {
-        return { content: [{ type: "text", text: "No entries found." }] };
+      let decoded: { last_created_at: number; last_id: string } | null = null;
+      if (cursorToken) {
+        try {
+          decoded = decodeBrowseCursor(cursorToken, contextHash);
+        } catch (error) {
+          const mapped = mapDomainError(error);
+          const failure = failResult(mapped.code, mapped.message, false);
+          return toToolError(failure);
+        }
       }
 
-      const text = (results as Record<string, any>[]).map((row, i) => {
-        const { source: safeSource } = sanitizeSourceMetadataForOutput({
-          source: row.source,
-        }, row.owner_user_id === userId ? "owner_mcp" : "team_public");
-        const date = new Date(row.created_at as number).toLocaleDateString();
-        const tags: string[] = JSON.parse(row.tags ?? "[]");
-        const tagStr = tags.length ? ` · ${tags.join(", ")}` : "";
-        const sourceStr = safeSource ? ` · ${safeSource}` : "";
-        return `${i + 1}. [${date}${sourceStr}${tagStr}]\nID: ${row.id as string}\n${row.content}`;
-      }).join("\n\n");
+      const { sql, bindings } = buildEntryPageQuery({
+        n, cursor: decoded, tag, after, before, userId,
+      });
+      const { results } = await env.DB.prepare(sql).bind(...bindings).all();
+      const { rows: pageRows, nextCursor } = paginateRows(
+        results as { id: string; created_at: number; owner_user_id: string }[],
+        n,
+      );
 
-      return { content: [{ type: "text", text }] };
+      const ownerIds = [...new Set(pageRows.map((row) => row.owner_user_id).filter(Boolean))];
+      const ownerMap: Record<string, string> = {};
+      if (ownerIds.length) {
+        const placeholders = ownerIds.map(() => "?").join(",");
+        const { results: owners } = await env.DB.prepare(
+          `SELECT id, username FROM users WHERE id IN (${placeholders})`,
+        ).bind(...ownerIds).all<{ id: string; username: string }>();
+        for (const owner of owners) ownerMap[owner.id] = owner.username;
+      }
+
+      const descriptorActor = { actorId: actor.actorId, ownerUserId: userId, isService: false };
+      const items = (pageRows as Record<string, any>[]).map((row) => {
+        const { source: safeSource } = sanitizeSourceMetadataForOutput(
+          { source: row.source },
+          row.owner_user_id === userId ? "owner_mcp" : "team_public",
+        );
+        return {
+          entry: buildEntryDescriptor(row as never, ownerMap[row.owner_user_id] ?? "", descriptorActor),
+          ...boundContentExcerpt(String(row.content ?? "")),
+          created_at: Number(row.created_at),
+          source: safeSource ?? null,
+        };
+      });
+
+      // The data budget may drop trailing rows; any cursor is then derived from
+      // the FINAL EMITTED row so an omitted row is never skipped.
+      const bounded = fitWithinBudget(items);
+      const last = bounded.items[bounded.items.length - 1];
+      const emittedCursor = bounded.omitted > 0 && last
+        ? { last_created_at: last.created_at, last_id: last.entry.entry_id }
+        : nextCursor;
+
+      const data = {
+        entries: bounded.items,
+        next_cursor: emittedCursor
+          ? encodeBrowseCursor({
+            v: BROWSE_CURSOR_VERSION,
+            last_created_at: emittedCursor.last_created_at,
+            last_id: emittedCursor.last_id,
+            context_hash: contextHash,
+          })
+          : null,
+      };
+
+      const envelope = okResult(data);
+      const counts = pageCounts(bounded.items.length, bounded.items.length + bounded.omitted);
+      const text = bounded.items.length === 0
+        ? "No entries found."
+        : bounded.items.map((item, index) => {
+          const date = new Date(item.created_at).toLocaleDateString();
+          const tags: string[] = JSON.parse(
+            (pageRows as Record<string, any>[])[index]?.tags ?? "[]",
+          );
+          const tagStr = tags.length ? ` · ${tags.join(", ")}` : "";
+          const sourceStr = item.source ? ` · ${item.source}` : "";
+          const truncated = item.content_truncated
+            ? `\n[truncated: showing ${item.content.length} of ${item.original_content_bytes} bytes]`
+            : "";
+          return `${index + 1}. [${date}${sourceStr}${tagStr}]\nID: ${item.entry.entry_id} (revision ${item.entry.revision})\n${item.content}${truncated}`;
+        }).join("\n\n");
+
+      return {
+        structuredContent: envelope as unknown as Record<string, unknown>,
+        content: [{
+          type: "text" as const,
+          text: `${text}${data.next_cursor ? `\n\nMore entries available. Pass next_cursor to list_recent.` : ""}`,
+        }],
+        ...(counts.truncated ? {} : {}),
+      };
     })
   );
 
