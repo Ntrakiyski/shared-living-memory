@@ -5,7 +5,22 @@ import {
   EntryVersionCommitError,
   type CommitEntryVersionResult,
 } from "./entry-version-service";
-import { parseStringArray, sha256Hex, stableJson } from "./governance-utils";
+import {
+  ACTOR_DEFAULT_SOURCE_MARKER,
+  captureKeyHash,
+  captureRequestHash,
+  ensureErasedCaptureTombstone,
+  entryHasErasureReceipt,
+  legacyReceiptBackfillStatement,
+  legacyReceiptBackfilled,
+  legacyServiceEntryId,
+  legacyServiceKeyHash,
+  legacyServiceMutationId,
+  legacyServiceRequestHash,
+  loadCommittedCaptureView,
+  loadLegacyCaptureProvenance,
+  lookupCaptureReceipt,
+} from "./capture-receipts";
 import { withStatus } from "./tags";
 import type { Env, ServiceActorContext } from "./types";
 import { decideOperatorAction, requireAllowedDecision } from "./operator-policy";
@@ -32,62 +47,131 @@ export class OperatorDraftIdempotencyError extends Error {
   }
 }
 
-interface ExistingDraftRow {
-  id: string;
-  owner_user_id: string;
-  current_episode_id: string | null;
-  revision: number;
-  vector_ids: string;
-  mutation_id: string | null;
+/**
+ * A service capture whose retry key was permanently erased. Terminal: the
+ * content is never recreated, and the caller must not retry with the same key.
+ */
+export class OperatorDraftErasedError extends Error {
+  readonly code = "capture_erased";
+  constructor() {
+    super("This capture was permanently erased and will not be recreated.");
+    this.name = "OperatorDraftErasedError";
+  }
 }
 
-async function loadIdempotentDraft(
+/**
+ * Rebuild the committed result for a receipt. Delegates to the shared receipt
+ * reconstruction so replay semantics stay identical across callers.
+ */
+async function replayServiceReceipt(
   env: Pick<Env, "DB">,
-  entryId: string,
-  ownerUserId: string,
-  mutationId: string,
+  receipt: { entryId: string; episodeId: string | null; mutationId: string | null; revision: number | null },
 ): Promise<CommitEntryVersionResult | null> {
-  const row = await env.DB.prepare(
-    `SELECT e.id, e.owner_user_id, e.current_episode_id, e.revision,
-       e.vector_ids, ep.mutation_id
-     FROM entries e
-     LEFT JOIN episodes ep ON ep.id = e.current_episode_id
-     WHERE e.id = ?`,
-  ).bind(entryId).first<ExistingDraftRow>();
-  if (!row) return null;
-  if (row.owner_user_id !== ownerUserId || row.mutation_id !== mutationId || !row.current_episode_id) {
-    throw new OperatorDraftIdempotencyError(
-      "Idempotency key is already bound to a different private draft request.",
-    );
-  }
-
-  const documents = await env.DB.prepare(
-    `SELECT id FROM documents WHERE episode_id = ? ORDER BY created_at ASC, id ASC`,
-  ).bind(row.current_episode_id).all<{ id: string }>();
-  const documentId = documents.results[0]?.id ?? null;
-  const sections = documentId
-    ? await env.DB.prepare(
-      `SELECT id FROM document_sections WHERE document_id = ? ORDER BY order_index ASC, id ASC`,
-    ).bind(documentId).all<{ id: string }>()
-    : { results: [] as { id: string }[] };
-  const passages = await env.DB.prepare(
-    `SELECT id FROM passages WHERE episode_id = ? ORDER BY start_offset ASC, id ASC`,
-  ).bind(row.current_episode_id).all<{ id: string }>();
-
+  const view = await loadCommittedCaptureView(env, receipt);
+  if (!view) return null;
   return {
-    entryId: row.id,
-    episodeId: row.current_episode_id,
-    mutationId,
-    revision: Number(row.revision),
+    entryId: view.entryId,
+    episodeId: view.episodeId ?? "",
+    mutationId: view.mutationId ?? "",
+    revision: view.revision,
     created: true,
     snapshotId: null,
-    documentId,
-    sectionIds: sections.results.map(({ id }) => id),
-    passageIds: passages.results.map(({ id }) => id),
-    vectorIds: parseStringArray(row.vector_ids),
+    documentId: view.documentId,
+    sectionIds: view.sectionIds,
+    passageIds: view.passageIds,
+    vectorIds: view.vectorIds,
     cleanupQueueId: null,
     cleanupPending: false,
   };
+}
+
+/**
+ * Recognize a capture written before receipts existed. The legacy writer derived
+ * a deterministic `opdraft:` entry id and embedded its own fingerprint in the
+ * mutation id, so the check is: recompute that exact legacy fingerprint and
+ * compare it with the fingerprint recorded on the ORIGINAL capture episode —
+ * never with the current projection, which a later edit may have replaced.
+ *
+ * Returns:
+ *  - `absent`    no legacy evidence at all: use the new capture path;
+ *  - `replayed`  legacy capture matched and a new-format receipt was backfilled;
+ *  - `erased`    the entry was erased: a tombstone now exists and is terminal;
+ *  - `conflict`  the legacy key was used for a different request.
+ */
+async function resolveLegacyServiceCapture(
+  env: Env,
+  input: {
+    serviceIdentityId: string;
+    ownerUserId: string;
+    key: string;
+    content: string;
+    tags: readonly string[];
+    source?: string;
+    sourceUrl?: string | null;
+    contentType?: string;
+    title?: string;
+  },
+  newKeyHash: string,
+  newRequestHash: string,
+): Promise<
+  | { kind: "absent" }
+  | { kind: "erased" }
+  | { kind: "conflict" }
+  | { kind: "replayed"; result: CommitEntryVersionResult }
+> {
+  const legacyKeyHash = await legacyServiceKeyHash(input.serviceIdentityId, input.key);
+  const legacyEntryId = legacyServiceEntryId(legacyKeyHash);
+  const provenance = await loadLegacyCaptureProvenance(env, legacyEntryId);
+
+  if (!provenance) {
+    if (await entryHasErasureReceipt(env, legacyEntryId)) {
+      await ensureErasedCaptureTombstone(
+        env,
+        { kind: "service", actorId: input.serviceIdentityId },
+        newKeyHash,
+        legacyEntryId,
+      );
+      return { kind: "erased" };
+    }
+    return { kind: "absent" };
+  }
+
+  // Order-preserving tags exactly as the legacy writer persisted them, and the
+  // source recorded on the original capture when the request omits it.
+  const legacyRequestHash = await legacyServiceRequestHash({
+    content: input.content,
+    tags: input.tags,
+    source: input.source ?? provenance.source,
+    sourceUrl: input.sourceUrl ?? null,
+    contentType: input.contentType ?? null,
+    title: input.title?.trim() || null,
+  });
+  const expectedMutationId = legacyServiceMutationId(legacyKeyHash, legacyRequestHash);
+  if (provenance.mutationId !== expectedMutationId) return { kind: "conflict" };
+
+  const values = {
+    entryId: provenance.entryId,
+    episodeId: provenance.episodeId,
+    mutationId: expectedMutationId,
+    revision: provenance.revision,
+  };
+  const results = await env.DB.batch([
+    legacyReceiptBackfillStatement(env, {
+      actorKind: "service",
+      actorId: input.serviceIdentityId,
+      keyHash: newKeyHash,
+      requestHash: newRequestHash,
+      attemptId: "",
+    }, values),
+  ]);
+  if (!legacyReceiptBackfilled(results)) {
+    // A concurrent erase won the guard: the tombstone is authoritative.
+    return { kind: "erased" };
+  }
+
+  const result = await replayServiceReceipt(env, values);
+  if (!result) return { kind: "erased" };
+  return { kind: "replayed", result };
 }
 
 /**
@@ -126,20 +210,23 @@ export async function captureServicePrivateDraft(
     );
   }
   const effectiveSource = input.source ?? `operator:${verified.actor.serviceIdentityId}`;
-  let deterministicEntryId: string | undefined;
-  let mutationId: string | undefined;
-  if (idempotencyKey) {
-    const keyHash = await sha256Hex(`${verified.actor.serviceIdentityId}:${idempotencyKey}`);
-    const requestHash = await sha256Hex(stableJson({
+  const keyed = idempotencyKey !== undefined;
+
+  // Retry identity is decided before any write, and erased state is evaluated
+  // before any payload comparison (Section 8.5).
+  let keyHash: string | null = null;
+  let requestHash: string | null = null;
+  if (keyed) {
+    keyHash = await captureKeyHash(idempotencyKey!);
+    requestHash = await captureRequestHash({
       content: input.content,
       tags,
-      source: effectiveSource,
+      sourceDeclaration: input.source ?? ACTOR_DEFAULT_SOURCE_MARKER,
       sourceUrl: input.sourceUrl ?? null,
-      contentType: input.contentType ?? null,
-      title: input.title?.trim() || null,
-    }));
-    deterministicEntryId = `opdraft:${keyHash.slice(0, 40)}`;
-    mutationId = `operator:${keyHash.slice(0, 24)}:${requestHash}`;
+      sourceTitle: input.title?.trim() || null,
+      visibility: "private",
+      contentType: input.contentType ?? "text",
+    });
   }
 
   return withMandatoryAudit(
@@ -158,21 +245,69 @@ export async function captureServicePrivateDraft(
       now,
     },
     async () => {
-      if (deterministicEntryId && mutationId) {
-        const existing = await loadIdempotentDraft(
+      if (keyed && keyHash && requestHash) {
+        const namespace = {
+          kind: "service" as const,
+          actorId: verified.actor.serviceIdentityId,
+        };
+        const lookup = await lookupCaptureReceipt(
           env,
-          deterministicEntryId,
+          namespace,
+          keyHash,
+          requestHash,
           verified.ownerUserId,
-          mutationId,
         );
-        if (existing) return existing;
+
+        if (lookup.status === "replayed") {
+          const replayed = await replayServiceReceipt(env, lookup.descriptor);
+          if (replayed) return replayed;
+          throw new OperatorDraftIdempotencyError(
+            "The committed capture for this key is temporarily unavailable.",
+          );
+        }
+        if (lookup.status === "erased") throw new OperatorDraftErasedError();
+        if (lookup.status === "conflict") {
+          throw new OperatorDraftIdempotencyError(
+            "Idempotency key is already bound to a different private draft request.",
+          );
+        }
+        if (lookup.status === "unavailable") {
+          throw new OperatorDraftIdempotencyError(
+            "The committed capture for this key is temporarily unavailable.",
+          );
+        }
+
+        const legacy = await resolveLegacyServiceCapture(
+          env,
+          {
+            serviceIdentityId: verified.actor.serviceIdentityId,
+            ownerUserId: verified.ownerUserId,
+            key: idempotencyKey!,
+            content: input.content,
+            tags,
+            source: input.source,
+            sourceUrl: input.sourceUrl,
+            contentType: input.contentType,
+            title: input.title,
+          },
+          keyHash,
+          requestHash,
+        );
+        if (legacy.kind === "erased") throw new OperatorDraftErasedError();
+        if (legacy.kind === "replayed") return legacy.result;
+        if (legacy.kind === "conflict") {
+          throw new OperatorDraftIdempotencyError(
+            "Idempotency key is already bound to a different private draft request.",
+          );
+        }
       }
 
+      const attemptId = crypto.randomUUID();
       try {
         return await commitEntryVersion({
           kind: "capture",
           actorUserId: verified.ownerUserId,
-          entryId: deterministicEntryId,
+          entryId: crypto.randomUUID(),
           rawContent: input.content,
           materializedContent: input.content,
           tags,
@@ -182,20 +317,32 @@ export async function captureServicePrivateDraft(
           contentType: input.contentType,
           title: input.title,
           epistemicStatus: "candidate",
-          mutationId,
           now,
+          captureReceipt: keyed && keyHash && requestHash
+            ? {
+              actorKind: "service",
+              actorId: verified.actor.serviceIdentityId,
+              keyHash,
+              requestHash,
+              attemptId,
+            }
+            : undefined,
         }, env);
       } catch (error) {
-        // A concurrent retry can win the deterministic entry-ID insert race.
-        // Only recover that exact request; unrelated database failures remain failures.
-        if (deterministicEntryId && mutationId && error instanceof EntryVersionCommitError) {
-          const raced = await loadIdempotentDraft(
+        // A concurrent retry loses the receipt primary-key race and rolls its
+        // whole batch back. Only that exact request is recovered.
+        if (keyed && keyHash && requestHash && error instanceof EntryVersionCommitError) {
+          const raced = await lookupCaptureReceipt(
             env,
-            deterministicEntryId,
+            { kind: "service", actorId: verified.actor.serviceIdentityId },
+            keyHash,
+            requestHash,
             verified.ownerUserId,
-            mutationId,
           );
-          if (raced) return raced;
+          if (raced.status === "replayed") {
+            const replayed = await replayServiceReceipt(env, raced.descriptor);
+            if (replayed) return replayed;
+          }
         }
         throw error;
       }

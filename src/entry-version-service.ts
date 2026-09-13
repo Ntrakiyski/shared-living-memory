@@ -20,6 +20,7 @@ import {
 } from "./types";
 import { getStatus } from "./tags";
 import {
+  abandonCaptureAttempt,
   assertCaptureStageIntact,
   beginCaptureStage,
   CAPTURE_STAGE_LEASE_MS,
@@ -28,6 +29,8 @@ import {
   captureReceiptInsertStatement,
   captureStageReleaseStatement,
   captureReceiptInserted,
+  loadCommittedCaptureView,
+  reloadCommittedReceipt,
   type CaptureReceiptCommitDescriptor,
 } from "./capture-receipts";
 
@@ -684,6 +687,45 @@ function validateInput(input: CommitEntryVersionInput): void {
 }
 
 /**
+ * After a failed capture batch, decide whether a concurrent same-key attempt won.
+ * Only the losing attempt's own unreferenced vectors and intent are cleaned; a
+ * winner's committed artifacts are never touched.
+ */
+async function recoverLostCaptureRace(
+  env: Env,
+  descriptor: CaptureReceiptCommitDescriptor,
+  ownerUserId: string,
+  stagedVectorIds: readonly string[],
+): Promise<CommitEntryVersionResult | null> {
+  let lookup: Awaited<ReturnType<typeof reloadCommittedReceipt>>;
+  try {
+    lookup = await reloadCommittedReceipt(env, descriptor, ownerUserId);
+  } catch {
+    return null;
+  }
+  if (lookup.status !== "replayed") return null;
+
+  const view = await loadCommittedCaptureView(env, lookup.descriptor);
+  if (!view) return null;
+
+  await abandonCaptureAttempt(env, descriptor, stagedVectorIds);
+  return {
+    entryId: view.entryId,
+    episodeId: view.episodeId ?? "",
+    mutationId: view.mutationId ?? "",
+    revision: view.revision,
+    created: true,
+    snapshotId: null,
+    documentId: view.documentId,
+    sectionIds: view.sectionIds,
+    passageIds: view.passageIds,
+    vectorIds: view.vectorIds,
+    cleanupQueueId: null,
+    cleanupPending: false,
+  };
+}
+
+/**
  * Commit one immutable version and project it into the mutable entry row.
  *
  * Provenance and citations are synchronous by design. Callers may schedule
@@ -1209,18 +1251,24 @@ export async function commitEntryVersion(
   try {
     results = await env.DB.batch(statements);
   } catch (cause) {
+    if (captureReceipt) {
+      // A concurrent same-key attempt may have won the receipt race. The loser
+      // reports the winner's committed capture and cleans only its own work.
+      const winner = await recoverLostCaptureRace(env, captureReceipt, input.actorUserId, staged.allVectorIds);
+      if (winner) return winner;
+    }
     const cleanupError = await cleanupStagedVectors(env, staged.allVectorIds);
+    if (captureReceipt) {
+      await abandonCaptureAttempt(env, captureReceipt, staged.allVectorIds);
+    }
     throw new EntryVersionCommitError(cause, cleanupError);
   }
 
   if (receiptInsertIndex !== null && !captureReceiptInserted(results)) {
     // The fence was claimed or expired between staging and commit. Nothing was
     // written; this attempt's own vectors are unreferenced and are removed.
-    const cleanupError = await cleanupStagedVectors(env, staged.allVectorIds);
-    throw new EntryVersionCommitError(
-      new CaptureStageLostError(captureReceipt!.attemptId),
-      cleanupError,
-    );
+    await abandonCaptureAttempt(env, captureReceipt!, staged.allVectorIds);
+    throw new EntryVersionCommitError(new CaptureStageLostError(captureReceipt!.attemptId));
   }
 
   if (guardedUpdateIndex !== null && sqlChangeCount(results[guardedUpdateIndex]) !== 1) {

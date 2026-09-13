@@ -601,3 +601,113 @@ export async function ensureErasedCaptureTombstone(
            erased_at = COALESCE(capture_receipts.erased_at, ${DB_NOW_MS_SQL})`,
   ).bind(namespace.kind, namespace.actorId, keyHash, entryId).run();
 }
+
+// ─── Committed-capture reconstruction ─────────────────────────────────────────
+
+export interface CommittedCaptureView {
+  entryId: string;
+  episodeId: string | null;
+  mutationId: string | null;
+  revision: number;
+  vectorIds: string[];
+  documentId: string | null;
+  sectionIds: string[];
+  passageIds: string[];
+}
+
+/**
+ * Rebuild the committed capture from the receipt's own immutable episode, so a
+ * later edit of the entry cannot make the original capture unrecognizable.
+ */
+export async function loadCommittedCaptureView(
+  env: Pick<Env, "DB">,
+  receipt: { entryId: string; episodeId: string | null; mutationId: string | null; revision: number | null },
+): Promise<CommittedCaptureView | null> {
+  const entry = await env.DB.prepare(
+    `SELECT id, revision, vector_ids FROM entries WHERE id = ?`,
+  ).bind(receipt.entryId).first<{ id: string; revision: number; vector_ids: string }>();
+  if (!entry) return null;
+
+  const documents = receipt.episodeId
+    ? await env.DB.prepare(
+      `SELECT id FROM documents WHERE episode_id = ? ORDER BY created_at ASC, id ASC`,
+    ).bind(receipt.episodeId).all<{ id: string }>()
+    : { results: [] as { id: string }[] };
+  const documentId = documents.results[0]?.id ?? null;
+  const sections = documentId
+    ? await env.DB.prepare(
+      `SELECT id FROM document_sections WHERE document_id = ? ORDER BY order_index ASC, id ASC`,
+    ).bind(documentId).all<{ id: string }>()
+    : { results: [] as { id: string }[] };
+  const passages = receipt.episodeId
+    ? await env.DB.prepare(
+      `SELECT id FROM passages WHERE episode_id = ? ORDER BY start_offset ASC, id ASC`,
+    ).bind(receipt.episodeId).all<{ id: string }>()
+    : { results: [] as { id: string }[] };
+
+  return {
+    entryId: entry.id,
+    episodeId: receipt.episodeId,
+    mutationId: receipt.mutationId,
+    revision: receipt.revision ?? Number(entry.revision),
+    vectorIds: parseStringArray(entry.vector_ids),
+    documentId,
+    sectionIds: sections.results.map(({ id }) => id),
+    passageIds: passages.results.map(({ id }) => id),
+  };
+}
+
+function parseStringArray(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Abandon a capture attempt that did not commit: remove its own unreferenced
+ * vectors and, only after that cleanup is confirmed, its stage intent. A row
+ * already claimed by the repair worker is left to that worker.
+ */
+export async function abandonCaptureAttempt(
+  env: Env,
+  descriptor: CaptureReceiptCommitDescriptor,
+  stagedVectorIds: readonly string[],
+): Promise<void> {
+  let cleaned = true;
+  if (stagedVectorIds.length > 0) {
+    try {
+      await env.VECTORIZE.deleteByIds([...stagedVectorIds]);
+    } catch {
+      // The intent row stays so the repair worker can finish the cleanup.
+      cleaned = false;
+    }
+  }
+  if (!cleaned) return;
+  try {
+    await env.DB.prepare(
+      `DELETE FROM vector_cleanup_queue
+       WHERE id = ? AND kind = 'capture_stage' AND claim_token IS NULL`,
+    ).bind(descriptor.attemptId).run();
+  } catch {
+    // Cleanup is confirmed; the stale intent is still safe to leave behind.
+  }
+}
+
+/** Re-read the receipt after a failed batch, racing state included. */
+export async function reloadCommittedReceipt(
+  env: Pick<Env, "DB">,
+  descriptor: CaptureReceiptCommitDescriptor,
+  expectedOwnerUserId: string,
+): Promise<CaptureReceiptLookup> {
+  return lookupCaptureReceipt(
+    env,
+    { kind: descriptor.actorKind, actorId: descriptor.actorId },
+    descriptor.keyHash,
+    descriptor.requestHash,
+    expectedOwnerUserId,
+  );
+}
