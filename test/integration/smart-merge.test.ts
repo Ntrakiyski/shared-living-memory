@@ -617,4 +617,66 @@ describe("POST /capture — governed smart merge", () => {
     });
     expect(aiRunMock).toHaveBeenCalledOnce();
   });
+
+  it("protects a canonically REVIEWED target from silent replacement even without a legacy canonical tag", async () => {
+    // The epistemic axis alone protects an entry: a stale or absent legacy
+    // status tag must not be able to un-protect reviewed content (Section 7.1).
+    seedEntry(db, "reviewed-id", "Canonically reviewed statement", '["reviewed-id"]', {
+      tags: '["work","status:draft"]',
+      importance_score: 2,
+      epistemic_status: "canonical",
+    });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({ matches: [currentMatch("reviewed-id", 0.88)] }),
+      }),
+      AI: makeMergeAI('{"action":"replace","target_id":"reviewed-id"}'),
+    });
+
+    const res = await worker.fetch(
+      req("POST", "/capture", { body: { content: "Replacement attempt", visibility: "public" } }),
+      env,
+      ctx,
+    );
+
+    const data = await res.json() as any;
+    expect(data).toMatchObject({
+      ok: true,
+      action: "stored_separately",
+      warnings: [
+        "Similar entry exists: reviewed-id",
+        "Merge skipped: target_protected",
+      ],
+    });
+    expect(data.id).not.toBe("reviewed-id");
+    expect(db.entries.find((entry: any) => entry.id === "reviewed-id")?.content)
+      .toBe("Canonically reviewed statement");
+    expect(db.entries).toHaveLength(2);
+  });
+
+  it("still merges into a qualified-by-nothing, plainly-candidate target", async () => {
+    // The counterpart: an ordinary candidate is not protected, so the merge path
+    // itself remains reachable rather than being dead code.
+    seedEntry(db, "candidate-id", "Ordinary draft statement", '["candidate-id"]', {
+      tags: '["work"]',
+      importance_score: 2,
+      epistemic_status: "candidate",
+    });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({ matches: [currentMatch("candidate-id", 0.88)] }),
+      }),
+      AI: makeMergeAI('{"action":"replace","target_id":"candidate-id"}'),
+    });
+
+    const res = await worker.fetch(
+      req("POST", "/capture", { body: { content: "Replacement attempt", visibility: "public" } }),
+      env,
+      ctx,
+    );
+
+    const data = await res.json() as any;
+    expect(data).toMatchObject({ ok: true, action: "replaced", id: "candidate-id" });
+    expect(db.entries).toHaveLength(1);
+  });
 });
