@@ -14,6 +14,26 @@ import { STATUS_PREFIX, KIND_PREFIX, STATUS_VALUES, KIND_VALUES } from "./types"
 import type { MemoryStatus, MemoryKind } from "./types";
 import { escapeLikePattern } from "./helpers";
 
+// ─── Automatic overwrite protection ───────────────────────────────────────────
+// A memory is protected from AUTOMATIC replacement/merge when it is high
+// importance, legacy-canonical, or epistemic canonical/qualified. Epistemic
+// protection is deliberately independent of the legacy status tag: an entry
+// with a stale `status:draft` tag but epistemic_status=canonical stays
+// protected, so a legacy tag cannot un-protect reviewed content. Explicit
+// authorized versioned correction through the versioned write path is still
+// possible — this predicate only gates similarity-driven automation.
+export const OVERWRITE_IMPORTANCE_THRESHOLD = 4;
+
+export function isProtectedFromAutomaticOverwrite(input: {
+  tags: readonly string[];
+  importanceScore?: number | null;
+  epistemicStatus?: string | null;
+}): boolean {
+  if (Number(input.importanceScore ?? 0) >= OVERWRITE_IMPORTANCE_THRESHOLD) return true;
+  if (getStatus([...input.tags]) === "canonical") return true;
+  return input.epistemicStatus === "canonical" || input.epistemicStatus === "qualified";
+}
+
 // ─── Status / kind tag helpers ─────────────────────────────────────────────────
 
 export function getStatus(tags: string[]): MemoryStatus | null {

@@ -69,6 +69,7 @@ import {
   type ToolProfile,
 } from "./config";
 import { mapDomainError, okResult, readDeploymentMetadata } from "./mcp-results";
+import { normalizeStatusReason } from "./lifecycle";
 import {
   createActionProposal,
   executeApprovedProposal,
@@ -1040,16 +1041,31 @@ export function buildMcpServer(
       inputSchema: {
         id: z.string().describe("Entry ID — from recall or list_recent"),
         status: z.enum([...STATUS_VALUES] as [string, ...string[]]).describe("canonical | draft | deprecated"),
+        reason: z.string().optional().describe("Why this status changed. Strongly recommended; stored as status metadata, never as a log line."),
+        expected_revision: z.number().int().min(0).optional().describe("Revision you read. Omit to rely on the internal compare-and-swap guard."),
       },
     },
-    audited("set_status", async ({ id, status }) => {
+    audited("set_status", async ({ id, status, reason, expected_revision }) => {
       if (userId) {
         const row = await env.DB.prepare(`SELECT owner_user_id FROM entries WHERE id = ?`).bind(id).first() as { owner_user_id: string } | null;
         if (row && row.owner_user_id && row.owner_user_id !== userId && row.owner_user_id !== "") {
           return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
         }
       }
-      const ok = await applyStatus(id, status as MemoryStatus, env, userId);
+      let ok: boolean;
+      try {
+        ok = await applyStatus(id, status as MemoryStatus, env, userId, {
+          reason,
+          expectedRevision: expected_revision,
+          actor: { kind: "human", id: userId },
+        });
+      } catch (error) {
+        const mapped = mapDomainError(error);
+        if (mapped.code !== "storage_unavailable") {
+          return { isError: true, content: [{ type: "text", text: `Not changed: ${mapped.code}. ${mapped.message}` }] };
+        }
+        throw error;
+      }
       if (!ok) return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
       return { content: [{ type: "text", text: status === "deprecated" ? `Entry ${id} deprecated — removed from recall, kept for audit.` : `Entry ${id} marked ${status}.` }] };
     })
@@ -1063,9 +1079,11 @@ export function buildMcpServer(
       inputSchema: {
         entry_id: z.string().describe("Entry ID from recall or list_recent"),
         new_status: z.enum([...EPISTEMIC_STATUS_VALUES] as [string, ...string[]]).describe("New epistemic status"),
+        reason: z.string().optional().describe("Why this confidence state changed. Strongly recommended; stored as status metadata."),
+        expected_revision: z.number().int().min(0).optional().describe("Revision you read. Omit to rely on the internal compare-and-swap guard."),
       },
     },
-    audited("set_epistemic_status", async ({ entry_id, new_status }) => {
+    audited("set_epistemic_status", async ({ entry_id, new_status, reason, expected_revision }) => {
       const entry = await env.DB.prepare(
         `SELECT content, tags, source, owner_user_id, revision,
                 valid_from, valid_to, epistemic_status
@@ -1076,9 +1094,29 @@ export function buildMcpServer(
         return { content: [{ type: "text", text: `No entry found with ID: ${entry_id}` }] };
       }
       const currentStatus = (entry.epistemic_status ?? "canonical") as EpistemicStatus;
+      if (expected_revision !== undefined && expected_revision !== Number(entry.revision ?? 0)) {
+        const mapped = mapDomainError({
+          code: "revision_conflict",
+          details: { expected_revision, actual_revision: Number(entry.revision ?? 0) },
+        });
+        return { isError: true, content: [{ type: "text", text: `Not changed: ${mapped.code}. ${mapped.message}` }] };
+      }
       if (!isValidTransition(currentStatus, new_status as EpistemicStatus)) {
         const validNext = VALID_EPISTEMIC_TRANSITIONS[currentStatus] ?? [];
-        return { content: [{ type: "text", text: `Invalid transition: ${currentStatus} → ${new_status}. Valid next states: ${validNext.length ? validNext.join(", ") : "(none — terminal state)"}` }] };
+        return {
+          isError: true,
+          content: [{
+            type: "text",
+            text: `Invalid transition: ${currentStatus} → ${new_status}. Valid next states: ${validNext.length ? validNext.join(", ") : "(none — terminal state)"}`,
+          }],
+        };
+      }
+      let normalizedReason: string | null;
+      try {
+        normalizedReason = normalizeStatusReason(reason);
+      } catch (error) {
+        const mapped = mapDomainError(error);
+        return { isError: true, content: [{ type: "text", text: `Not changed: ${mapped.code}. ${mapped.message}` }] };
       }
       try {
         const committed = await commitEntryVersion({
@@ -1093,6 +1131,14 @@ export function buildMcpServer(
           validFrom: entry.valid_from as number | null,
           validTo: entry.valid_to as number | null,
           epistemicStatus: new_status as EpistemicStatus,
+          // A direct account action: verified actor, no independent review.
+          statusChange: {
+            axis: "epistemic",
+            reason: normalizedReason,
+            actor: { kind: "human", id: userId },
+            reviewer: null,
+            proposalId: null,
+          },
         }, env);
         return { content: [{ type: "text", text: `Entry ${entry_id} transitioned: ${currentStatus} → ${new_status} (revision ${committed.revision}).` }] };
       } catch (error) {

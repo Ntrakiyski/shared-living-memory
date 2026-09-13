@@ -74,7 +74,10 @@ function seedEntry(
     recorded_at: createdAt,
     valid_from: createdAt,
     valid_to: null,
-    epistemic_status: "canonical",
+    // An ordinary mergeable memory is a candidate: captureEntry always writes
+    // candidate, and canonical/qualified entries are protected from automatic
+    // overwrite. Tests that exercise that protection override this explicitly.
+    epistemic_status: "candidate",
     visibility: "public",
     ...overrides,
   };

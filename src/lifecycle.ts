@@ -33,6 +33,7 @@ import {
   type ActorContext,
 } from "./types";
 import { withStatus } from "./tags";
+import { detectHighConfidenceSecret } from "./ingest";
 import { initializeDatabase } from "./db";
 import { captureEntry } from "./ingest";
 import { commitEntryVersion } from "./entry-version-service";
@@ -590,7 +591,12 @@ export async function forgetEntry(
 
 // Deprecate (issue #119): keep the D1 row for audit but make the entry
 // unrecallable by deleting its vectors and tagging it status:deprecated.
-export async function deprecateEntry(id: string, env: Env, actorUserId?: string): Promise<boolean> {
+export async function deprecateEntry(
+  id: string,
+  env: Env,
+  actorUserId?: string,
+  options: DirectStatusOptions = {},
+): Promise<boolean> {
   const row = await env.DB.prepare(
     `SELECT content, tags, source, vector_ids, owner_user_id, revision,
             valid_from, valid_to, epistemic_status
@@ -600,13 +606,15 @@ export async function deprecateEntry(id: string, env: Env, actorUserId?: string)
   const ownerUserId = row.owner_user_id as string;
   if (actorUserId && ownerUserId !== actorUserId) return false;
   if (!ownerUserId) return false;
+  precheckRevision(row, options);
+  const reason = normalizeStatusReason(options.reason);
 
   const tags: string[] = JSON.parse(row.tags ?? "[]");
   const committed = await commitEntryVersion({
     kind: "status",
     actorUserId: ownerUserId,
     entryId: id,
-    expectedRevision: Number(row.revision ?? 0),
+    expectedRevision: options.expectedRevision ?? Number(row.revision ?? 0),
     rawContent: "status:deprecated",
     materializedContent: row.content as string,
     tags: withStatus(tags, "deprecated"),
@@ -614,6 +622,13 @@ export async function deprecateEntry(id: string, env: Env, actorUserId?: string)
     validFrom: row.valid_from as number | null,
     validTo: row.valid_to as number | null,
     epistemicStatus: row.epistemic_status as EpistemicStatus,
+    statusChange: {
+      axis: "lifecycle",
+      reason,
+      actor: options.actor ?? { kind: "human", id: ownerUserId },
+      reviewer: options.reviewer ?? null,
+      proposalId: options.proposalId ?? null,
+    },
   }, env);
 
   try {
@@ -628,8 +643,88 @@ export async function deprecateEntry(id: string, env: Env, actorUserId?: string)
 
 // Apply a lifecycle status to an entry (issue #119). 'deprecated' deletes vectors
 // (via deprecateEntry); others swap the status:* tag in place. Returns ok=false if no such entry.
-export async function applyStatus(id: string, status: MemoryStatus, env: Env, actorUserId?: string): Promise<boolean> {
-  if (status === "deprecated") return deprecateEntry(id, env, actorUserId);
+/**
+ * Optional, trusted inputs for a direct status change. `expectedRevision` is a
+ * caller precondition checked before any expensive work and again in the final
+ * guarded commit; `reason` is stored as atomic status metadata.
+ */
+export interface DirectStatusOptions {
+  expectedRevision?: number;
+  reason?: string | null;
+  /** The authenticated actor performing the change. Never inferred from ownership. */
+  actor?: { kind: "human" | "service" | "system"; id: string };
+  reviewer?: { kind: "human"; id: string } | null;
+  proposalId?: string | null;
+}
+
+export class StatusChangeRejectedError extends Error {
+  readonly code: "invalid_request" | "revision_conflict" | "invalid_transition";
+  readonly details: Record<string, unknown>;
+  constructor(
+    code: "invalid_request" | "revision_conflict" | "invalid_transition",
+    message: string,
+    details: Record<string, unknown> = {},
+  ) {
+    super(message);
+    this.name = "StatusChangeRejectedError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
+export const STATUS_REASON_MIN_CODE_POINTS = 1;
+export const STATUS_REASON_MAX_CODE_POINTS = 2_000;
+
+/**
+ * Validate an optional status reason. Omitted stays null for legacy
+ * compatibility; a supplied reason is trimmed, bounded and secret-checked by the
+ * existing detector. Never stored as a free-form log field.
+ */
+export function normalizeStatusReason(reason: unknown): string | null {
+  if (reason === undefined || reason === null) return null;
+  if (typeof reason !== "string") {
+    throw new StatusChangeRejectedError("invalid_request", "reason must be a string", { field: "reason" });
+  }
+  const trimmed = reason.trim();
+  const length = Array.from(trimmed).length;
+  if (length < STATUS_REASON_MIN_CODE_POINTS || length > STATUS_REASON_MAX_CODE_POINTS) {
+    throw new StatusChangeRejectedError(
+      "invalid_request",
+      `reason must be ${STATUS_REASON_MIN_CODE_POINTS}-${STATUS_REASON_MAX_CODE_POINTS} characters`,
+      { field: "reason", min: STATUS_REASON_MIN_CODE_POINTS, max: STATUS_REASON_MAX_CODE_POINTS },
+    );
+  }
+  if (detectHighConfidenceSecret(trimmed)) {
+    throw new StatusChangeRejectedError("invalid_request", "The reason looks like a credential and was not stored.", { field: "reason" });
+  }
+  return trimmed;
+}
+
+function precheckRevision(row: Record<string, any>, options: DirectStatusOptions): void {
+  if (options.expectedRevision === undefined) return;
+  if (!Number.isInteger(options.expectedRevision) || options.expectedRevision < 0) {
+    throw new StatusChangeRejectedError("invalid_request", "expected_revision must be an integer >= 0", {
+      field: "expected_revision",
+    });
+  }
+  const actual = Number(row.revision ?? 0);
+  if (options.expectedRevision !== actual) {
+    throw new StatusChangeRejectedError(
+      "revision_conflict",
+      `Entry revision conflict: expected ${options.expectedRevision}, found ${actual}`,
+      { expected_revision: options.expectedRevision, actual_revision: actual },
+    );
+  }
+}
+
+export async function applyStatus(
+  id: string,
+  status: MemoryStatus,
+  env: Env,
+  actorUserId?: string,
+  options: DirectStatusOptions = {},
+): Promise<boolean> {
+  if (status === "deprecated") return deprecateEntry(id, env, actorUserId, options);
   const row = await env.DB.prepare(
     `SELECT content, tags, source, owner_user_id, revision,
             valid_from, valid_to, epistemic_status
@@ -638,12 +733,15 @@ export async function applyStatus(id: string, status: MemoryStatus, env: Env, ac
   if (!row) return false;
   const ownerUserId = row.owner_user_id as string;
   if (!ownerUserId || (actorUserId && ownerUserId !== actorUserId)) return false;
+  precheckRevision(row, options);
+  const reason = normalizeStatusReason(options.reason);
   const tags: string[] = JSON.parse(row.tags ?? "[]");
+  const actor = options.actor ?? { kind: "human" as const, id: ownerUserId };
   await commitEntryVersion({
     kind: "status",
     actorUserId: ownerUserId,
     entryId: id,
-    expectedRevision: Number(row.revision ?? 0),
+    expectedRevision: options.expectedRevision ?? Number(row.revision ?? 0),
     rawContent: `status:${status}`,
     materializedContent: row.content as string,
     tags: withStatus(tags, status),
@@ -651,6 +749,15 @@ export async function applyStatus(id: string, status: MemoryStatus, env: Env, ac
     validFrom: row.valid_from as number | null,
     validTo: row.valid_to as number | null,
     epistemicStatus: row.epistemic_status as EpistemicStatus,
+    // Direct status changes are recorded with the verified actor and no
+    // independent review. The submission rationale is not a review.
+    statusChange: {
+      axis: "lifecycle",
+      reason,
+      actor,
+      reviewer: options.reviewer ?? null,
+      proposalId: options.proposalId ?? null,
+    },
   }, env);
   return true;
 }

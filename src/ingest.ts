@@ -22,7 +22,7 @@ import type {
 import { embed } from "./helpers";
 import { classifyEntry, extractHashtags } from "./classification";
 import { checkDuplicateAndContradiction } from "./duplicates";
-import { getStatus, withKind, withStatus } from "./tags";
+import { getStatus, isProtectedFromAutomaticOverwrite, withKind, withStatus } from "./tags";
 import { createEdge, inferEdgesOnWrite, neighborsFromVectorQuery } from "./graph";
 import {
   commitEntryVersion,
@@ -506,6 +506,14 @@ function scheduleClassifyAndTag(
   );
 }
 
+/** Read only the epistemic axis for a target row; never inferred from tags. */
+async function loadEpistemicStatus(env: Env, entryId: string): Promise<string | null> {
+  const row = await env.DB.prepare(
+    `SELECT owner_user_id, epistemic_status FROM entries WHERE id = ?`,
+  ).bind(entryId).first<{ owner_user_id: string; epistemic_status: string | null }>();
+  return row?.epistemic_status ?? null;
+}
+
 export class CaptureRejectedError extends Error {
   readonly code: CaptureRejectionCode | "invalid_request";
   readonly detector?: string;
@@ -696,9 +704,16 @@ export async function captureEntry(
         // the existing private/public target is never mutated or republished.
         if (targetVisibility !== effectiveVisibility) {
           mergeSkipped = "visibility_mismatch";
-        } else if ((targetRow.importance_score as number) >= 4 || getStatus(existingTags) === "canonical") {
-          // Protect high-importance or canonical memories from being silently
-          // overwritten. The new statement is retained as its own candidate.
+        } else if (isProtectedFromAutomaticOverwrite({
+          tags: existingTags,
+          importanceScore: targetRow.importance_score as number,
+          // Epistemic status is read separately so the protection decision is
+          // independent of the legacy status tag on the same row.
+          epistemicStatus: await loadEpistemicStatus(env, targetId),
+        })) {
+          // Protect high-importance or canonical/qualified memories from being
+          // silently overwritten. The new statement is retained as its own
+          // candidate; an explicit authorized correction still works.
           mergeSkipped = "target_protected";
         } else {
           const committed = await commitEntryVersion({

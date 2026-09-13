@@ -41,6 +41,7 @@ import {
   validateSourceMetadataInput,
 } from "./ingest";
 import {
+  mapDomainError,
   okResult,
   readDeploymentMetadata,
 } from "./mcp-results";
@@ -93,7 +94,12 @@ import { recallEntries, type RecallMatch } from "./recall";
 import { emitRecallEvent, submitRecallFeedback, hashRecallQuery } from "./recall-events";
 import { computePilotMetrics } from "./pilot-metrics";
 import { reinforceOwnedEntry } from "./reinforcement";
-import { deprecateEntry, applyStatus, compressTag } from "./lifecycle";
+import {
+  applyStatus,
+  compressTag,
+  deprecateEntry,
+  normalizeStatusReason,
+} from "./lifecycle";
 import { classifyEntry, extractHashtags } from "./classification";
 import { escapeLikePattern } from "./helpers";
 import { INTEGRATION_PROVIDERS, getProvider, loadIntegration, saveIntegration, integrationStatus } from "./integrations";
@@ -344,6 +350,24 @@ function actionProposalErrorResponse(error: unknown): Response {
           ? 412
           : 400;
   return json({ ok: false, error: error.message, code: error.code }, status);
+}
+
+/**
+ * Map a status-change domain failure onto the documented REST status codes:
+ * invalid input 400, stale revision 409, unavailable dependency 503.
+ */
+function statusChangeResponse(error: unknown): Response {
+  const mapped = mapDomainError(error);
+  const status = mapped.code === "revision_conflict"
+    ? 409
+    : mapped.code === "storage_unavailable" ? 503 : 400;
+  return json({
+    ok: false,
+    error: mapped.message,
+    code: mapped.code,
+    retryable: mapped.retryable,
+    ...(mapped.details ? { details: mapped.details } : {}),
+  }, status);
 }
 
 function storageUnavailableResponse(): Response {
@@ -2360,7 +2384,7 @@ export const defaultHandler = {
       const { error: authErr, user_id } = await requireAuthAsync(request, env);
       if (authErr) return authErr;
 
-      let body: { id?: string; status?: string };
+      let body: { id?: string; status?: string; reason?: string; expected_revision?: number };
       try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
       if (!body.id?.trim()) return json({ ok: false, error: "id is required" }, 400);
       if (!(STATUS_VALUES as readonly string[]).includes(body.status ?? "")) {
@@ -2376,13 +2400,22 @@ export const defaultHandler = {
         return json({ ok: false, error: `No entry found with ID: ${id}` }, 404);
       }
 
-      const ok = await applyStatus(id, status, env, user_id);
+      let ok: boolean;
+      try {
+        ok = await applyStatus(id, status, env, user_id, {
+          reason: body.reason,
+          expectedRevision: body.expected_revision,
+          actor: { kind: "human", id: user_id! },
+        });
+      } catch (error) {
+        return statusChangeResponse(error);
+      }
 
       if (!ok) {
         return json({ ok: false, error: `No entry found with ID: ${id}` }, 404);
       }
 
-      return json({ ok: true, id, status });
+      return json({ ok: true, id, status, reason_recorded: body.reason !== undefined });
     }
 
     // POST /epistemic-status — transition epistemic lifecycle (Ticket 10)
@@ -2390,7 +2423,7 @@ export const defaultHandler = {
       const { error: authErr, user_id } = await requireAuthAsync(request, env);
       if (authErr) return authErr;
 
-      let body: { id?: string; status?: string };
+      let body: { id?: string; status?: string; reason?: string; expected_revision?: number };
       try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
       if (!body.id?.trim()) return json({ ok: false, error: "id is required" }, 400);
       if (!(EPISTEMIC_STATUS_VALUES as readonly string[]).includes(body.status ?? "")) {
@@ -2411,9 +2444,31 @@ export const defaultHandler = {
       }
 
       const currentStatus = (entryRow.epistemic_status ?? "canonical") as EpistemicStatus;
+      if (body.expected_revision !== undefined
+          && body.expected_revision !== Number(entryRow.revision ?? 0)) {
+        return statusChangeResponse({
+          code: "revision_conflict",
+          details: {
+            expected_revision: body.expected_revision,
+            actual_revision: Number(entryRow.revision ?? 0),
+          },
+        });
+      }
       if (!isValidTransition(currentStatus, newStatus)) {
         const validNext = VALID_EPISTEMIC_TRANSITIONS[currentStatus] ?? [];
-        return json({ ok: false, error: `Invalid transition: ${currentStatus} → ${newStatus}`, valid_next_states: validNext }, 400);
+        return json({
+          ok: false,
+          error: `Invalid transition: ${currentStatus} → ${newStatus}`,
+          code: "invalid_transition",
+          valid_next_states: validNext,
+        }, 400);
+      }
+
+      let statusReason: string | null;
+      try {
+        statusReason = normalizeStatusReason(body.reason);
+      } catch (error) {
+        return statusChangeResponse(error);
       }
 
       try {
@@ -2421,7 +2476,7 @@ export const defaultHandler = {
           kind: "status",
           actorUserId: user_id!,
           entryId: id,
-          expectedRevision: Number(entryRow.revision ?? 0),
+          expectedRevision: body.expected_revision ?? Number(entryRow.revision ?? 0),
           rawContent: `epistemic:${newStatus}`,
           materializedContent: entryRow.content as string,
           tags: JSON.parse(entryRow.tags ?? "[]"),
@@ -2429,8 +2484,22 @@ export const defaultHandler = {
           validFrom: entryRow.valid_from as number | null,
           validTo: entryRow.valid_to as number | null,
           epistemicStatus: newStatus,
+          statusChange: {
+            axis: "epistemic",
+            reason: statusReason,
+            actor: { kind: "human", id: user_id! },
+            reviewer: null,
+            proposalId: null,
+          },
         }, env);
-        return json({ ok: true, id, from: currentStatus, to: newStatus, revision: committed.revision });
+        return json({
+          ok: true,
+          id,
+          from: currentStatus,
+          to: newStatus,
+          revision: committed.revision,
+          reason_recorded: body.reason !== undefined,
+        });
       } catch (error) {
         return versionWriteError(error);
       }

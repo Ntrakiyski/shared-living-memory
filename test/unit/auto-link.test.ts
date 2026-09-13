@@ -49,6 +49,9 @@ function seedExisting(db: D1Mock, tags: string[] = []) {
     owner_user_id: TEST_USER_ID,
     visibility: "public",
     current_episode_id: "episode-existing",
+    // Ordinary mergeable content is a candidate; canonical/qualified entries are
+    // protected from automatic overwrite by Section 7.1.
+    epistemic_status: "candidate",
   });
 }
 
