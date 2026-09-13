@@ -99,6 +99,7 @@ export const PERSONAL_FULL_TOOLS = [
 export const SERVICE_TOOLS = [
   "whoami",
   "remember",
+  "remember_batch",
   "recall",
   "list_recent",
   "connections",

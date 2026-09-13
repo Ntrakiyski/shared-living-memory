@@ -212,6 +212,7 @@ describe("operator MCP surfaces", () => {
       "list_recent",
       "recall",
       "remember",
+      "remember_batch",
       // whoami is available to every valid principal, including services.
       "whoami",
     ]);

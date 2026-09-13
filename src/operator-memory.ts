@@ -22,6 +22,7 @@ import {
   lookupCaptureReceipt,
 } from "./capture-receipts";
 import { withStatus } from "./tags";
+import { assertCapturePayloadValid } from "./ingest";
 import type { Env, ServiceActorContext } from "./types";
 import { decideOperatorAction, requireAllowedDecision } from "./operator-policy";
 import { verifyServiceActor } from "./service-actor";
@@ -182,7 +183,15 @@ export async function captureServicePrivateDraft(
   env: Env,
   input: CaptureServicePrivateDraftInput,
 ): Promise<CommitEntryVersionResult> {
-  if (!input.content) throw new TypeError("Service draft content is required.");
+  // The service path enforces exactly the same bounds and secret detection as
+  // the personal path; the transport must never be a way around them.
+  assertCapturePayloadValid({
+    content: input.content,
+    tags: input.tags,
+    source: input.source,
+    sourceUrl: input.sourceUrl,
+    sourceTitle: input.title,
+  });
   const now = input.now ?? Date.now();
   const verified = await verifyServiceActor(env, input.actor, now);
   const decision = decideOperatorAction({

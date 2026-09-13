@@ -182,7 +182,7 @@ describe("exact tool profiles (A4)", () => {
     for (const tool of capture) expect(SERVICE_TOOLS as readonly string[]).toContain(tool);
     expect(full).toEqual([...SERVICE_TOOLS].sort());
     // No personal-only capability leaks into a service connection.
-    for (const personalOnly of ["remember_batch", "forget", "restore", "rate_recall", "list_edge_proposals"]) {
+    for (const personalOnly of ["forget", "restore", "rate_recall", "list_edge_proposals", "append", "update"]) {
       expect(full).not.toContain(personalOnly);
     }
   });

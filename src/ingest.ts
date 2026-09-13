@@ -963,6 +963,44 @@ function codePointLength(value: string): number {
 }
 
 /**
+ * Shared capture-payload validation used by every capture path, including the
+ * service draft writer. Bounds and the secret detector are applied to content,
+ * tags, source, URL and title, so no transport can bypass them.
+ */
+export function assertCapturePayloadValid(input: {
+  content: string;
+  tags?: readonly string[];
+  source?: string;
+  sourceUrl?: string | null;
+  sourceTitle?: string | null;
+}): void {
+  if (typeof input.content !== "string" || !input.content.trim()) {
+    throw new CaptureRejectedError("invalid_request");
+  }
+  const tags = (input.tags ?? []).filter((tag): tag is string => typeof tag === "string");
+  validateCaptureInput(
+    input.content,
+    tags,
+    input.source ?? "",
+    input.sourceUrl ?? undefined,
+    input.sourceTitle ?? undefined,
+  );
+  validateCaptureTags(tags);
+
+  const encoder = new TextEncoder();
+  const payloadBytes = [
+    input.content,
+    ...tags,
+    input.source ?? "",
+    input.sourceUrl ?? "",
+    input.sourceTitle ?? "",
+  ].reduce((total, value) => total + encoder.encode(value).byteLength, 0);
+  if (payloadBytes > BATCH_ITEM_MAX_PAYLOAD_BYTES) {
+    throw new CaptureRejectedError("content_too_large");
+  }
+}
+
+/**
  * Shared per-item validation for keyed and batch capture. Runs the same
  * normalization, bounds and secret detection the ordinary capture path uses,
  * so a batch item can never bypass a check the single-item path enforces.
@@ -980,17 +1018,16 @@ export function normalizeKeyedCaptureInput(
   const tags = [...new Set([...supplied.map((tag) => tag.toLowerCase()), ...hashtags])];
   const visibility = input.visibility ?? "private";
 
-  // The create-only path keeps the explicit source declaration, so the ordinary
+  // The create-only path keeps the explicit source declaration, so the shared
   // validator is given the declared source rather than a resolved default.
-  validateCaptureInput(raw, tags, supplied.length ? input.source ?? "" : input.source ?? "", input.sourceUrl, input.sourceTitle);
+  assertCapturePayloadValid({
+    content: raw,
+    tags: supplied,
+    source: input.source,
+    sourceUrl: input.sourceUrl,
+    sourceTitle: input.sourceTitle,
+  });
   validateCaptureTags(tags);
-
-  const encoder = new TextEncoder();
-  const payloadBytes = [raw, ...tags, input.source ?? "", input.sourceUrl ?? "", input.sourceTitle ?? ""]
-    .reduce((total, value) => total + encoder.encode(value).byteLength, 0);
-  if (payloadBytes > BATCH_ITEM_MAX_PAYLOAD_BYTES) {
-    throw new CaptureRejectedError("content_too_large");
-  }
   return { raw, clean, tags, visibility };
 }
 

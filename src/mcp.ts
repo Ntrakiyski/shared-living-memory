@@ -589,6 +589,83 @@ export function buildMcpServer(
       }),
     );
 
+    // ── remember_batch (service) ─────────────────────────────────────────
+    // The same bounded, ordered, create-only contract as the personal tool.
+    // Each item re-verifies the service actor, so a credential revoked mid-batch
+    // stops every later item's effect.
+    registerTool(
+      "remember_batch",
+      {
+        description: "Capture up to 10 private draft candidates in one bounded, ordered request. Every item needs its own retry key and is CREATE-ONLY. Envelope problems reject the whole request with no writes; a bad item is reported in place and later items still run.",
+        inputSchema: {
+          items: z.array(z.object({
+            client_item_id: z.string(),
+            idempotency_key: z.string(),
+            content: z.string(),
+            tags: z.array(z.string()).optional(),
+            source: z.string().optional(),
+          }).passthrough()).describe("Ordered items, 1-10"),
+        },
+      },
+      safe(async (input: { items: unknown[] }) => {
+        let items;
+        try {
+          items = validateBatchEnvelope(input);
+        } catch (error) {
+          const mapped = mapDomainError(error);
+          return {
+            isError: true as const,
+            structuredContent: { ok: false as const, error: mapped, request_id: crypto.randomUUID() },
+            content: [{ type: "text" as const, text: `Batch rejected: ${mapped.code}. ${mapped.message}` }],
+          };
+        }
+
+        const results: Record<string, unknown>[] = [];
+        let created = 0;
+        let failed = 0;
+        for (const item of items) {
+          try {
+            const committed = await captureServicePrivateDraft(env, {
+              actor: serviceActor,
+              content: item.content,
+              tags: item.tags,
+              source: item.source,
+              idempotencyKey: item.idempotency_key,
+            });
+            created++;
+            results.push({
+              client_item_id: item.client_item_id,
+              status: "created",
+              data: {
+                outcome: "created",
+                capture_mode: "create-only",
+                entry_id: committed.entryId,
+                episode_id: committed.episodeId,
+                current_revision: committed.revision,
+              },
+            });
+          } catch (error) {
+            failed++;
+            const mapped = mapDomainError(error);
+            results.push({
+              client_item_id: item.client_item_id,
+              status: "failed",
+              error: { code: mapped.code, message: mapped.message, retryable: mapped.retryable },
+            });
+          }
+        }
+
+        const envelope = okResult({ items: results, summary: { created, replayed: 0, failed } });
+        return {
+          structuredContent: envelope as unknown as Record<string, unknown>,
+          content: [{
+            type: "text" as const,
+            text: `Batch processed: ${created} created, 0 replayed, ${failed} failed.`,
+          }],
+        };
+      }),
+    );
+
     registerTool(
       "recall",
       {
