@@ -133,13 +133,13 @@ All commands run from the project directory.
 | --- | --- |
 | `npm ci` | exit 0 |
 | `npm test` (baseline, before any edit) | exit 0 — 1124 passed / 106 files |
-| `npm test` (final) | exit 0 — **1418 passed / 126 files** |
+| `npm test` (final) | exit 0 — **1418 passed / 126 files** (41 commits on the branch) |
 | `npm run typecheck` (final, runs `wrangler types` then `tsc --noEmit`) | exit 0, zero errors |
 | `npx tsc --noEmit` | exit 0; zero errors under `src/` |
 | `npm run smoke:workerd` | **exit 1, blocked** — `setsid: command not found` (see §7) |
 | `node --check scripts/*.mjs` | exit 0 for each script delivered by WP8/WP9 |
 
-Net change on the branch: **67 files changed, ~16,000 insertions, ~300 deletions** relative to `origin/main` (tracked files; `tasks/` agent notes remain untracked). The release specification itself is committed on the branch so it is preserved with the work; `tasks/` (agent working notes) remains untracked.
+Net change on the branch: **66 files changed, 15,034 insertions, 376 deletions** relative to `origin/main` (tracked files; `tasks/` agent notes remain untracked). The release specification itself is committed on the branch so it is preserved with the work; `tasks/` (agent working notes) remains untracked.
 
 Secret scan of the committed diff: one match, and it is a **synthetic test vector** for the secret detector (`sk_live_0123…` inside `status-metadata.test.ts`). No live key, hash, prefix or credential appears anywhere in the diff.
 
