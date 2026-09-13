@@ -61,7 +61,11 @@ import {
   readDeploymentMetadata,
 } from "./mcp-results";
 import { readToolProfile, resolveRestActorContext } from "./api-handler";
-import { toolsRegisteredForProfile } from "./config";
+import {
+  isMaintenanceReadOnly,
+  isReadOnlySafeRequest,
+  toolsRegisteredForProfile,
+} from "./config";
 import {
   SOURCE_LABEL_MAX_CODE_POINTS,
   sanitizeBoundedMetadataForOutput,
@@ -396,9 +400,37 @@ function storageUnavailableResponse(): Response {
   });
 }
 
+/** Maintenance refusal for anything outside the read-only allowlist. */
+function maintenanceResponse(): Response {
+  return new Response(JSON.stringify({
+    ok: false,
+    error: {
+      code: "maintenance_read_only",
+      message: "Shared Living Memory is in read-only maintenance. Reads remain available.",
+      retryable: true,
+    },
+    request_id: crypto.randomUUID(),
+  }), {
+    status: 503,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json",
+      "Retry-After": "60",
+      ...CORS_HEADERS,
+    },
+  });
+}
+
 export const defaultHandler = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    // Maintenance mode uses an explicit safe-route allowlist rather than a
+    // method rule, because some GETs are not read-only (GET /digest compresses).
+    // Unknown routes and every mutation reject here, before any side effect.
+    if (isMaintenanceReadOnly(env) && !isReadOnlySafeRequest(request.method, url.pathname)) {
+      return maintenanceResponse();
+    }
 
     // OAuth authorize endpoint — hosted login page for browser-based MCP clients.
     if (url.pathname === "/oauth/authorize") {

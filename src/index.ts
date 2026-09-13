@@ -26,6 +26,7 @@ import { resumePendingDeactivations } from "./deactivation";
 import { reconcileMandatoryAuditCompletions } from "./mandatory-audit";
 import { flagPendingErasures } from "./erasure";
 import { reconcilePendingOverlapAwareness } from "./awareness-events";
+import { isMaintenanceReadOnly } from "./config";
 
 const oauthProvider = new OAuthProvider({
   apiRoute: "/mcp",
@@ -86,6 +87,18 @@ export default {
     return oauthProvider.fetch(req, env as any, ctx);
   },
   scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
+    // Read-only maintenance must not start any content, graph, integration or
+    // erasure mutation job. Reads and telemetry-only work are unaffected, and
+    // the schedule resumes once writes are re-enabled.
+    if (isMaintenanceReadOnly(env)) {
+      console.log("Scheduled mutation jobs skipped: write mode is read-only");
+      ctx.waitUntil(
+        initializeDatabase(env)
+          .then(() => drainCaptureStageIntents(env))
+          .catch((error) => console.error("Capture-stage reconciliation failed (non-fatal):", error)),
+      );
+      return;
+    }
     ctx.waitUntil(runNightlyCompression(env, ctx));
     ctx.waitUntil(runGraphPass(env, ctx));
     ctx.waitUntil(

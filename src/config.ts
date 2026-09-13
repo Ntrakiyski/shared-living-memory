@@ -290,3 +290,98 @@ export const TOOL_AUTONOMY: Record<string, AutonomyLevel> = {
   // Destructive — never autonomous
   forget:                  "never",
 };
+
+// ─── Maintenance write mode (Section 16.1) ───────────────────────────────────
+// One shared predicate is enough: there is no maintenance service. In read-only
+// mode the READ surface keeps working so operators can inspect state, but every
+// application/admin/memory/governance/credential mutation is refused before any
+// side effect.
+
+export type WriteMode = "enabled" | "read-only" | "invalid";
+
+export function readWriteMode(env: { SLM_WRITE_MODE?: string }): WriteMode {
+  const value = typeof env.SLM_WRITE_MODE === "string" ? env.SLM_WRITE_MODE.trim() : "";
+  if (value === "" || value === "enabled") return "enabled";
+  if (value === "read-only") return "read-only";
+  return "invalid";
+}
+
+export function isMaintenanceReadOnly(env: { SLM_WRITE_MODE?: string }): boolean {
+  return readWriteMode(env) === "read-only";
+}
+
+/**
+ * The fixed safe GET path set. This is an explicit allowlist, not a
+ * method-based rule, because several GETs are not read-only: GET /digest calls
+ * compressTag and is therefore deliberately absent.
+ */
+export const READ_ONLY_SAFE_GET_PATHS: ReadonlySet<string> = new Set([
+  "/health",
+  "/ready",
+  "/api/bootstrap-status",
+  "/api/whoami",
+  "/api/me",
+  "/api/users",
+  "/api/service-identities",
+  "/action-proposals",
+  "/awareness-events",
+  "/count",
+  "/tags",
+  "/stats",
+  "/list",
+  "/team-activity",
+  "/edge-proposals",
+  "/export",
+  "/recall",
+  "/erasure-status",
+  "/pilot-metrics",
+  "/connections",
+  "/entry",
+  "/graph",
+  "/integrations",
+]);
+
+/** Safe parameterized GET paths, matched exactly. */
+export const READ_ONLY_SAFE_GET_PATTERNS: readonly RegExp[] = [
+  /^\/entries\/[^/]+\/history$/,
+  /^\/entries\/[^/]+\/hierarchy$/,
+  /^\/edges\/[^/]+\/history$/,
+];
+
+/** Static assets and the shared session/OAuth handlers stay available. */
+function isReadOnlyStaticOrSession(pathname: string): boolean {
+  if (pathname === "/" || pathname === "/index.html" || pathname === "/dashboard") return true;
+  if (pathname.startsWith("/assets/")) return true;
+  if (pathname === "/oauth/authorize") return true;
+  if (pathname === "/login" || pathname === "/logout") return true;
+  return false;
+}
+
+/**
+ * Whether this request may proceed while writes are disabled. Everything not
+ * explicitly listed is refused before it reaches a handler, so an unknown route
+ * or an unexpected GET side effect can never mutate domain state in maintenance.
+ */
+export function isReadOnlySafeRequest(method: string, pathname: string): boolean {
+  if (method === "OPTIONS") return true;
+  if (isReadOnlyStaticOrSession(pathname)) return true;
+  if (method !== "GET" && method !== "HEAD") return false;
+  if (READ_ONLY_SAFE_GET_PATHS.has(pathname)) return true;
+  return READ_ONLY_SAFE_GET_PATTERNS.some((pattern) => pattern.test(pathname));
+}
+
+/**
+ * MCP tools callable while writes are disabled. `rate_recall` is excluded
+ * because it writes recall telemetry; every mutation tool is excluded.
+ */
+export const READ_ONLY_SAFE_TOOLS: ReadonlySet<string> = new Set([
+  "whoami",
+  "recall",
+  "list_recent",
+  "passages",
+  "history",
+  "connections",
+  "list_action_proposals",
+  "list_edge_proposals",
+  "list-proposals",
+]);

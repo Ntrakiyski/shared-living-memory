@@ -64,6 +64,8 @@ import { captureServicePrivateDraft } from "./operator-memory";
 import { captureEntryBatch, captureEntryKeyed, validateBatchEnvelope } from "./ingest";
 import {
   EDGE_TOOL_ALIASES,
+  READ_ONLY_SAFE_TOOLS,
+  isMaintenanceReadOnly,
   profileAllowsTool,
   toolsRegisteredForProfile,
   type ToolProfile,
@@ -385,16 +387,30 @@ export function buildMcpServer(
   // their input/handler types; only the profile gate is added.
   type RegisterTool = McpServer["registerTool"];
   const rawRegisterTool: RegisterTool = server.registerTool.bind(server) as RegisterTool;
+  // In maintenance the read tools keep working; a mutation tool is registered
+  // but explicitly refuses, so the client gets a truthful error rather than a
+  // silently different tool list.
+  const maintenanceReadOnly = isMaintenanceReadOnly(env);
+  const guardHandler = (name: string, handler: unknown): unknown => {
+    if (!maintenanceReadOnly || READ_ONLY_SAFE_TOOLS.has(name)) return handler;
+    return async () => ({
+      isError: true as const,
+      content: [{
+        type: "text" as const,
+        text: "Error maintenance_read_only: Shared Living Memory is in read-only maintenance; this tool is temporarily unavailable.",
+      }],
+    });
+  };
   const registerUnderProfile = (name: string, config: unknown, handler: unknown): void => {
     if (profileAllowsTool(profile, name)) {
-      rawRegisterTool(name as never, config as never, handler as never);
+      rawRegisterTool(name as never, config as never, guardHandler(name, handler) as never);
     }
     const alias = EDGE_TOOL_ALIASES[name];
     if (alias && profileAllowsTool(profile, alias)) {
       const aliased = config && typeof config === "object"
         ? { ...(config as Record<string, unknown>), title: alias }
         : config;
-      rawRegisterTool(alias as never, aliased as never, handler as never);
+      rawRegisterTool(alias as never, aliased as never, guardHandler(alias, handler) as never);
     }
   };
   const registerTool: RegisterTool = registerUnderProfile as unknown as RegisterTool;
