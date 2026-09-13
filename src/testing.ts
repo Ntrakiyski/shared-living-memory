@@ -219,8 +219,8 @@ export {
   EntryVersionCommitError,
 } from "./entry-version-service";
 
-export { drainVectorCleanupQueue } from "./vector-cleanup";
-export type { VectorCleanupResult } from "./vector-cleanup";
+export { drainCaptureStageIntents, drainVectorCleanupQueue } from "./vector-cleanup";
+export type { CaptureStageCleanupResult, VectorCleanupResult } from "./vector-cleanup";
 export {
   stageOverlapAwarenessIntent,
   discardOverlapAwarenessIntent,

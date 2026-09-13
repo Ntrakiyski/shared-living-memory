@@ -27,6 +27,10 @@ import {
   EntryVersionVectorStageError,
 } from "../../src/entry-version-service";
 import { eraseEntryArtifacts } from "../../src/erasure";
+import {
+  drainCaptureStageIntents,
+  drainVectorCleanupQueue,
+} from "../../src/vector-cleanup";
 import type { ActorContext, Env } from "../../src/types";
 
 interface Harness {
@@ -468,5 +472,170 @@ describe("capture receipt identity", () => {
 
   it("exposes the create-only capture mode as the keyed contract", () => {
     expect(CAPTURE_MODE_CREATE_ONLY).toBe("create-only");
+  });
+});
+
+describe("capture-stage repair worker", () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    harness = makeHarness();
+  });
+
+  afterEach(() => {
+    harness.db.close();
+  });
+
+  it("removes an abandoned attempt's vectors and then the intent", async () => {
+    const attemptId = crypto.randomUUID();
+    const planned = ["ev:dead-episode:0", "pv:dead-passage"];
+    for (const id of planned) harness.vectors.set(id, { id });
+    await beginCaptureStage(harness.env, {
+      attemptId,
+      entryId: "entry-abandoned",
+      episodeId: "dead-episode",
+      vectorIds: planned,
+      reason: "capture-stage:abandoned",
+      leaseMs: -1,
+    });
+
+    const result = await drainCaptureStageIntents(harness.env);
+    expect(result).toMatchObject({ processed: 1, abandoned: 1, preserved: 0, deferred: 0, remaining: 0 });
+    expect(harness.vectors.size).toBe(0);
+    expect(harness.db.count("vector_cleanup_queue")).toBe(0);
+  });
+
+  it("preserves a committed attempt's vectors and only removes the intent", async () => {
+    const first = await keyedCapture(harness, "repair-committed");
+    const entryId = first.committed!.entryId;
+    const committedVectorIds = JSON.parse(
+      harness.db.one<{ vector_ids: string }>("SELECT vector_ids FROM entries WHERE id = ?", entryId).vector_ids,
+    ) as string[];
+    expect(committedVectorIds.length).toBeGreaterThan(0);
+    for (const id of committedVectorIds) harness.vectors.set(id, { id });
+
+    // A leftover intent pointing at the already-committed attempt.
+    const leftoverId = crypto.randomUUID();
+    harness.db.exec(
+      `INSERT INTO vector_cleanup_queue
+        (id, vector_ids, reason, attempts, last_error, created_at, updated_at,
+         kind, stage_entry_id, stage_episode_id, lease_expires_at, claim_token)
+       VALUES ('${leftoverId}', '${JSON.stringify(committedVectorIds)}', 'capture-stage:leftover',
+               0, NULL, 1, 1, 'capture_stage', '${entryId}', 'ep', 1, NULL)`,
+    );
+
+    const result = await drainCaptureStageIntents(harness.env);
+    expect(result).toMatchObject({ processed: 1, abandoned: 0, preserved: 1, deferred: 0, remaining: 0 });
+    expect(harness.vectors.size).toBe(committedVectorIds.length);
+    expect(harness.db.count("vector_cleanup_queue")).toBe(0);
+  });
+
+  it("defers the intent when the authoritative check is unavailable", async () => {
+    const attemptId = crypto.randomUUID();
+    await beginCaptureStage(harness.env, {
+      attemptId,
+      entryId: "entry-deferred",
+      episodeId: "ep-deferred",
+      vectorIds: ["v-deferred"],
+      reason: "capture-stage:deferred",
+      leaseMs: -1,
+    });
+    harness.vectors.set("v-deferred", { id: "v-deferred" });
+
+    const original = harness.db.prepare.bind(harness.db);
+    (harness.db as any).prepare = (sql: string) => {
+      if (sql.includes("FROM capture_receipts")) throw new Error("D1 unavailable");
+      return original(sql);
+    };
+
+    const result = await drainCaptureStageIntents(harness.env);
+    expect(result).toMatchObject({ processed: 1, abandoned: 0, preserved: 0, deferred: 1, remaining: 1 });
+    // No remote deletion was attempted without authority.
+    expect(harness.vectors.has("v-deferred")).toBe(true);
+    expect(harness.db.count("vector_cleanup_queue")).toBe(1);
+  });
+
+  it("keeps delete work and stage intents from starving each other", async () => {
+    harness.db.exec(
+      `INSERT INTO vector_cleanup_queue
+        (id, vector_ids, reason, attempts, last_error, created_at, updated_at,
+         kind, stage_entry_id, stage_episode_id, lease_expires_at, claim_token)
+       VALUES ('stage-1', '["v-stage"]', 'capture-stage:x', 0, NULL, 1, 1,
+               'capture_stage', 'entry', 'ep', 1, NULL)`,
+    );
+    harness.db.exec(
+      `INSERT INTO vector_cleanup_queue
+        (id, vector_ids, reason, attempts, last_error, created_at, updated_at, kind)
+       VALUES ('delete-1', '["v-stale"]', 'entry-version:e:m', 0, NULL, 1, 1, 'delete')`,
+    );
+    harness.vectors.set("v-stage", {});
+    harness.vectors.set("v-stale", {});
+
+    const deletes = await drainVectorCleanupQueue(harness.env);
+    expect(deletes).toMatchObject({ processed: 1, deleted: 1, failed: 0, remaining: 0 });
+    // The unconditional delete branch never touches the stage intent.
+    expect(harness.vectors.has("v-stage")).toBe(true);
+    expect(harness.db.count("vector_cleanup_queue")).toBe(1);
+
+    const stages = await drainCaptureStageIntents(harness.env);
+    expect(stages).toMatchObject({ processed: 1, abandoned: 1, deferred: 0, remaining: 0 });
+    expect(harness.vectors.has("v-stage")).toBe(false);
+  });
+
+  it("lets a later pass take over a claim left by a crashed worker", async () => {
+    const attemptId = crypto.randomUUID();
+    await beginCaptureStage(harness.env, {
+      attemptId,
+      entryId: "entry-crash",
+      episodeId: "ep-crash",
+      vectorIds: ["v-crash"],
+      reason: "capture-stage:crash",
+      leaseMs: -1,
+    });
+    harness.vectors.set("v-crash", {});
+    // A previous repair pass claimed the row and then crashed before deleting.
+    harness.db.exec(
+      `UPDATE vector_cleanup_queue SET claim_token = 'crashed-pass' WHERE id = '${attemptId}'`,
+    );
+
+    const result = await drainCaptureStageIntents(harness.env);
+    expect(result).toMatchObject({ processed: 1, abandoned: 1, deferred: 0, remaining: 0 });
+    expect(harness.vectors.has("v-crash")).toBe(false);
+    expect(harness.db.count("vector_cleanup_queue")).toBe(0);
+  });
+
+  it("leaves the intent in place when the remote deletion fails", async () => {
+    const attemptId = crypto.randomUUID();
+    await beginCaptureStage(harness.env, {
+      attemptId,
+      entryId: "entry-fail",
+      episodeId: "ep-fail",
+      vectorIds: ["v-fail"],
+      reason: "capture-stage:fail",
+      leaseMs: -1,
+    });
+    harness.deleteByIds.mockRejectedValueOnce(new Error("Vectorize down"));
+
+    const result = await drainCaptureStageIntents(harness.env);
+    expect(result).toMatchObject({ processed: 1, abandoned: 0, deferred: 1, remaining: 1 });
+    expect(harness.db.one<{ last_error: string }>(
+      "SELECT last_error FROM vector_cleanup_queue WHERE id = ?", attemptId,
+    ).last_error).toContain("Vectorize down");
+  });
+
+  it("never removes an intent whose lease has not expired", async () => {
+    const attemptId = crypto.randomUUID();
+    await beginCaptureStage(harness.env, {
+      attemptId,
+      entryId: "entry-live",
+      episodeId: "ep-live",
+      vectorIds: ["v-live"],
+      reason: "capture-stage:live",
+    });
+    harness.vectors.set("v-live", {});
+
+    const result = await drainCaptureStageIntents(harness.env);
+    expect(result).toMatchObject({ processed: 0, remaining: 1 });
+    expect(harness.vectors.has("v-live")).toBe(true);
   });
 });

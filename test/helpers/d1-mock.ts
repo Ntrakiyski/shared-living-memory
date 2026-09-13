@@ -911,6 +911,21 @@ export class D1Mock {
           return { meta: { changes: 1 } };
         }
         if (s.startsWith("INSERT INTO vector_cleanup_queue")) {
+          // Capture-stage intents use a distinct column list and inline SQLite
+          // time expressions, so only their three bound values are read here.
+          if (s.includes("'capture_stage'")) {
+            const [id, vector_ids, reason, stage_entry_id, stage_episode_id, leaseMs] = args;
+            db.vector_cleanup_queue.push({
+              id, vector_ids, reason, attempts: 0, last_error: null,
+              created_at: Date.now(), updated_at: Date.now(),
+              kind: "capture_stage",
+              stage_entry_id,
+              stage_episode_id,
+              lease_expires_at: Date.now() + Number(leaseMs ?? 0),
+              claim_token: null,
+            });
+            return { meta: { changes: 1 } };
+          }
           const [
             id, vector_ids, reason, created_at, updated_at,
             entryId, ownerUserId, revision, currentEpisodeId,
@@ -927,7 +942,9 @@ export class D1Mock {
           }
           db.vector_cleanup_queue.push({
             id, vector_ids, reason, attempts: 0, last_error: null,
-            created_at, updated_at,
+            created_at, updated_at, kind: "delete",
+            stage_entry_id: null, stage_episode_id: null,
+            lease_expires_at: null, claim_token: null,
           });
           return { meta: { changes: 1 } };
         }
@@ -1938,10 +1955,16 @@ export class D1Mock {
           return { results };
         }
         if (s.includes("FROM vector_cleanup_queue")) {
-          const rows = s.includes("substr(reason, 1, ?) = ?")
+          let rows = s.includes("substr(reason, 1, ?) = ?")
             ? db.vector_cleanup_queue.filter((row: any) =>
               String(row.reason).slice(0, Number(args[0])) === String(args[1]))
             : db.vector_cleanup_queue;
+          if (s.includes("kind = 'delete'")) {
+            rows = rows.filter((row: any) => (row.kind ?? "delete") === "delete");
+          }
+          if (s.includes("kind = 'capture_stage'")) {
+            rows = rows.filter((row: any) => row.kind === "capture_stage");
+          }
           return { results: rows.map((row: any) => ({ ...row })) };
         }
         if (s.includes("SELECT id, username, status, role FROM users WHERE status")) {

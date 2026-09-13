@@ -21,7 +21,7 @@ import {
   detectCrossUserContradictions,
 } from "./lifecycle";
 import { runScheduledIntegrationSync } from "./integrations-mirror";
-import { drainVectorCleanupQueue } from "./vector-cleanup";
+import { drainCaptureStageIntents, drainVectorCleanupQueue } from "./vector-cleanup";
 import { resumePendingDeactivations } from "./deactivation";
 import { reconcileMandatoryAuditCompletions } from "./mandatory-audit";
 import { flagPendingErasures } from "./erasure";
@@ -92,6 +92,11 @@ export default {
       initializeDatabase(env)
         .then(() => drainVectorCleanupQueue(env))
         .catch((error) => console.error("Vector cleanup reconciliation failed (non-fatal):", error)),
+    );
+    ctx.waitUntil(
+      initializeDatabase(env)
+        .then(() => drainCaptureStageIntents(env))
+        .catch((error) => console.error("Capture-stage reconciliation failed (non-fatal):", error)),
     );
     ctx.waitUntil(
       initializeDatabase(env)
