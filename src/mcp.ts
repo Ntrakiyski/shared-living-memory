@@ -61,6 +61,8 @@ import { VECTORIZE_FIX_HINT, TOOL_AUTONOMY } from "./config";
 import { startRun, endRun, logToolCall } from "./audit";
 import { isValidMcpActorId } from "./auth";
 import { captureServicePrivateDraft } from "./operator-memory";
+import { captureEntryBatch, captureEntryKeyed, validateBatchEnvelope } from "./ingest";
+import { mapDomainError, okResult } from "./mcp-results";
 import {
   createActionProposal,
   executeApprovedProposal,
@@ -348,6 +350,18 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
       || actor.kind === "service" && actor.actorId !== actor.serviceIdentityId) {
     throw new Error("A verified, scoped MCP actor is required");
   }
+
+  // The verified account name is needed for actor-based source defaults and for
+  // whoami. Resolved once per server instance, never from client input.
+  let ownerUsername: string | null = null;
+  const resolveOwnerUsername = async (): Promise<string> => {
+    if (ownerUsername) return ownerUsername;
+    const row = await env.DB.prepare(
+      `SELECT username FROM users WHERE id = ?`,
+    ).bind(userId).first<{ username: string }>();
+    ownerUsername = row?.username ?? userId;
+    return ownerUsername;
+  };
 
   const server = new McpServer({ name: "shared-living-memory", version: "1.0.0" });
 
@@ -664,9 +678,40 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
         source_url: z.string().optional().describe("Optional source URL recorded with the memory"),
         source_title: z.string().optional().describe("Optional source title recorded with the memory"),
         visibility: z.enum(["private", "public"]).default("private").describe("Who can see the memory; omitted is private"),
+        idempotency_key: z.string().optional().describe(
+          "Optional stable retry key. A keyed capture is CREATE-ONLY: it never merges, replaces or suppresses a similar memory, so a retry can never have hidden side effects. Reusing a key with different content is rejected.",
+        ),
       },
     },
-    audited("remember", async ({ content, tags, source, source_url, source_title, visibility }) => {
+    audited("remember", async ({ content, tags, source, source_url, source_title, visibility, idempotency_key }) => {
+      if (idempotency_key !== undefined) {
+        try {
+          const keyed = await captureEntryKeyed(env, {
+            kind: "human",
+            actorId: userId,
+            ownerUserId: userId,
+            defaultSource: `mcp:${await resolveOwnerUsername()}`,
+          }, {
+            content,
+            tags,
+            source,
+            sourceUrl: source_url,
+            sourceTitle: source_title,
+            visibility,
+            idempotencyKey: idempotency_key,
+          });
+          const label = keyed.outcome === "replayed" ? "Replayed existing capture" : "Stored";
+          return {
+            content: [{
+              type: "text" as const,
+              text: `${label}. ID: ${keyed.entryId} (revision ${keyed.currentRevision}, capture mode: ${keyed.captureMode}, visibility: ${keyed.visibility}).`,
+            }],
+          };
+        } catch (error) {
+          const mapped = mapDomainError(error);
+          return { isError: true, content: [{ type: "text" as const, text: `Not stored: ${mapped.code}. ${mapped.message}` }] };
+        }
+      }
       let result;
       try {
         result = await captureEntry(content, tags ?? [], source ?? "claude", env, ctx, userId, {
@@ -701,6 +746,64 @@ export function buildMcpServer(env: Env, ctx: ExecutionContext, actor: ActorCont
         return { content: [{ type: "text", text: `Stored with ID: ${result.id}${visibilityText} — note: similar entry exists (${(result.score * 100).toFixed(0)}% match, ID: ${result.matchId}). Tagged as duplicate-candidate.` }] };
       }
       return { content: [{ type: "text", text: `Stored. ID: ${result.id}${visibilityText}` }] };
+    })
+  );
+
+  // ── remember_batch ──────────────────────────────────────────────────────
+  server.registerTool(
+    "remember_batch",
+    {
+      description: "Capture up to 10 memories in one bounded, ordered request. Every item needs its own retry key and is CREATE-ONLY: items never merge, replace or suppress similar memories. Envelope problems reject the whole request with no writes; a bad item is reported in place and later items still run.",
+      inputSchema: {
+        items: z.array(z.object({
+          client_item_id: z.string().describe("Presentation label for this item, unique within the batch (1-64 characters). Not part of retry identity."),
+          idempotency_key: z.string().describe("Retry key for this item (trimmed, 1-240 characters, unique within the batch)"),
+          content: z.string(),
+          tags: z.array(z.string()).optional(),
+          source: z.string().optional(),
+          source_url: z.string().optional(),
+          source_title: z.string().optional(),
+          visibility: z.enum(["private", "public"]).optional(),
+        }).passthrough()).describe("Ordered items, 1-10"),
+      },
+    },
+    audited("remember_batch", async (input: { items: unknown[] }) => {
+      let items;
+      try {
+        items = validateBatchEnvelope(input);
+      } catch (error) {
+        const mapped = mapDomainError(error);
+        return {
+          isError: true as const,
+          structuredContent: { ok: false as const, error: mapped, request_id: crypto.randomUUID() },
+          content: [{ type: "text" as const, text: `Batch rejected: ${mapped.code}. ${mapped.message}` }],
+        };
+      }
+
+      const result = await captureEntryBatch(env, {
+        kind: "human",
+        actorId: userId,
+        ownerUserId: userId,
+        defaultSource: `mcp:${await resolveOwnerUsername()}`,
+      }, items);
+      const envelope = okResult(result);
+
+      const lines = result.items.map((item) => {
+        if (item.status === "failed") {
+          return `- ${item.client_item_id}: failed (${item.error?.code ?? "storage_unavailable"})`;
+        }
+        return `- ${item.client_item_id}: ${item.status} (entry ${item.data?.entry_id}, revision ${item.data?.current_revision})`;
+      });
+      return {
+        structuredContent: envelope,
+        content: [{
+          type: "text" as const,
+          text: [
+            `Batch processed: ${result.summary.created} created, ${result.summary.replayed} replayed, ${result.summary.failed} failed.`,
+            ...lines,
+          ].join("\n"),
+        }],
+      };
     })
   );
 

@@ -30,12 +30,17 @@ import {
   restoreEdgeVersion,
 } from "./graph";
 import {
+  BATCH_MAX_REQUEST_BODY_BYTES,
+  BatchEnvelopeError,
   CaptureRejectedError,
   appendToEntry,
   captureEntry,
+  captureEntryBatch,
   reindexAllVectors,
+  validateBatchEnvelope,
   validateSourceMetadataInput,
 } from "./ingest";
+import { okResult } from "./mcp-results";
 import {
   SOURCE_LABEL_MAX_CODE_POINTS,
   sanitizeBoundedMetadataForOutput,
@@ -934,6 +939,64 @@ export const defaultHandler = {
         warnings,
       };
       return json(response);
+    }
+
+    // POST /capture/batch — bounded, ordered, create-only batch capture.
+    // Envelope failures reject the whole request with zero writes; per-item
+    // validation failures are reported in place and later items still run.
+    if (url.pathname === "/capture/batch" && request.method === "POST") {
+      const { error: authErr, user_id, username } = await requireAuthAsync(request, env);
+      if (authErr) return authErr;
+
+      const encoder = new TextEncoder();
+      const declaredLength = Number(request.headers.get("content-length") ?? "");
+      if (Number.isFinite(declaredLength) && declaredLength > BATCH_MAX_REQUEST_BODY_BYTES) {
+        return json({
+          ok: false,
+          error: { code: "content_too_large", message: "The request body exceeds the batch size limit.", retryable: false },
+          request_id: crypto.randomUUID(),
+        }, 413);
+      }
+      const rawBody = await request.text();
+      if (encoder.encode(rawBody).byteLength > BATCH_MAX_REQUEST_BODY_BYTES) {
+        return json({
+          ok: false,
+          error: { code: "content_too_large", message: "The request body exceeds the batch size limit.", retryable: false },
+          request_id: crypto.randomUUID(),
+        }, 413);
+      }
+
+      let parsedBody: unknown;
+      try { parsedBody = JSON.parse(rawBody); } catch {
+        return json({
+          ok: false,
+          error: { code: "invalid_request", message: "Invalid JSON", retryable: false },
+          request_id: crypto.randomUUID(),
+        }, 400);
+      }
+
+      let items;
+      try {
+        items = validateBatchEnvelope(parsedBody);
+      } catch (error) {
+        if (error instanceof BatchEnvelopeError) {
+          return json({
+            ok: false,
+            error: { code: error.code, message: error.message, retryable: false, details: error.details },
+            request_id: crypto.randomUUID(),
+          }, error.code === "content_too_large" ? 413 : 400);
+        }
+        throw error;
+      }
+
+      const result = await captureEntryBatch(env, {
+        kind: "human",
+        actorId: user_id!,
+        ownerUserId: user_id!,
+        defaultSource: `api:${username ?? user_id}`,
+      }, items);
+
+      return json(okResult(result));
     }
 
     // POST /append

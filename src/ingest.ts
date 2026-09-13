@@ -35,6 +35,20 @@ import {
   reconcileOverlapAwarenessIntent,
   stageOverlapAwarenessIntent,
 } from "./awareness-events";
+import {
+  ACTOR_DEFAULT_SOURCE_MARKER,
+  CAPTURE_MODE_CREATE_ONLY,
+  CaptureReceiptError,
+  CaptureStageLostError,
+  captureKeyHash,
+  captureReceiptError,
+  captureRequestHash,
+  isValidIdempotencyKey,
+  loadCommittedCaptureView,
+  lookupCaptureReceipt,
+  normalizeIdempotencyKey,
+  type CaptureWriteMeaning,
+} from "./capture-receipts";
 
 export type ReindexFailureCode =
   | "current_episode_missing"
@@ -493,9 +507,13 @@ function scheduleClassifyAndTag(
 }
 
 export class CaptureRejectedError extends Error {
-  constructor(readonly code: CaptureRejectionCode, readonly detector?: string) {
+  readonly code: CaptureRejectionCode | "invalid_request";
+  readonly detector?: string;
+  constructor(code: CaptureRejectionCode | "invalid_request", detector?: string) {
     super(code);
     this.name = "CaptureRejectedError";
+    this.code = code;
+    this.detector = detector;
   }
 }
 
@@ -854,5 +872,502 @@ export async function captureEntry(
     visibility: effectiveVisibility,
     crossUserNote,
     ...(awareness ? { awareness } : {}),
+  };
+}
+
+// ─── Keyed (create-only) capture and batch capture ───────────────────────────
+//
+// A capture carrying an idempotency key — including every batch item — is
+// explicitly CREATE-ONLY. It never merges, replaces, deprecates or suppresses a
+// candidate based on semantic similarity, because a retry must not have hidden
+// multi-entry side effects. The retry key is the retry identity; different keys
+// may intentionally create similar memories.
+
+/** Fixed batch envelope bounds (Section 1.5 / 8.2). */
+export const BATCH_MAX_ITEMS = 10;
+export const BATCH_MAX_SERIALIZED_ITEMS_BYTES = 131_072;
+export const BATCH_MAX_REQUEST_BODY_BYTES = 262_144;
+export const BATCH_ITEM_MAX_PAYLOAD_BYTES = 32_768;
+export const CLIENT_ITEM_ID_MIN_CODE_POINTS = 1;
+export const CLIENT_ITEM_ID_MAX_CODE_POINTS = 64;
+
+export type BatchItemErrorCode =
+  | CaptureRejectionCode
+  | "invalid_request"
+  | "idempotency_conflict"
+  | "capture_erased"
+  | "receipt_unavailable"
+  | "storage_unavailable";
+
+export interface BatchCaptureItemError {
+  code: BatchItemErrorCode;
+  message: string;
+  retryable: boolean;
+  details?: Record<string, unknown>;
+}
+
+export interface KeyedCaptureActor {
+  /** Namespace for the retry key: a user id or a service identity id. */
+  kind: "human" | "service";
+  actorId: string;
+  /** The account that owns the created entry. */
+  ownerUserId: string;
+  /** Resolved default source label for this transport (Section 5.3). */
+  defaultSource: string;
+}
+
+export interface KeyedCaptureInput {
+  content: string;
+  tags?: string[];
+  source?: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+  visibility?: CaptureVisibility;
+  contentType?: string;
+  idempotencyKey: string;
+  /** Presentation label only. Never part of request hashing. */
+  clientItemId?: string;
+}
+
+export interface KeyedCaptureOutcome {
+  outcome: "created" | "replayed";
+  captureMode: "create-only";
+  entryId: string;
+  episodeId: string | null;
+  /** Current authorized revision of the entry after the operation. */
+  currentRevision: number;
+  /** The revision produced by the original committed capture, if known. */
+  committedRevision: number | null;
+  visibility: CaptureVisibility;
+  source: string;
+  warnings: string[];
+}
+
+function codePointLength(value: string): number {
+  return Array.from(value).length;
+}
+
+/**
+ * Shared per-item validation for keyed and batch capture. Runs the same
+ * normalization, bounds and secret detection the ordinary capture path uses,
+ * so a batch item can never bypass a check the single-item path enforces.
+ */
+export function normalizeKeyedCaptureInput(
+  input: KeyedCaptureInput,
+): { raw: string; clean: string; tags: string[]; visibility: CaptureVisibility } {
+  if (typeof input.content !== "string" || !input.content.trim()) {
+    throw new CaptureRejectedError("invalid_request");
+  }
+  const raw = input.content;
+  const { cleanContent, hashtags } = extractHashtags(raw.trim());
+  const clean = cleanContent || raw.trim();
+  const supplied = (input.tags ?? []).filter((tag): tag is string => typeof tag === "string");
+  const tags = [...new Set([...supplied.map((tag) => tag.toLowerCase()), ...hashtags])];
+  const visibility = input.visibility ?? "private";
+
+  // The create-only path keeps the explicit source declaration, so the ordinary
+  // validator is given the declared source rather than a resolved default.
+  validateCaptureInput(raw, tags, supplied.length ? input.source ?? "" : input.source ?? "", input.sourceUrl, input.sourceTitle);
+  validateCaptureTags(tags);
+
+  const encoder = new TextEncoder();
+  const payloadBytes = [raw, ...tags, input.source ?? "", input.sourceUrl ?? "", input.sourceTitle ?? ""]
+    .reduce((total, value) => total + encoder.encode(value).byteLength, 0);
+  if (payloadBytes > BATCH_ITEM_MAX_PAYLOAD_BYTES) {
+    throw new CaptureRejectedError("content_too_large");
+  }
+  return { raw, clean, tags, visibility };
+}
+
+/** Request hash meaning for a keyed capture; visibility is always normalized in. */
+function keyedCaptureMeaning(input: {
+  raw: string;
+  tags: string[];
+  sourceDeclaration: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+  visibility: CaptureVisibility;
+  contentType?: string;
+}): CaptureWriteMeaning {
+  return {
+    content: input.raw,
+    tags: input.tags,
+    sourceDeclaration: input.sourceDeclaration,
+    sourceUrl: input.sourceUrl ?? null,
+    sourceTitle: input.sourceTitle ?? null,
+    visibility: input.visibility,
+    contentType: input.contentType ?? "text",
+  };
+}
+
+/**
+ * Create-only keyed capture. Shared by personal `remember` with a retry key and
+ * by every `remember_batch` item, on both transports.
+ */
+export async function captureEntryKeyed(
+  env: Env,
+  actor: KeyedCaptureActor,
+  input: KeyedCaptureInput,
+): Promise<KeyedCaptureOutcome> {
+  if (!isValidIdempotencyKey(input.idempotencyKey)) {
+    throw new CaptureRejectedError("invalid_request");
+  }
+  const normalized = normalizeKeyedCaptureInput(input);
+  const key = normalizeIdempotencyKey(input.idempotencyKey);
+  const keyHash = await captureKeyHash(key);
+
+  // An explicit source label is declared provenance; otherwise the transport's
+  // actor default applies. Only the declaration marker is hashed.
+  const sourceDeclaration = input.source ?? ACTOR_DEFAULT_SOURCE_MARKER;
+  const requestHash = await captureRequestHash(keyedCaptureMeaning({
+    raw: normalized.raw,
+    tags: normalized.tags,
+    sourceDeclaration,
+    sourceUrl: input.sourceUrl,
+    sourceTitle: input.sourceTitle,
+    visibility: normalized.visibility,
+    contentType: input.contentType,
+  }));
+
+  const namespace = { kind: actor.kind, actorId: actor.actorId };
+  const lookup = await lookupCaptureReceipt(
+    env,
+    namespace,
+    keyHash,
+    requestHash,
+    actor.ownerUserId,
+  );
+
+  if (lookup.status === "replayed") {
+    const view = await loadCommittedCaptureView(env, lookup.descriptor);
+    return {
+      outcome: "replayed",
+      captureMode: CAPTURE_MODE_CREATE_ONLY,
+      entryId: lookup.descriptor.entryId,
+      episodeId: lookup.descriptor.episodeId,
+      currentRevision: view?.revision ?? lookup.descriptor.revision ?? 0,
+      committedRevision: lookup.descriptor.revision,
+      visibility: normalized.visibility,
+      source: input.source ?? actor.defaultSource,
+      warnings: view ? [] : ["metadata_unavailable: the committed capture metadata is temporarily unavailable"],
+    };
+  }
+
+  const receiptError = captureReceiptError(lookup);
+  if (receiptError) throw receiptError;
+
+  const source = input.source ?? actor.defaultSource;
+  let committed;
+  try {
+    committed = await commitEntryVersion({
+      kind: "capture",
+      actorUserId: actor.ownerUserId,
+      entryId: crypto.randomUUID(),
+      rawContent: normalized.raw,
+      materializedContent: normalized.clean,
+      tags: normalized.tags,
+      source,
+      sourceUrl: input.sourceUrl ?? (looksLikeUrl(source) ? source : null),
+      visibility: normalized.visibility,
+      contentType: input.contentType,
+      title: input.sourceTitle,
+      captureReceipt: {
+        actorKind: actor.kind,
+        actorId: actor.actorId,
+        keyHash,
+        requestHash,
+        attemptId: crypto.randomUUID(),
+      },
+    }, env);
+
+    return {
+      outcome: "created",
+      captureMode: CAPTURE_MODE_CREATE_ONLY,
+      entryId: committed.entryId,
+      episodeId: committed.episodeId,
+      currentRevision: committed.revision,
+      committedRevision: committed.revision,
+      visibility: normalized.visibility,
+      source,
+      warnings: committed.cleanupPending
+        ? ["vector_cleanup_pending: stale vectors will be removed by the repair schedule"]
+        : [],
+    };
+  } catch (error) {
+    if (error instanceof CaptureReceiptError) throw error;
+    if (error instanceof CaptureStageLostError) {
+      throw new CaptureReceiptError(
+        "receipt_unavailable",
+        "This capture attempt lost its staging fence and did not commit.",
+      );
+    }
+    throw error;
+  }
+}
+
+function looksLikeUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+
+// ─── Batch capture ────────────────────────────────────────────────────────────
+
+export interface BatchCaptureItem {
+  client_item_id: string;
+  idempotency_key: string;
+  content: string;
+  tags?: string[];
+  source?: string;
+  source_url?: string;
+  source_title?: string;
+  visibility?: CaptureVisibility;
+}
+
+export interface BatchCaptureItemResult {
+  client_item_id: string;
+  status: "created" | "replayed" | "failed";
+  data?: {
+    outcome: string;
+    capture_mode: string;
+    entry_id: string;
+    episode_id: string | null;
+    current_revision: number;
+    committed_revision: number | null;
+    visibility: CaptureVisibility;
+    source: string;
+    warnings: string[];
+  };
+  error?: BatchCaptureItemError;
+}
+
+export interface BatchCaptureResult {
+  items: BatchCaptureItemResult[];
+  summary: { created: number; replayed: number; failed: number };
+}
+
+export class BatchEnvelopeError extends Error {
+  readonly code: BatchItemErrorCode;
+  readonly details: Record<string, unknown>;
+  constructor(code: BatchItemErrorCode, message: string, details: Record<string, unknown> = {}) {
+    super(message);
+    this.name = "BatchEnvelopeError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
+const BATCH_ITEM_KEYS = new Set([
+  "client_item_id",
+  "idempotency_key",
+  "content",
+  "tags",
+  "source",
+  "source_url",
+  "source_title",
+  "visibility",
+]);
+
+/**
+ * Envelope validation. Every failure here rejects the WHOLE request with zero
+ * writes; only content-specific validation is deferred to the per-item pass.
+ */
+export function validateBatchEnvelope(payload: unknown): BatchCaptureItem[] {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new BatchEnvelopeError("invalid_request", "Batch params must be an object");
+  }
+  const params = payload as Record<string, unknown>;
+  for (const key of Object.keys(params)) {
+    if (key !== "items") {
+      throw new BatchEnvelopeError("invalid_request", "Batch params may only contain items", { field: key });
+    }
+  }
+  const items = params.items;
+  if (!Array.isArray(items)) {
+    throw new BatchEnvelopeError("invalid_request", "items must be an array", { field: "items" });
+  }
+  if (items.length < 1 || items.length > BATCH_MAX_ITEMS) {
+    throw new BatchEnvelopeError(
+      "invalid_request",
+      `items must contain between 1 and ${BATCH_MAX_ITEMS} entries`,
+      { field: "items", min: 1, max: BATCH_MAX_ITEMS },
+    );
+  }
+
+  const encoder = new TextEncoder();
+  const serializedBytes = encoder.encode(JSON.stringify(items)).byteLength;
+  if (serializedBytes > BATCH_MAX_SERIALIZED_ITEMS_BYTES) {
+    throw new BatchEnvelopeError(
+      "content_too_large",
+      "Serialized items exceed the batch size limit",
+      { field: "items", limit_bytes: BATCH_MAX_SERIALIZED_ITEMS_BYTES },
+    );
+  }
+
+  const clientItemIds = new Set<string>();
+  const idempotencyKeys = new Set<string>();
+  const validated: BatchCaptureItem[] = [];
+
+  items.forEach((candidate, index) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new BatchEnvelopeError("invalid_request", "Each item must be an object", { index });
+    }
+    const item = candidate as Record<string, unknown>;
+    for (const key of Object.keys(item)) {
+      if (!BATCH_ITEM_KEYS.has(key)) {
+        throw new BatchEnvelopeError("invalid_request", "Unknown item field", { index, field: key });
+      }
+    }
+    const clientItemId = item.client_item_id;
+    if (typeof clientItemId !== "string") {
+      throw new BatchEnvelopeError("invalid_request", "client_item_id must be a string", { index, field: "client_item_id" });
+    }
+    const clientLength = codePointLength(clientItemId);
+    if (clientLength < CLIENT_ITEM_ID_MIN_CODE_POINTS || clientLength > CLIENT_ITEM_ID_MAX_CODE_POINTS) {
+      throw new BatchEnvelopeError(
+        "invalid_request",
+        `client_item_id must be ${CLIENT_ITEM_ID_MIN_CODE_POINTS}-${CLIENT_ITEM_ID_MAX_CODE_POINTS} characters`,
+        { index, field: "client_item_id" },
+      );
+    }
+    if (clientItemIds.has(clientItemId)) {
+      throw new BatchEnvelopeError("invalid_request", "client_item_id must be unique within the batch", { index, field: "client_item_id" });
+    }
+    clientItemIds.add(clientItemId);
+
+    if (typeof item.idempotency_key !== "string" || !isValidIdempotencyKey(item.idempotency_key)) {
+      throw new BatchEnvelopeError("invalid_request", "idempotency_key is required per item", { index, field: "idempotency_key" });
+    }
+    const trimmedKey = normalizeIdempotencyKey(item.idempotency_key);
+    if (idempotencyKeys.has(trimmedKey)) {
+      throw new BatchEnvelopeError("invalid_request", "idempotency_key must be unique within the batch", { index, field: "idempotency_key" });
+    }
+    idempotencyKeys.add(trimmedKey);
+
+    if (typeof item.content !== "string") {
+      throw new BatchEnvelopeError("invalid_request", "content must be a string", { index, field: "content" });
+    }
+    if (item.tags !== undefined && (!Array.isArray(item.tags) || item.tags.some((tag) => typeof tag !== "string"))) {
+      throw new BatchEnvelopeError("invalid_request", "tags must be an array of strings", { index, field: "tags" });
+    }
+    for (const field of ["source", "source_url", "source_title"] as const) {
+      if (item[field] !== undefined && typeof item[field] !== "string") {
+        throw new BatchEnvelopeError("invalid_request", `${field} must be a string`, { index, field });
+      }
+    }
+    if (item.visibility !== undefined && item.visibility !== "private" && item.visibility !== "public") {
+      throw new BatchEnvelopeError("invalid_request", "visibility must be private or public", { index, field: "visibility" });
+    }
+
+    validated.push({
+      client_item_id: clientItemId,
+      idempotency_key: item.idempotency_key,
+      content: item.content,
+      tags: item.tags as string[] | undefined,
+      source: item.source as string | undefined,
+      source_url: item.source_url as string | undefined,
+      source_title: item.source_title as string | undefined,
+      visibility: item.visibility as CaptureVisibility | undefined,
+    });
+  });
+
+  return validated;
+}
+
+/**
+ * Process items sequentially in input order. A content-specific failure is
+ * recorded against its own item and later items still run; a transient failure
+ * never triggers an automatic unkeyed retry inside the server.
+ */
+export async function captureEntryBatch(
+  env: Env,
+  actor: KeyedCaptureActor,
+  items: BatchCaptureItem[],
+  /**
+   * Revalidated before each item's effect so a credential revoked mid-batch
+   * stops later items. Identity is never cached across items.
+   */
+  revalidate?: () => Promise<void>,
+): Promise<BatchCaptureResult> {
+  const results: BatchCaptureItemResult[] = [];
+  let created = 0;
+  let replayed = 0;
+  let failed = 0;
+
+  for (const item of items) {
+    try {
+      if (revalidate) await revalidate();
+      const outcome = await captureEntryKeyed(env, actor, {
+        content: item.content,
+        tags: item.tags,
+        source: item.source,
+        sourceUrl: item.source_url,
+        sourceTitle: item.source_title,
+        visibility: item.visibility,
+        idempotencyKey: item.idempotency_key,
+        clientItemId: item.client_item_id,
+      });
+      if (outcome.outcome === "created") created++;
+      else replayed++;
+      results.push({
+        client_item_id: item.client_item_id,
+        status: outcome.outcome,
+        data: {
+          outcome: outcome.outcome,
+          capture_mode: outcome.captureMode,
+          entry_id: outcome.entryId,
+          episode_id: outcome.episodeId,
+          current_revision: outcome.currentRevision,
+          committed_revision: outcome.committedRevision,
+          visibility: outcome.visibility,
+          source: outcome.source,
+          warnings: outcome.warnings,
+        },
+      });
+    } catch (error) {
+      failed++;
+      results.push({
+        client_item_id: item.client_item_id,
+        status: "failed",
+        error: batchItemError(error),
+      });
+    }
+  }
+
+  return { items: results, summary: { created, replayed, failed } };
+}
+
+/** Map a domain failure to safe per-item error fields: names and limits, never content. */
+export function batchItemError(error: unknown): BatchCaptureItemError {
+  if (error instanceof CaptureRejectedError) {
+    return {
+      code: error.code,
+      message: `Item rejected: ${error.code}.`,
+      retryable: false,
+      ...(error.code === "secret_detected" && error.detector
+        ? { details: { detector: error.detector } }
+        : {}),
+    };
+  }
+  if (error instanceof CaptureReceiptError) {
+    return {
+      code: error.code,
+      message: error.message,
+      retryable: error.retryable,
+      details: error.details,
+    };
+  }
+  if (error instanceof CaptureStageLostError) {
+    return {
+      code: "receipt_unavailable",
+      message: "This capture attempt lost its staging fence and did not commit.",
+      retryable: true,
+    };
+  }
+  if (error instanceof BatchEnvelopeError) {
+    return { code: error.code, message: error.message, retryable: false, details: error.details };
+  }
+  return {
+    code: "storage_unavailable",
+    message: "The memory service could not complete this item.",
+    retryable: true,
   };
 }
