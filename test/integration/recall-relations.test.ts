@@ -81,13 +81,12 @@ describe("Recall v2 — relations in results (Ticket 09)", () => {
     expect(entryA.relations).toBeDefined();
     expect(entryA.relations.length).toBeGreaterThanOrEqual(1);
     expect(entryA.relations[0]).toMatchObject({
-      type: "relates_to",
+      type: "relates_to", targetId: "entry-b", direction: "undirected",
     });
 
-    // entry-b has no outgoing edges — the current implementation only maps relations
-    // for the source side of each edge, so entry-b has no relations field.
+    // An undirected relation belongs to both returned endpoints.
     const entryB = data.results.find((r: any) => r.id === "entry-b");
-    expect(entryB.relations).toBeUndefined();
+    expect(entryB.relations).toEqual([{ type: "relates_to", confidence: 1, targetId: "entry-a", direction: "undirected" }]);
   });
 
   it("recall returns epistemic_status in results", async () => {

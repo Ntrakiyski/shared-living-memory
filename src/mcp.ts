@@ -44,7 +44,6 @@ import {
 } from "./source-metadata";
 import {
   commitEntryVersion,
-  EntryVersionError,
   loadOwnedRestoreSnapshot,
 } from "./entry-version-service";
 import { recallEntries } from "./recall";
@@ -107,7 +106,7 @@ import { decideOperatorAction, requireAllowedDecision } from "./operator-policy"
 import { verifyServiceActor } from "./service-actor";
 import { withMandatoryAudit, MandatoryAuditError } from "./mandatory-audit";
 import { MCP_ONBOARDING_MARKDOWN, MCP_ONBOARDING_RESOURCE_URI } from "./mcp-onboarding";
-import { submitRecallFeedback } from "./recall-events";
+import { recordRecallEvent, submitRecallFeedback } from "./recall-events";
 
 // ─── MCP Server ───────────────────────────────────────────────────────────────
 
@@ -118,12 +117,37 @@ interface McpEntryAccessRow {
   visibility: "private" | "public";
 }
 
-function versionErrorText(error: unknown): string {
-  if (!(error instanceof EntryVersionError)) return "Memory update failed.";
-  if (error.code === "not_found" || error.code === "not_owner") return "Memory not found.";
-  if (error.code === "revision_conflict") return "Memory changed while you were editing it. Recall it again and retry.";
-  if (error.code === "vector_stage_failed") return "Memory update failed because vector storage is unavailable.";
-  return error.code === "invalid_input" ? error.message : "Memory update could not be committed.";
+// Both entry-ID spellings are accepted at the transport boundary. Handlers keep
+// their established canonical key, and conflicting values never reach a write.
+const SINGLE_ENTRY_ID_KEYS: Record<string, "id" | "entry_id"> = {
+  append: "id", update: "id", set_status: "id", reinforce: "id", forget: "id", connections: "id",
+  set_epistemic_status: "entry_id", passages: "entry_id", history: "entry_id", restore: "entry_id",
+};
+
+function toolRefusal(code: string, message: string, retryable = false) {
+  return toToolError(failResult(code, message, retryable));
+}
+
+function inaccessibleEntry() {
+  // Never distinguish a hidden private record from a nonexistent ID.
+  return toolRefusal("not_found_or_inaccessible", "Entry not found or not accessible to this account.");
+}
+
+function graphVisibilityRefusal() {
+  return toolRefusal("forbidden", "Cannot link entries across private and public visibility. Both direct links and proposals require the same visibility; use two entries already visible to this account with matching visibility.");
+}
+
+function connectionsToolResult(id: string, connections: Awaited<ReturnType<typeof getConnections>>) {
+  const data = fitDataPage(connections.map(connection => ({
+    ...connection,
+    ...boundContentExcerpt(connection.content),
+    source: sanitizeSourceMetadataForOutput({ source: connection.source }, "team_public").source,
+  })), (rows, omitted) => ({ entry_id: id, connections: rows, truncated: omitted }));
+  const text = data.connections.length ? data.connections.map(connection => {
+    const arrow = connection.direction === "undirected" ? "↔" : "→";
+    return `- ${connection.source_id} ${arrow} ${connection.target_id} (${connection.label}, ${connection.direction}, edge ${connection.edge_id}): ${connection.content.slice(0, 120)} [confidence: ${(connection.confidence * 100).toFixed(0)}%]`;
+  }).join("\n") : `No connections found for ${id}.`;
+  return toToolSuccess(okResult(data), text);
 }
 
 function isMcpEntryVisible(row: McpEntryAccessRow, userId: string): boolean {
@@ -456,24 +480,49 @@ export function buildMcpServer(
   // but explicitly refuses, so the client gets a truthful error rather than a
   // silently different tool list.
   const maintenanceReadOnly = isMaintenanceReadOnly(env);
-  const guardHandler = (name: string, handler: unknown): unknown => {
-    if (!maintenanceReadOnly || READ_ONLY_SAFE_TOOLS.has(name)) return handler;
-    return async () => toToolError(failResult(
-      "maintenance_read_only",
-      "Shared Living Memory is in read-only maintenance. Reads remain available.",
-      true,
-    ));
+  const guardHandler = (name: string, handler: unknown): unknown => async (input: Record<string, unknown> = {}, extra: unknown) => {
+    if (maintenanceReadOnly && !READ_ONLY_SAFE_TOOLS.has(name)) {
+      return toolRefusal("maintenance_read_only", "Shared Living Memory is in read-only maintenance. Reads remain available.", true);
+    }
+    const canonicalKey = SINGLE_ENTRY_ID_KEYS[name];
+    if (canonicalKey) {
+      const { id, entry_id } = input;
+      if (id !== undefined && entry_id !== undefined && id !== entry_id) {
+        return toolRefusal("invalid_request", "id and entry_id must match when both are supplied.");
+      }
+      const entryId = id ?? entry_id;
+      if (typeof entryId !== "string" || !entryId.trim()) {
+        return toolRefusal("invalid_request", "Supply a non-empty id or entry_id.");
+      }
+      input = { ...input, [canonicalKey]: entryId };
+    }
+    try {
+      return await (handler as (input: Record<string, unknown>, extra: unknown) => unknown)(input, extra);
+    } catch (error) {
+      return domainToolError(error);
+    }
   };
   const registerUnderProfile = (name: string, config: unknown, handler: unknown): void => {
+    const canonicalKey = SINGLE_ENTRY_ID_KEYS[name];
+    if (canonicalKey && isRecord(config) && isRecord(config.inputSchema)) {
+      const aliasKey = canonicalKey === "id" ? "entry_id" : "id";
+      const canonicalSchema = config.inputSchema[canonicalKey] as z.ZodString;
+      config = { ...config, inputSchema: {
+        ...config.inputSchema,
+        [canonicalKey]: canonicalSchema.optional(),
+        [aliasKey]: z.string().optional().describe(`Alias for ${canonicalKey}. Supply either name; if both are supplied they must match.`),
+      } };
+    }
+    const guardedHandler = guardHandler(name, handler);
     if (profileAllowsTool(profile, name)) {
-      rawRegisterTool(name as never, config as never, guardHandler(name, handler) as never);
+      rawRegisterTool(name as never, config as never, guardedHandler as never);
     }
     const alias = EDGE_TOOL_ALIASES[name];
     if (alias && profileAllowsTool(profile, alias)) {
       const aliased = config && typeof config === "object"
         ? { ...(config as Record<string, unknown>), title: alias }
         : config;
-      rawRegisterTool(alias as never, aliased as never, guardHandler(alias, handler) as never);
+      rawRegisterTool(alias as never, aliased as never, guardedHandler as never);
     }
   };
   const registerTool: RegisterTool = registerUnderProfile as unknown as RegisterTool;
@@ -671,7 +720,7 @@ export function buildMcpServer(
           after: z.number().int().optional(),
           before: z.number().int().optional(),
           kind: z.enum([...KIND_VALUES] as [string, ...string[]]).optional(),
-          hops: z.number().int().min(0).max(3).default(0),
+          hops: z.number().int().min(0).max(3).default(0).describe("Graph depth 0–3; 0 returns direct matches only. Eligible linked neighbors may fill up to floor(topK/2) result slots, so topK: 1 adds no neighbor."),
           as_of: z.number().int().optional(),
           known_at: z.number().int().optional(),
           include_insight: z.boolean().default(true),
@@ -717,16 +766,14 @@ export function buildMcpServer(
         const connections = await governedRead(
           "memory.read",
           { entryId: id, edgeType: type ?? null },
-          async () => await getVisibleMcpEntry(id, userId, env)
-            ? getConnections(id, type, env, userId)
-            : [],
+          async () => {
+            if (!await getVisibleMcpEntry(id, userId, env)) throw { code: "not_found_or_inaccessible" };
+            return getConnections(id, type, env, userId);
+          },
           (value) => ({ connectionCount: value.length }),
           [id],
         );
-        const text = connections.length
-          ? connections.map((item) => `- (${item.label}) ${item.id}: ${item.content.slice(0, 160)}`).join("\n")
-          : `No connections found for ${id}.`;
-        return { content: [{ type: "text", text }] };
+        return connectionsToolResult(id, connections);
       }),
     );
 
@@ -863,6 +910,7 @@ export function buildMcpServer(
         error = mapped.code;
         result = toToolError(failResult(mapped.code, mapped.message, mapped.retryable, mapped.details));
       }
+      if (result.isError) error ??= "tool_error";
       const durationMs = Date.now() - t0;
       // Audit shape and outcome only. Tool arguments/results routinely contain
       // memory content and may contain credentials supplied by mistake.
@@ -1030,9 +1078,7 @@ export function buildMcpServer(
       ).bind(id).first() as Record<string, any> | null;
 
       if (!row) {
-        return {
-          content: [{ type: "text", text: `No entry found with ID: ${id}` }],
-        };
+        return inaccessibleEntry();
       }
 
       if (userId && row.owner_user_id && row.owner_user_id !== userId && row.owner_user_id !== "") {
@@ -1285,7 +1331,7 @@ export function buildMcpServer(
         after: z.number().int().optional().describe("Only return entries after this Unix ms timestamp"),
         before: z.number().int().optional().describe("Only return entries before this Unix ms timestamp"),
         kind: z.enum([...KIND_VALUES] as [string, ...string[]]).optional().describe("Filter to episodic (events) or semantic (facts/knowledge)"),
-        hops: z.number().int().min(0).max(3).default(0).describe("Graph expansion depth: 0 = direct matches only (default); 1–2 also surfaces related memories linked in the graph"),
+        hops: z.number().int().min(0).max(3).default(0).describe("Graph depth 0–3; 0 returns direct matches only. Eligible linked neighbors may fill up to floor(topK/2) result slots, so topK: 1 adds no neighbor."),
         as_of: z.number().int().optional().describe("Unix millisecond timestamp — when the fact was true (valid time)"),
         known_at: z.number().int().optional().describe("Unix millisecond timestamp — reconstruct what the team knew then (knowledge time)"),
         include_insight: z.boolean().default(true).describe("Set false to skip insight generation and return raw ranked retrieval only."),
@@ -1295,6 +1341,7 @@ export function buildMcpServer(
   );
 
   async function readRecallTool(input: Record<string, any>) {
+    const startedAt = Date.now();
     const { query, topK, tag, after, before, kind, hops, as_of, known_at, include_insight = true } = input;
       const { matches, insight, semanticUnavailable } = await recallEntries({
         query, topK, tag, after, before,
@@ -1341,7 +1388,19 @@ export function buildMcpServer(
         insight: include_insight && !omitted && insight ? boundContentExcerpt(insight, 8192).content : null,
         semantic_available: !semanticUnavailable,
         retrieval_mode: retrievalMode,
+        // Reserve a UUID before selecting the final page; telemetry records
+        // exactly the IDs this response exposes, even when the page is trimmed.
+        recall_event_id: "00000000-0000-0000-0000-000000000000" as string | null,
       }));
+      const recallEvent = actor.kind === "human"
+        ? await recordRecallEvent(env, {
+          userId, client: "mcp", query,
+          resultEntryIds: data.matches.map(match => match.entry.entry_id),
+          semanticUnavailable: Boolean(semanticUnavailable), durationMs: Date.now() - startedAt,
+        })
+        : { recall_event_id: null, warnings: [] };
+      data.recall_event_id = recallEvent.recall_event_id;
+      warnings.push(...recallEvent.warnings);
       const text = data.matches.length ? data.matches.map(match =>
         `ID: ${match.entry.entry_id} (current revision ${match.entry.revision}, ${match.content_state} content revision ${match.content_revision})\n${match.content}${match.citations.length ? `\nEvidence: ${JSON.stringify(match.citations)}` : ""}`,
       ).join("\n\n") + (data.insight ? `\n\n${data.insight}` : "") : "Nothing found matching that query.";
@@ -1363,7 +1422,7 @@ export function buildMcpServer(
       audited("reinforce", async ({ id }) => {
         const state = await reinforceOwnedEntry(id, actor.userId, env);
         if (!state) {
-          return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
+          return inaccessibleEntry();
         }
         return {
           content: [{
@@ -1484,12 +1543,12 @@ export function buildMcpServer(
     },
     async ({ id, confirm_entry_id }) => {
       if (confirm_entry_id !== id) {
-        return { content: [{ type: "text", text: "confirm_entry_id must match id to confirm permanent deletion. This action cannot be undone." }] };
+        return toolRefusal("invalid_request", "confirm_entry_id must match id (or entry_id) to confirm permanent deletion. This action cannot be undone.");
       }
       if (userId) {
         const row = await env.DB.prepare(`SELECT owner_user_id FROM entries WHERE id = ?`).bind(id).first() as { owner_user_id: string } | null;
         if (row && row.owner_user_id && row.owner_user_id !== userId && row.owner_user_id !== "") {
-          return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
+          return inaccessibleEntry();
         }
       }
       const decision = decideOperatorAction({ actor, operation: "entry.forget", autonomyProfile: "human-reviewed" });
@@ -1512,7 +1571,7 @@ export function buildMcpServer(
           },
         );
         if (result.status === "not_found") {
-          return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
+          return inaccessibleEntry();
         }
         if (result.status === "pending_cleanup") {
           return { content: [{ type: "text", text: `Permanent deletion committed for entry ${id}; ${result.vectorCount} vector(s) queued for remote cleanup (operation ${result.operationId}). Do not retry — the repair schedule finishes it.` }] };
@@ -1531,7 +1590,7 @@ export function buildMcpServer(
   registerTool(
     "link",
     {
-      description: "Create an explicit relationship link between two memories by ID (e.g. connect a decision to its outcome). Get the IDs from recall or list_recent first.",
+      description: "Create an explicit relationship link between two memories by ID (e.g. connect a decision to its outcome). Get the IDs from recall or list_recent first. Both endpoints must be visible and have matching private/public visibility; proposals do not bypass this boundary.",
       inputSchema: {
         source_id: z.string().describe("Source entry ID"),
         target_id: z.string().describe("Target entry ID"),
@@ -1543,14 +1602,14 @@ export function buildMcpServer(
       for (const id of [source_id, target_id]) {
         const row = await getVisibleMcpEntry(id, userId, env);
         if (!row) {
-          return { content: [{ type: "text", text: `Entry not found: ${id}` }] };
+          return inaccessibleEntry();
         }
         endpointRows.push(row);
       }
       const sourcePrivate = hasMcpPrivateVisibility(endpointRows[0]);
       const targetPrivate = hasMcpPrivateVisibility(endpointRows[1]);
       if (sourcePrivate === null || targetPrivate === null || sourcePrivate !== targetPrivate) {
-        return { content: [{ type: "text", text: "Cannot link entries across private and public visibility." }] };
+        return graphVisibilityRefusal();
       }
       const edge = await createEdge(source_id, target_id, type, {
         provenance: "explicit",
@@ -1559,8 +1618,8 @@ export function buildMcpServer(
         actorId: userId,
         mutationKind: "explicit-link",
       }, env);
-      if (!edge) return { content: [{ type: "text", text: "Unable to create a link between those entries." }] };
-      return { content: [{ type: "text", text: `Linked ${edge.source_id} → ${edge.target_id} (${edgeLabel(edge.type)}).` }] };
+      if (!edge) return toolRefusal("invalid_request", "Unable to create a link between those entries. Use distinct visible entries and a supported relationship type.");
+      return toToolSuccess(okResult({ edge }), `Linked ${edge.source_id} → ${edge.target_id} (${edgeLabel(edge.type)}).`);
     })
   );
 
@@ -1578,7 +1637,7 @@ export function buildMcpServer(
     audited("unlink", async ({ source_id, target_id, type }) => {
       for (const id of [source_id, target_id]) {
         if (!await getVisibleMcpEntry(id, userId, env)) {
-          return { content: [{ type: "text", text: `Entry not found: ${id}` }] };
+          return inaccessibleEntry();
         }
       }
       const deleted = await deleteEdge(source_id, target_id, type, env, {
@@ -1586,8 +1645,8 @@ export function buildMcpServer(
         actorId: userId,
         mutationKind: "explicit-remove",
       });
-      if (!deleted) return { content: [{ type: "text", text: "No link found between those entries." }] };
-      return { content: [{ type: "text", text: `Removed ${deleted} link(s) between ${source_id} and ${target_id}.` }] };
+      if (!deleted) return toolRefusal("not_found_or_inaccessible", "No link found between those entries.");
+      return toToolSuccess(okResult({ source_id, target_id, type: type ?? null, deleted }), `Removed ${deleted} link(s) between ${source_id} and ${target_id}.`);
     })
   );
 
@@ -1602,17 +1661,8 @@ export function buildMcpServer(
       },
     },
     audited("connections", async ({ id, type }) => {
-      if (!await getVisibleMcpEntry(id, userId, env)) {
-        return { content: [{ type: "text", text: `No connections found for ${id}.` }] };
-      }
-      const connections = await getConnections(id, type, env, userId);
-      if (!connections.length) {
-        return { content: [{ type: "text", text: `No connections found for ${id}.` }] };
-      }
-      const text = connections
-        .map(c => `- (${c.label}) ${c.id}: ${c.content.slice(0, 120)} [confidence: ${(c.confidence * 100).toFixed(0)}%]`)
-        .join("\n");
-      return { content: [{ type: "text", text }] };
+      if (!await getVisibleMcpEntry(id, userId, env)) return inaccessibleEntry();
+      return connectionsToolResult(id, await getConnections(id, type, env, userId));
     })
   );
 
@@ -1626,9 +1676,7 @@ export function buildMcpServer(
       },
     },
     audited("passages", async ({ entry_id }) => {
-      if (!await getVisibleMcpEntry(entry_id, userId, env)) {
-        return { content: [{ type: "text", text: `No passages found for entry ${entry_id}.` }] };
-      }
+      if (!await getVisibleMcpEntry(entry_id, userId, env)) return inaccessibleEntry();
       const projection = await env.DB.prepare(
         `SELECT current_episode_id, owner_user_id FROM entries WHERE id = ?`,
       ).bind(entry_id).first<{ current_episode_id: string | null; owner_user_id: string }>();
@@ -1699,7 +1747,7 @@ export function buildMcpServer(
       const snapshot = await loadOwnedRestoreSnapshot(env, userId, entry_id, snapshot_id);
 
       if (!snapshot) {
-        return { content: [{ type: "text", text: `No snapshot found for entry ${entry_id}.` }] };
+        return toolRefusal("not_found_or_inaccessible", "No snapshot is available for this entry to this account.");
       }
 
       const snapContent = (snapshot.content as string) ?? "";
@@ -1729,7 +1777,7 @@ export function buildMcpServer(
         }, env);
         return { content: [{ type: "text", text: `Restored. New entry ID: ${result.entryId} — revision ${result.revision}, based on snapshot ${snapshot.id} from ${new Date(snapshot.created_at as number).toISOString()}.` }] };
       } catch (error) {
-        return { isError: true, content: [{ type: "text", text: versionErrorText(error) }] };
+        return domainToolError(error);
       }
     })
   );
@@ -1738,7 +1786,7 @@ export function buildMcpServer(
   registerTool(
     "propose_edge",
     {
-      description: "Propose a new relationship between two entries. Creates a pending edge proposal that requires human approval. Use for contradictions, clarifications, or other relationships you're not certain about.",
+      description: "Propose a new relationship between two entries. Creates a pending edge proposal that requires human approval. Use for contradictions, clarifications, or other relationships you're not certain about. Both endpoints must be visible and have matching private/public visibility; approval does not bypass this boundary.",
       inputSchema: {
         source_id: z.string().describe("Source entry ID"),
         target_id: z.string().describe("Target entry ID"),
@@ -1749,18 +1797,18 @@ export function buildMcpServer(
     audited("propose_edge", async ({ source_id, target_id, type, reason }) => {
       const trimmedSource = source_id.trim();
       const trimmedTarget = target_id.trim();
-      if (!trimmedSource || !trimmedTarget) return { content: [{ type: "text", text: "source_id and target_id are required." }] };
+      if (!trimmedSource || !trimmedTarget || trimmedSource === trimmedTarget) return toolRefusal("invalid_request", "source_id and target_id must identify two distinct entries.");
 
       const endpointRows: McpEntryAccessRow[] = [];
       for (const id of [trimmedSource, trimmedTarget]) {
         const row = await getVisibleMcpEntry(id, userId, env);
-        if (!row) return { content: [{ type: "text", text: `Entry not found: ${id}` }] };
+        if (!row) return inaccessibleEntry();
         endpointRows.push(row);
       }
       const sourcePrivate = hasMcpPrivateVisibility(endpointRows[0]);
       const targetPrivate = hasMcpPrivateVisibility(endpointRows[1]);
       if (sourcePrivate === null || targetPrivate === null || sourcePrivate !== targetPrivate) {
-        return { content: [{ type: "text", text: "Cannot propose a link across private and public visibility." }] };
+        return graphVisibilityRefusal();
       }
 
       // Dedup check
@@ -1768,7 +1816,10 @@ export function buildMcpServer(
         `SELECT id, source_id, target_id, type, reason, proposed_by, status, created_at FROM edge_proposals WHERE source_id = ? AND target_id = ? AND type = ? AND status = 'pending'`
       ).bind(trimmedSource, trimmedTarget, type).first() as Record<string, any> | null;
 
-      if (existing) return { content: [{ type: "text", text: `Existing pending proposal found: ${existing.id}. No duplicate created.` }] };
+      if (existing) return toToolSuccess(okResult({
+        proposal: { id: existing.id, source_id: existing.source_id, target_id: existing.target_id, type: existing.type, status: "pending" },
+        created: false,
+      }), `Existing pending proposal found: ${existing.id}. No duplicate created.`);
 
       const proposalId = crypto.randomUUID();
       const now = Date.now();
@@ -1776,7 +1827,10 @@ export function buildMcpServer(
         `INSERT INTO edge_proposals (id, source_id, target_id, type, reason, proposed_by, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`
       ).bind(proposalId, trimmedSource, trimmedTarget, type, reason ?? "", userId, now).run();
 
-      return { content: [{ type: "text", text: `Proposal ${proposalId} created: ${trimmedSource} —[${type}]→ ${trimmedTarget}. Reason: ${reason ?? "(none)"}. Awaiting human approval.` }] };
+      return toToolSuccess(okResult({
+        proposal: { id: proposalId, source_id: trimmedSource, target_id: trimmedTarget, type, status: "pending" },
+        created: true,
+      }), `Proposal ${proposalId} created: ${trimmedSource} —[${type}]→ ${trimmedTarget}. Reason: ${reason ?? "(none)"}. Awaiting human approval.`);
     })
   );
 
@@ -1822,25 +1876,25 @@ export function buildMcpServer(
     },
     audited("approve-proposal", async ({ proposal_id }) => {
       if (!await isActiveMcpAdmin(actor, env)) {
-        return { isError: true, content: [{ type: "text", text: "Administrator role required." }] };
+        return toolRefusal("forbidden", "Administrator role required.");
       }
       const proposal = await env.DB.prepare(
         `SELECT id, source_id, target_id, type, reason, proposed_by, status, created_at FROM edge_proposals WHERE id = ?`
       ).bind(proposal_id).first() as Record<string, any> | null;
 
-      if (!proposal) return { content: [{ type: "text", text: `Proposal not found: ${proposal_id}` }] };
+      if (!proposal) return toolRefusal("not_found_or_inaccessible", "Proposal not found or not accessible to this account.");
       const endpointRows: McpEntryAccessRow[] = [];
       for (const id of [proposal.source_id as string, proposal.target_id as string]) {
         const row = await getVisibleMcpEntry(id, userId, env);
-        if (!row) return { content: [{ type: "text", text: `Proposal not found: ${proposal_id}` }] };
+        if (!row) return toolRefusal("not_found_or_inaccessible", "Proposal not found or not accessible to this account.");
         endpointRows.push(row);
       }
-      if (proposal.status !== "pending") return { content: [{ type: "text", text: `Proposal is already ${proposal.status}.` }] };
+      if (proposal.status !== "pending") return toolRefusal("invalid_transition", `Proposal is already ${proposal.status}.`);
 
       const sourcePrivate = hasMcpPrivateVisibility(endpointRows[0]);
       const targetPrivate = hasMcpPrivateVisibility(endpointRows[1]);
       if (sourcePrivate === null || targetPrivate === null || sourcePrivate !== targetPrivate) {
-        return { content: [{ type: "text", text: `Proposal could not be approved: ${proposal_id}` }] };
+        return graphVisibilityRefusal();
       }
 
       const now = Date.now();
@@ -1849,7 +1903,7 @@ export function buildMcpServer(
          WHERE id = ? AND status = 'pending'`,
       ).bind(userId, proposal_id).run();
       if ((reserved.meta.changes ?? 0) !== 1) {
-        return { isError: true, content: [{ type: "text", text: `Proposal was resolved concurrently: ${proposal_id}` }] };
+        return toolRefusal("revision_conflict", "Proposal was resolved concurrently. Re-read its current status before taking further action.");
       }
       try {
         const edge = await createEdge(proposal.source_id, proposal.target_id, proposal.type, {
@@ -1860,19 +1914,19 @@ export function buildMcpServer(
           mutationKind: "proposal-publish",
           mutationId: `legacy-edge-proposal:${proposal_id}`,
         }, env);
-        if (!edge) throw new Error("edge rejected");
+        if (!edge) throw Object.assign(new Error("edge rejected"), { code: "invalid_request" });
         const completed = await env.DB.prepare(
           `UPDATE edge_proposals
            SET status = 'approved', resolved_at = ?, resolved_by = ?
            WHERE id = ? AND status = 'executing' AND resolved_by = ?`,
         ).bind(now, userId, proposal_id, userId).run();
-        if ((completed.meta.changes ?? 0) !== 1) throw new Error("reservation lost");
-      } catch {
+        if ((completed.meta.changes ?? 0) !== 1) throw Object.assign(new Error("reservation lost"), { code: "revision_conflict" });
+      } catch (error) {
         await env.DB.prepare(
           `UPDATE edge_proposals SET status = 'pending', resolved_by = NULL
            WHERE id = ? AND status = 'executing' AND resolved_by = ?`,
         ).bind(proposal_id, userId).run();
-        return { isError: true, content: [{ type: "text", text: `Proposal could not be approved: ${proposal_id}` }] };
+        return domainToolError(error);
       }
 
       return { content: [{ type: "text", text: `Approved proposal ${proposal_id}: ${proposal.source_id} —[${proposal.type}]→ ${proposal.target_id}. Edge created.` }] };
@@ -1890,19 +1944,19 @@ export function buildMcpServer(
     },
     audited("reject-proposal", async ({ proposal_id }) => {
       if (!await isActiveMcpAdmin(actor, env)) {
-        return { isError: true, content: [{ type: "text", text: "Administrator role required." }] };
+        return toolRefusal("forbidden", "Administrator role required.");
       }
       const proposal = await env.DB.prepare(
         `SELECT id, source_id, target_id, type, reason, proposed_by, status, created_at FROM edge_proposals WHERE id = ?`
       ).bind(proposal_id).first() as Record<string, any> | null;
 
-      if (!proposal) return { content: [{ type: "text", text: `Proposal not found: ${proposal_id}` }] };
+      if (!proposal) return toolRefusal("not_found_or_inaccessible", "Proposal not found or not accessible to this account.");
       for (const id of [proposal.source_id as string, proposal.target_id as string]) {
         if (!await getVisibleMcpEntry(id, userId, env)) {
-          return { content: [{ type: "text", text: `Proposal not found: ${proposal_id}` }] };
+          return toolRefusal("not_found_or_inaccessible", "Proposal not found or not accessible to this account.");
         }
       }
-      if (proposal.status !== "pending") return { content: [{ type: "text", text: `Proposal is already ${proposal.status}.` }] };
+      if (proposal.status !== "pending") return toolRefusal("invalid_transition", `Proposal is already ${proposal.status}.`);
 
       const now = Date.now();
       const rejected = await env.DB.prepare(
@@ -1911,7 +1965,7 @@ export function buildMcpServer(
          WHERE id = ? AND status = 'pending'`,
       ).bind(now, userId, proposal_id).run();
       if ((rejected.meta.changes ?? 0) !== 1) {
-        return { isError: true, content: [{ type: "text", text: `Proposal was resolved concurrently: ${proposal_id}` }] };
+        return toolRefusal("revision_conflict", "Proposal was resolved concurrently. Re-read its current status before taking further action.");
       }
 
       return { content: [{ type: "text", text: `Rejected proposal ${proposal_id}: ${proposal.source_id} —[${proposal.type}]→ ${proposal.target_id}.` }] };
@@ -2041,6 +2095,8 @@ export function buildMcpServer(
         },
       },
       async ({ recall_event_id, rating, reason }) => {
+        recall_event_id = recall_event_id.trim();
+        if (!recall_event_id) return toolRefusal("invalid_request", "recall_event_id must not be empty.");
         const recorded = await submitRecallFeedback(env, {
           recallEventId: recall_event_id, userId: userId!, rating, reason,
         });

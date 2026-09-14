@@ -85,7 +85,7 @@ describe("multi-hop recall (issue #16)", () => {
     expect(db.entries.find((e: any) => e.id === "neighbor").recall_count).toBe(0);
   });
 
-  it("does not let expanded neighbors push out direct matches when topK is full", async () => {
+  it("reserves graph context within a full topK while keeping the strongest direct matches", async () => {
     for (let i = 0; i < 5; i++) seed(db, `d${i}`, "Direct match");
     seed(db, "neighbor", "Related context");
     pushEdge(db, "d0", "neighbor");
@@ -94,6 +94,7 @@ describe("multi-hop recall (issue #16)", () => {
 
     const res = await recallEntries({ query: "direct", topK: 5, hops: 1, userId: TEST_USER_ID }, env, ctx);
     expect(res.matches).toHaveLength(5);
-    expect(res.matches.map(m => m.id)).not.toContain("neighbor"); // direct matches fill topK
+    expect(res.matches.map(m => m.id)).toEqual(["d0", "d1", "d2", "d3", "neighbor"]);
+    expect(res.matches.at(-1)?.hop).toBe(1);
   });
 });

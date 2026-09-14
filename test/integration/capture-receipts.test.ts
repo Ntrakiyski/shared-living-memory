@@ -294,6 +294,22 @@ describe("capture receipt identity", () => {
     ).content).toBe("Edited content");
   });
 
+  it("replays four identical source-bearing retries but rejects omitted provenance (#6)", async () => {
+    const actor = { kind: "human" as const, actorId: human.actorId, ownerUserId: human.actorId, defaultSource: "mcp:alice" };
+    const input = {
+      content: "Synthetic idempotency probe", tags: ["test", "idempotency"],
+      visibility: "private" as const, source: "slm-eval", idempotencyKey: "source-retry",
+    };
+    const first = await captureEntryKeyed(harness.env, actor, input);
+    const retries = await Promise.all(Array.from({ length: 4 }, () => captureEntryKeyed(harness.env, actor, { ...input })));
+    for (const retry of retries) expect(retry).toMatchObject({ outcome: "replayed", entryId: first.entryId, committedRevision: 1 });
+    const { source: _source, ...withoutSource } = input;
+    await expect(captureEntryKeyed(harness.env, actor, withoutSource)).rejects.toMatchObject({ code: "idempotency_conflict", retryable: false });
+    expect(harness.db.count("entries")).toBe(1);
+    expect(harness.db.count("episodes")).toBe(1);
+    expect(harness.db.count("capture_receipts")).toBe(1);
+  });
+
   it("keeps live revision separate from the capture receipt on replay", async () => {
     const actor = { kind: "human" as const, actorId: human.actorId, ownerUserId: human.actorId, defaultSource: "mcp:alice" };
     const input = { content: "Original", idempotencyKey: "live-revision" };

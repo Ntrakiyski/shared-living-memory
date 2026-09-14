@@ -100,6 +100,16 @@ Avoid storing:
 - low-value scratchpad thoughts;
 - claims without context when source is available.
 
+## Machine-readable results and safe retries
+
+A successful HTTP request is not necessarily a successful MCP tool execution. Check the JSON-RPC `error`, then `result.isError` and `result.structuredContent.ok`. Read stable codes from `result.structuredContent.error.code`; do not infer success from prose.
+
+Use structured values for revisions: recall uses `data.matches[i].entry.revision`; history uses `data.projection.revision`. Preserve the requested entry ID for history. Do not regex human text or send `expected_revision:null`. Single-entry tools accept `id` or `entry_id`; if both are supplied they must match.
+
+A keyed retry must resend the same complete write meaning, including source, tags, visibility and source metadata. Keep one request object. Identical content with a different or omitted explicit source is a different request and correctly conflicts. Never treat `idempotency_conflict` as success.
+
+Use `recall`'s returned `data.recall_event_id` for `rate_recall` under the same authenticated identity. If no event was recorded, no valid feedback ID exists; never invent one.
+
 ## Recall workflow
 
 Use recall to answer from evidence, not vibes.
@@ -153,7 +163,13 @@ Good relationship types:
 
 Do not create a relationship just because two entries share a keyword. Explain the reason.
 
-For cross-user or consequential links, prefer proposal/review if available.
+For cross-user or consequential links, prefer proposal/review if available. Proposals still enforce endpoint visibility and ownership; they cannot expose another owner's private record or bypass the private/public boundary. Link public records to public records, and permitted private records to compatible private records. When sharing provenance, create an explicitly reviewed public summary containing only material authorized for that audience; do not publish the original private evidence merely to make linking succeed.
+
+A missing and an inaccessible record deliberately return the same safe error. Do not infer existence from it. Use `connections` edge IDs, source/target IDs and direction to inspect distinct relationships; do not collapse several edge types between the same entries.
+
+Request `hops:1` or `hops:2` for graph-assisted recall. Graph candidates share the total `topK` budget, and visibility, status, traversal limits and ranking still apply; not every neighbor is guaranteed a slot. Inspect each match's hop metadata and explicit connections before claiming you traced a relationship.
+
+A `canonical` record can describe a proposal or rejected recommendation. It is not automatically an adopted decision. Keep recommendations, evidence and explicit decisions separate, cite unresolved conflicts, and use source passages when a generated insight would drive consequential action.
 
 ## History and restore
 

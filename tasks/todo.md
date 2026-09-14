@@ -145,3 +145,33 @@ Initial production version 12d32970-e81b-493d-b329-3247dc90f653 retained all 25 
 
 ### Review
 Final source f95285f624c6e62a9de255e1d4de75854310d860 passes GitHub Linux CI run 34765494261: 1529 tests/134 files, typecheck and actual Workerd smoke. Staging version 05272192-0b57-4e42-9a52-2244bf511341 passes authenticated bindings and the full MCP capture/recall/erasure lifecycle; its 1629 cumulative erasures are complete with zero entries/queue. Final enabled production version bbc2b528-c70d-4272-96fe-1ed65a974278 passes all four unchanged credentials, initialization, whoami, semantic recall, browsing/private boundaries, owned history, 10/16/29 profiles, both domains/readiness, migration 16 and exact preservation of the 25 entries and 7 user/auth rows. The legacy public owner name is explicitly null; owner ID and permissions remain correct. Protected final-recovery version 25b5db1a-1a56-4506-9d50-9189fa540ab5 is uploaded without activation. No production test memories, deletions or key rotations occurred. Scheduled GitHub monitoring remains unconfigured and is not claimed operational.
+
+## 2026-09-13 Scientist connection delivery
+
+Goal: issue a working Scientist MCP credential and send it to Fractals through Taildrop, as explicitly requested.
+Constraints: retain the existing scientist member identity and its memories; replace only its credential. Store keys outside Git with owner-only permissions.
+- [x] Confirm the active scientist identity and online Fractals Tailscale device.
+- [x] Issue and save the new Scientist connection; verify MCP identity and tools.
+- [x] Transfer the connection file through Taildrop and record the result.
+
+Review: Scientist already existed as an active member. Rotated only its key through the administrator API, retaining its ID. Verified MCP initialize, whoami, all 29 full-profile tools (including remember/remember_batch/recall) and browsing. Saved scientist-connection.json outside Git with mode 0600. Taildrop reported the file sent successfully to the verified online Fractals device at 18:32:40 Sofia time. The old Scientist key is invalid; other agent credentials and memory content were untouched.
+
+## 2026-09-13 Hermes release evaluation assignment
+
+Goal: send Hermes the live release and Scientist file details, with realistic linking, research, older-session and performance testing instructions.
+- [x] Connect through SSH to niko@fractals and inspect the supported Hermes CLI.
+- [x] Deliver the assignment to ~/.hermes/tasks/slm-release-evaluation-20260913/assignment.md on Fractals.
+- [x] Start a dedicated Hermes conversation without interrupting existing sessions or overriding its model/configuration.
+- [x] Verify the named session exists and its systemd user service is running.
+
+Review: Hermes session 20260913_183526_901ee2, titled SLM 1.1 live-release evaluation, is running under hermes-slm-release-evaluation-20260913.service with a 2700-second budget. The brief includes the actual production source/version, Scientist Taildrop file and invalidated old key, linking/traversal/proposal/privacy scenarios, bounded older-session summaries, measured end-to-end timings and known monitoring gap. It protects existing memories, keys and original sessions. Requested final report.md beside the assignment plus a response to Niko in the Hermes task. Tests are delegated and running, not claimed complete.
+
+## 2026-09-14 Hermes issues #3–#11
+
+Goal: verify all nine reported issues, fix confirmed defects at their shared cause, and explain intentional privacy/protocol behavior with evidence.
+Constraints: preserve existing local notes, credentials, ownership, visibility and real memories. Use synthetic local/staging fixtures for mutation tests. Do not weaken private-data concealment or treat HTTP 200 alone as MCP success. Existing publishing/deployment authorization continues; verify corrected code before release.
+- [x] Read all issue bodies and the evaluator's exact harness; map each to code and reproduction.
+- [x] Fix graph selection/edge results, recall feedback/insight, and any confirmed capture/protocol defects with focused regressions.
+- [x] Explain intentional privacy and compatibility contracts; document precise issue dispositions.
+- [ ] Run full tests/typecheck/Workerd and appropriate staging checks; publish and verify production corrections.
+- [ ] Report outcomes, measured limits and any remaining issue clearly.

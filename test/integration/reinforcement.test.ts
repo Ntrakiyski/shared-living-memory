@@ -272,7 +272,8 @@ describe("explicit retention reinforcement", () => {
     expect(serviceTools.reinforce).toBeUndefined();
 
     const denied = await otherTools.reinforce.handler({ id: "owned-memory" }, {});
-    expect(denied.content[0].text).toContain("No entry found");
+    expect(denied.isError).toBe(true);
+    expect(denied.structuredContent).toMatchObject({ ok: false, error: { code: "not_found_or_inaccessible", retryable: false } });
     expect(entryState(db).recall_count).toBe(3);
 
     const reinforced = await ownerTools.reinforce.handler({ id: "owned-memory" }, {});

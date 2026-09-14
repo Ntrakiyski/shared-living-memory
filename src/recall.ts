@@ -49,7 +49,7 @@ import {
   STALENESS_RECALL_PENALTY,
 } from "./config";
 import { buildVisibilityClause, isRecallEligible } from "./tags";
-import { expandGraph } from "./graph";
+import { expandGraph, isSymmetric, isValidEdgeType } from "./graph";
 import { inferQueryTags, extractHashtags } from "./classification";
 import { synthesizeInsight } from "./lifecycle";
 import { queryVisibleVectors, vectorMatchParentId } from "./vector-access";
@@ -203,7 +203,7 @@ export interface RecallMatch {
     startOffset: number | null;
     endOffset: number | null;
   }[];
-  relations?: { type: string; confidence: number; targetId: string; targetContent?: string }[];
+  relations?: { type: string; confidence: number; targetId: string; direction?: "outbound" | "inbound" | "undirected"; provenance?: string; targetContent?: string }[];
   epistemicStatus?: string;
   ownerUserId?: string;
   ownerUsername?: string;
@@ -798,11 +798,8 @@ export async function recallEntries(
 
   const seedParentIds = deduped.map((m) => (m.metadata as any)?.parentId ?? m.id);
 
-  // Multi-hop expansion (issue #16): walk the graph outward from the direct-match seeds
-  // and fold in related memories. Each expanded node is scored as a fraction of the
-  // WEAKEST seed (minSeedScore × decay^hop × edgeWeight), so a related node can never
-  // outrank a direct match — recall never regresses — while neighbors still order by
-  // graph distance and link strength. hops:0 → no expansion → byte-for-byte today's path.
+  // Walk outward from direct matches. Graph scores retain distance/link ordering;
+  // selection below reserves result space when the caller explicitly requests hops.
   let expandedScored: { parentId: string; score: number; hop: number }[] = [];
   if (hops > 0) {
     const minSeedScore = deduped.reduce((mn, m) => Math.min(mn, m.score), Infinity);
@@ -883,9 +880,15 @@ export async function recallEntries(
     }];
   });
 
-  // Seeds always outrank expanded by construction, so they fill the top and expanded
-  // occupy only leftover slots — a direct match is never displaced by a neighbor.
-  const matches: RecallMatch[] = [...seedMatches, ...expandedMatches]
+  // With hops enabled, reserve up to half of topK for eligible graph neighbors.
+  // Keep the strongest direct seed (including topK=1), reuse unfilled slots, and
+  // retain the total cap. Depth enables traversal, not a promise that every node
+  // fits the fanout/ranking/result budget. hops=0 keeps direct ranking unchanged.
+  const graphSlots = Math.min(expandedMatches.length, Math.floor(topK / 2));
+  const rankedSeeds = seedMatches.sort((a, b) => b.score - a.score);
+  const rankedExpanded = expandedMatches.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+  const selectedSeeds = rankedSeeds.slice(0, topK - graphSlots);
+  const matches: RecallMatch[] = [...selectedSeeds, ...rankedExpanded.slice(0, topK - selectedSeeds.length)]
     .sort((a, b) => b.score - a.score)
     .slice(0, topK);
 
@@ -900,8 +903,8 @@ export async function recallEntries(
     const ids = [...matchIdSet];
     const placeholders = ids.map(() => "?").join(", ");
     const { results: edgeRows } = await env.DB.prepare(
-      `SELECT source_id, target_id, type, confidence FROM edges WHERE source_id IN (${placeholders}) OR target_id IN (${placeholders}) LIMIT 50`
-    ).bind(...ids, ...ids).all() as { results: { source_id: string; target_id: string; type: string; confidence: number }[] };
+      `SELECT source_id, target_id, type, confidence, provenance FROM edges WHERE source_id IN (${placeholders}) OR target_id IN (${placeholders}) LIMIT 50`
+    ).bind(...ids, ...ids).all() as { results: { source_id: string; target_id: string; type: string; confidence: number; provenance: string }[] };
 
     // Edges do not carry their own ACL. Hydrate every relation endpoint and
     // suppress missing/invisible targets so a public match cannot disclose the
@@ -918,14 +921,17 @@ export async function recallEntries(
       }));
     }
 
-    const edgesByEntry = new Map<string, { type: string; confidence: number; targetId: string }[]>();
+    const edgesByEntry = new Map<string, NonNullable<RecallMatch["relations"]>>();
     for (const e of edgeRows) {
-      const entryId = matchIdSet.has(e.source_id) ? e.source_id : matchIdSet.has(e.target_id) ? e.target_id : null;
-      if (!entryId) continue;
-      const targetId = entryId === e.source_id ? e.target_id : e.source_id;
-      if (visibleRelationIds && !visibleRelationIds.has(targetId)) continue;
-      if (!edgesByEntry.has(entryId)) edgesByEntry.set(entryId, []);
-      edgesByEntry.get(entryId)!.push({ type: e.type, confidence: e.confidence ?? 1.0, targetId });
+      for (const entryId of new Set([e.source_id, e.target_id])) {
+        if (!matchIdSet.has(entryId)) continue;
+        const targetId = entryId === e.source_id ? e.target_id : e.source_id;
+        if (visibleRelationIds && !visibleRelationIds.has(targetId)) continue;
+        const direction = isValidEdgeType(e.type) && isSymmetric(e.type)
+          ? "undirected" : entryId === e.source_id ? "outbound" : "inbound";
+        if (!edgesByEntry.has(entryId)) edgesByEntry.set(entryId, []);
+        edgesByEntry.get(entryId)!.push({ type: e.type, confidence: e.confidence ?? 1.0, targetId, direction, provenance: e.provenance });
+      }
     }
     for (const m of matches) {
       const edges = edgesByEntry.get(m.id);
@@ -1135,7 +1141,19 @@ export async function recallEntries(
   // insight stays grounded in the returned results. Chat answers call the LLM
   // themselves, so callers that only need retrieval can skip this extra call.
   const insight = matches.length > 1 && !skipInsight
-    ? await synthesizeInsight(embedQuery, matches.map(m => ({ id: m.id, content: m.content })), env)
+    ? await synthesizeInsight(embedQuery, matches.map(m => {
+      const context = m.ownerUserId === userId ? "owner_mcp" : "team_public";
+      return {
+        id: m.id, content: m.content, tags: m.tags,
+        source: sanitizeSourceMetadataForOutput({ source: m.source }, context).source,
+        createdAt: m.createdAt, epistemicStatus: m.epistemicStatus, revision: m.revision,
+        relations: m.relations,
+        passages: m.passages?.map(passage => {
+          const safe = sanitizeSourceMetadataForOutput({ sourceUrl: passage.sourceUrl, sourceTitle: passage.documentTitle }, context);
+          return { content: passage.content, sourceUrl: safe.sourceUrl, documentTitle: safe.sourceTitle };
+        }),
+      };
+    }), env)
     : "";
 
   return { matches, insight, semanticUnavailable, proposed_edges };

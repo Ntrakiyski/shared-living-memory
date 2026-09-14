@@ -45,7 +45,12 @@ describe("MCP private child artifacts", () => {
     db.entries = db.entries.filter((entry: any) => entry.id !== "hidden");
     const missing = await callTool(server, "passages", { entry_id: "hidden" });
 
-    expect(hidden).toEqual(missing);
+    expect(hidden.isError).toBe(true);
+    expect(missing.isError).toBe(true);
+    expect(hidden.structuredContent).toMatchObject({ ok: false, error: { code: "not_found_or_inaccessible" } });
+    expect(hidden.structuredContent.error).toEqual(missing.structuredContent.error);
+    expect(hidden.content[0].text).toContain(hidden.structuredContent.error.message);
+    expect(missing.content[0].text).toContain(hidden.structuredContent.error.message);
     expect(JSON.stringify(hidden)).not.toContain("passage secret");
   });
 
@@ -373,7 +378,8 @@ describe("MCP private child artifacts", () => {
       snapshot_id: "secret-snapshot",
     });
 
-    expect(result.content[0].text).toBe("No snapshot found for entry history.");
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ ok: false, error: { code: "not_found_or_inaccessible" } });
     expect(JSON.stringify(result)).not.toContain("historical secret");
   });
 
@@ -391,7 +397,12 @@ describe("MCP private child artifacts", () => {
     const missing = await callTool(server, "link", { source_id: "public", target_id: "hidden", type: "relates_to" });
 
     expect(boundary.content[0].text).toContain("private and public visibility");
-    expect(hidden).toEqual(missing);
+    expect(hidden.isError).toBe(true);
+    expect(missing.isError).toBe(true);
+    expect(hidden.structuredContent).toMatchObject({ ok: false, error: { code: "not_found_or_inaccessible" } });
+    expect(hidden.structuredContent.error).toEqual(missing.structuredContent.error);
+    expect(hidden.content[0].text).toContain(hidden.structuredContent.error.message);
+    expect(missing.content[0].text).toContain(hidden.structuredContent.error.message);
     expect(db.edges).toHaveLength(0);
   });
 });

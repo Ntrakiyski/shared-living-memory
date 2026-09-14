@@ -986,15 +986,17 @@ export class D1Mock {
           // deleteEdge: order-agnostic pair delete, optional trailing type filter.
           const [a, b, c, d, type] = args;
           const before = db.edges.length;
+          const deleted: { id: string }[] = [];
           db.edges = db.edges.filter((e: any) => {
             const pairMatch = (e.source_id === a && e.target_id === b) || (e.source_id === c && e.target_id === d);
             if (!pairMatch) return true;
             if (type && e.type !== type) return true;
             normalizeEdge(e);
             recordEdgeVersion(db, e, 1, Number(e.revision) + 1, Date.now());
+            deleted.push({ id: e.id });
             return false;
           });
-          return { meta: { changes: before - db.edges.length } };
+          return { results: s.includes("RETURNING id") ? deleted : [], meta: { changes: before - db.edges.length } };
         }
         if (s.startsWith("DELETE FROM edges WHERE source_id")) {
           // Cascade delete on forget: source_id = ? OR target_id = ? (both bound to the same id).
@@ -2242,6 +2244,14 @@ export class D1Mock {
               visibility: normalizeEntry(e).visibility,
             }));
           return { results: rows };
+        }
+        if (s.includes("FROM edges WHERE (source_id = ? OR target_id = ?)")) {
+          const [sourceId, targetId, type] = args;
+          return { results: db.edges
+            .filter((edge: any) => (edge.source_id === sourceId || edge.target_id === targetId)
+              && (!type || edge.type === type))
+            .sort((a: any, b: any) => b.weight - a.weight || String(a.id).localeCompare(String(b.id)))
+            .map((edge: any) => ({ ...edge, confidence: edge.confidence ?? 1.0 })) };
         }
         if (s.includes("FROM edges WHERE source_id IN") && s.includes("OR target_id IN")) {
           // expandGraph BFS / graph edge fetch: every edge touching the frontier, strongest

@@ -88,3 +88,10 @@ Mistake: Sending a message did not restart an agent interrupted by a side questi
 Why it happened: Message delivery was mistaken for task resumption.
 Rule for next time: Check agent status after interruptions and use followup_task to resume work.
 Example check: The agent is running before waiting for its next result.
+
+## 2026-09-14 - Compare complete requests and preserve MCP execution flags
+
+Mistake: Hermes's evaluation attributed source-changing retries to a concurrency bug and described every HTTP 200 tool failure as text-only.
+Why it happened: The concurrency loop omitted source; the helper's top-level error field ignored MCP result.isError even though its log recorded it.
+Rule for next time: Compare every field that contributes to write meaning before diagnosing idempotency. Evaluate transport, JSON-RPC, tool isError and structured success separately. Reproduce from saved request objects rather than hand-transcribing them.
+Example check: Four retries of the exact source-bearing payload replay; removing source conflicts. Original logs show revision-conflict isError true while legacy graph refusals lack the flag.

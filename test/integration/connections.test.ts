@@ -61,6 +61,21 @@ describe("GET /connections", () => {
     expect(data.connections.map((c: any) => c.id)).toEqual(["c"]);
   });
 
+  it("serializes distinct pair relationships with endpoint direction", async () => {
+    seedEntry(db, "a", "A");
+    seedEntry(db, "b", "B");
+    pushEdge(db, "a", "b", "relates_to", 0.9);
+    pushEdge(db, "b", "a", "clarifies", 0.8);
+
+    const res = await worker.fetch(req("GET", "/connections?id=a"), env, ctx);
+    expect(res.status).toBe(200);
+    const data = await res.json() as any;
+    expect(data.connections).toEqual([
+      expect.objectContaining({ id: "b", edge_id: "a-b-relates_to", source_id: "a", target_id: "b", direction: "undirected" }),
+      expect.objectContaining({ id: "b", edge_id: "b-a-clarifies", source_id: "b", target_id: "a", direction: "inbound" }),
+    ]);
+  });
+
   it("returns an empty list when there are no connections", async () => {
     seedEntry(db, "a", "A");
     const res = await worker.fetch(req("GET", "/connections?id=a"), env, ctx);

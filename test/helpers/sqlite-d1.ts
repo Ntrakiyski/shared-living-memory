@@ -71,9 +71,16 @@ export class SqliteStatement {
   async run(): Promise<any> {
     this.assertCompoundLimit();
     this.owner.executed.push(this.sql.replace(/\s+/g, " ").trim());
-    const result = this.owner.sqlite
-      .prepare(this.sql)
-      .run(...this.values as SQLInputValue[]);
+    const statement = this.owner.sqlite.prepare(this.sql);
+    if (statement.columns().length > 0) {
+      // D1 batch returns SELECT/RETURNING rows. Execute once and retain them;
+      // StatementSync.run() discards the rows even when the mutation succeeds.
+      const before = this.owner.one<{ n: number }>("SELECT total_changes() AS n").n;
+      const results = statement.all(...this.values as SQLInputValue[]);
+      const changes = this.owner.one<{ n: number }>("SELECT total_changes() AS n").n - before;
+      return { success: true, results, meta: { changes } };
+    }
+    const result = statement.run(...this.values as SQLInputValue[]);
     return { success: true, results: [], meta: { changes: Number(result.changes) } };
   }
 

@@ -213,7 +213,7 @@ export async function createEdge(
 // edges stated in either direction AND symmetric pairs regardless of the smaller-id-
 // first normalization createEdge applied — so callers never re-derive that rule.
 // Optional type narrows the delete to one relationship type; omitted removes every
-// edge between the pair. Returns rows removed: 0 is not an error (idempotent delete,
+// edge between the pair. Returns relationships removed: 0 is not an error (idempotent delete,
 // the mirror of createEdge's idempotent upsert).
 export async function deleteEdge(
   sourceId: string,
@@ -244,10 +244,11 @@ export async function deleteEdge(
       mutationId,
       ...bindings,
     ),
-    env.DB.prepare(`DELETE FROM edges WHERE ${predicate}`).bind(...bindings),
+    env.DB.prepare(`DELETE FROM edges WHERE ${predicate} RETURNING id`).bind(...bindings),
   ]);
-  const result = results[1];
-  return result.meta.changes ?? 0;
+  // D1 meta.changes includes edge_versions trigger writes. Count the canonical
+  // edge rows actually deleted, without racing a separate pre-delete query.
+  return results[1].results.length;
 }
 
 interface EdgeEndpointAccess {
@@ -404,7 +405,7 @@ async function deprecatedIdsAmong(ids: string[], env: Env): Promise<Set<string>>
 }
 
 // Breadth-first traversal of the edges table outward from a set of seed nodes.
-// Shared by recall (multi-hop expansion), GET /connections, and GET /graph. Bounded
+// Shared by recall (multi-hop expansion) and GET /graph. Bounded
 // by hop/fanout/node caps so a heavily-connected node can't explode the query, and
 // skips status:deprecated nodes by default so stale entries aren't traversed through.
 export async function expandGraph(
@@ -434,20 +435,19 @@ export async function expandGraph(
       edgeRows.push(...results);
     }
 
-    // For each frontier node, take its strongest unseen neighbors up to the fanout cap.
+    // Keep ordering stable across query batches and equal-weight relationships.
+    edgeRows.sort((a, b) => b.weight - a.weight
+      || a.source_id.localeCompare(b.source_id) || a.target_id.localeCompare(b.target_id)
+      || a.type.localeCompare(b.type));
     const frontierSet = new Set(frontier);
-    const perNodeCount = new Map<string, number>();
-    const candidates: GraphNeighbor[] = [];
+    const candidates: (GraphNeighbor & { from: string })[] = [];
     for (const e of edgeRows) {
       let from: string | null = null;
       let to: string | null = null;
       if (frontierSet.has(e.source_id)) { from = e.source_id; to = e.target_id; }
       else if (frontierSet.has(e.target_id)) { from = e.target_id; to = e.source_id; }
       if (!from || !to || visited.has(to)) continue;
-      const n = perNodeCount.get(from) ?? 0;
-      if (n >= fanoutCap) continue;
-      perNodeCount.set(from, n + 1);
-      candidates.push({ id: to, hop, viaWeight: e.weight, viaType: e.type as EdgeType, viaConfidence: e.confidence ?? 1.0 });
+      candidates.push({ from, id: to, hop, viaWeight: e.weight, viaType: e.type as EdgeType, viaConfidence: e.confidence ?? 1.0 });
     }
 
     // Drop deprecated nodes before they enter results or the next frontier.
@@ -466,11 +466,18 @@ export async function expandGraph(
     }
 
     const nextFrontier: string[] = [];
+    const perNodeCount = new Map<string, number>();
     for (const c of allowed) {
       if (visited.has(c.id)) continue; // first (strongest) wins; dedupe across this hop
       if (out.length >= maxNodes) break;
+      // Fanout counts eligible, visible neighbors, not duplicate relationship
+      // rows or hidden nodes that could otherwise starve the traversal.
+      const count = perNodeCount.get(c.from) ?? 0;
+      if (count >= fanoutCap) continue;
+      perNodeCount.set(c.from, count + 1);
       visited.add(c.id);
-      out.push(c);
+      const { from: _from, ...neighbor } = c;
+      out.push(neighbor);
       nextFrontier.push(c.id);
     }
     frontier = nextFrontier;
@@ -513,7 +520,12 @@ async function hydrateGraphEntries(ids: string[], env: Env): Promise<Map<string,
 }
 
 export interface Connection {
+  /** Neighbor entry ID, retained for existing clients. */
   id: string;
+  edge_id: string;
+  source_id: string;
+  target_id: string;
+  direction: "outbound" | "inbound" | "undirected";
   content: string;
   tags: string[];
   source: string | null;
@@ -524,22 +536,41 @@ export interface Connection {
   confidence: number;
 }
 
-// 1-hop neighborhood of an entry, hydrated and annotated with edge type/weight.
+// Incident relationships, preserving every type/direction for selected neighbors.
 // Backs both the `connections` MCP tool and GET /connections.
 export async function getConnections(id: string, type: string | undefined, env: Env, userId?: string): Promise<Connection[]> {
-  let neighbors = await expandGraph([id], { hops: 1 }, env, userId);
-  if (type) neighbors = neighbors.filter(n => n.viaType === type);
-  if (!neighbors.length) return [];
+  if (type && !isValidEdgeType(type)) return [];
+  if (!(await filterVisibleIds([id], userId, env)).length) return [];
+  const { results: edges } = await env.DB.prepare(
+    `SELECT id, source_id, target_id, type, weight, confidence FROM edges
+     WHERE (source_id = ? OR target_id = ?)${type ? " AND type = ?" : ""}
+     ORDER BY weight DESC, id ASC`,
+  ).bind(id, id, ...(type ? [type] : [])).all<{
+    id: string; source_id: string; target_id: string; type: EdgeType; weight: number; confidence: number;
+  }>();
+  if (!edges.length) return [];
 
-  const rows = await hydrateGraphEntries(neighbors.map(n => n.id), env);
+  const neighborIds = [...new Set(edges.map(edge => edge.source_id === id ? edge.target_id : edge.source_id))];
+  const rows = await hydrateGraphEntries(neighborIds, env);
+  const deprecated = await deprecatedIdsAmong(neighborIds, env);
+  const selectedNeighbors = new Set<string>();
   const out: Connection[] = [];
-  for (const n of neighbors) {
-    const row = rows.get(n.id);
+  for (const edge of edges) {
+    const neighborId = edge.source_id === id ? edge.target_id : edge.source_id;
+    const row = rows.get(neighborId);
     if (!row) continue; // neighbor was deleted (cascade should prevent this) — skip dangling
+    if (deprecated.has(neighborId)) continue;
     const tags: string[] = JSON.parse(row.tags ?? "[]");
     if (!((userId && row.owner_user_id === userId) || row.visibility === "public")) continue;
+    // Bound unique neighbors as before, while keeping all their relationships.
+    if (!selectedNeighbors.has(neighborId) && selectedNeighbors.size >= GRAPH_FANOUT_CAP) continue;
+    selectedNeighbors.add(neighborId);
     out.push({
-      id: n.id,
+      id: neighborId,
+      edge_id: edge.id,
+      source_id: edge.source_id,
+      target_id: edge.target_id,
+      direction: isSymmetric(edge.type) ? "undirected" : edge.source_id === id ? "outbound" : "inbound",
       content: row.content as string,
       tags,
       source: sanitizeSourceMetadataForOutput(
@@ -547,10 +578,10 @@ export async function getConnections(id: string, type: string | undefined, env: 
         userId && row.owner_user_id === userId ? "owner_mcp" : "team_public",
       ).source,
       created_at: row.created_at as number,
-      type: n.viaType,
-      label: edgeLabel(n.viaType),
-      weight: n.viaWeight,
-      confidence: n.viaConfidence,
+      type: edge.type,
+      label: edgeLabel(edge.type),
+      weight: edge.weight,
+      confidence: edge.confidence ?? 1.0,
     });
   }
   return out;

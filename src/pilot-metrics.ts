@@ -41,7 +41,9 @@ export async function computePilotMetrics(
   // Feedback
   const feedback = await env.DB.prepare(
     `SELECT COUNT(*) AS count, SUM(CASE WHEN rating = 'helpful' THEN 1 ELSE 0 END) AS helpful
-     FROM recall_feedback WHERE created_at >= ?`,
+     FROM recall_feedback f JOIN recall_events e
+       ON e.id = f.recall_event_id AND e.user_id = f.user_id
+     WHERE f.created_at >= ?`,
   ).bind(since).first<{ count: number; helpful: number }>();
 
   // Duration percentiles

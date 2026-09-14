@@ -8,19 +8,23 @@
  */
 
 import type { Env } from "./types";
+import { readWriteMode } from "./config";
+import { sqlChanges } from "./governance-utils";
 
 /**
  * Normalise the query and produce a hash that can be counted across repeated
  * queries without building a reusable dictionary.
  */
-export function hashRecallQuery(rawQuery: string, pepper: string): string {
+export async function hashRecallQuery(rawQuery: string, pepper: string): Promise<string> {
+  if (!pepper) throw new Error("Recall telemetry requires a secret hash key");
   const normalized = rawQuery.trim().toLowerCase().replace(/\s+/g, " ");
   const encoder = new TextEncoder();
-  const key = encoder.encode(pepper);
+  const key = await crypto.subtle.importKey(
+    "raw", encoder.encode(pepper), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
   const data = encoder.encode(`recall-query:v1:${normalized}`);
-  return Array.from(new Uint8Array(data)).map((b) =>
-    ((b ^ key[Math.min(b % key.length, key.length - 1)]) & 0xff).toString(16).padStart(2, "0")
-  ).join("");
+  const digest = await crypto.subtle.sign("HMAC", key, data);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export interface RecallEventEmit {
@@ -39,7 +43,7 @@ export async function emitRecallEvent(
   now: number = Date.now(),
 ): Promise<string> {
   const id = crypto.randomUUID();
-  await env.DB.prepare(
+  const result = await env.DB.prepare(
     `INSERT INTO recall_events (
        id, user_id, client, query_hash, result_entry_ids,
        result_count, semantic_unavailable, duration_ms, created_at
@@ -55,7 +59,38 @@ export async function emitRecallEvent(
     input.durationMs,
     now,
   ).run();
+  if (!result.success || sqlChanges(result) !== 1) throw new Error("Recall event was not stored");
   return id;
+}
+
+export interface RecallEventInput {
+  userId: string;
+  client: "mcp" | "rest";
+  query: string;
+  resultEntryIds: string[];
+  semanticUnavailable: boolean;
+  durationMs: number;
+}
+
+/** A failed telemetry write must neither fail a read nor advertise a rateable ID. */
+export async function recordRecallEvent(
+  env: Pick<Env, "DB" | "AUTH_TOKEN" | "SLM_WRITE_MODE">,
+  input: RecallEventInput,
+  now = Date.now(),
+): Promise<{ recall_event_id: string | null; warnings: string[] }> {
+  const unavailable = { recall_event_id: null, warnings: ["recall_feedback_unavailable"] };
+  if (readWriteMode(env) !== "enabled") return unavailable;
+  try {
+    const recall_event_id = await emitRecallEvent(env, {
+      ...input,
+      queryHash: await hashRecallQuery(input.query, env.AUTH_TOKEN),
+      resultCount: input.resultEntryIds.length,
+    }, now);
+    return { recall_event_id, warnings: [] };
+  } catch {
+    // Do not log queries, keys, or provider errors containing bound parameters.
+    return unavailable;
+  }
 }
 
 export type RecallRating = "helpful" | "not_helpful";
@@ -73,23 +108,21 @@ export async function submitRecallFeedback(
   },
   now: number = Date.now(),
 ): Promise<boolean> {
-  try {
-    await env.DB.prepare(
-      `INSERT INTO recall_feedback (
-         id, recall_event_id, user_id, rating, reason, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT (recall_event_id, user_id) DO UPDATE SET
-         rating = excluded.rating, reason = excluded.reason, created_at = excluded.created_at`,
-    ).bind(
-      crypto.randomUUID(),
-      input.recallEventId,
-      input.userId,
-      input.rating,
-      input.reason,
-      now,
-    ).run();
-    return true;
-  } catch {
-    return false;
-  }
+  const result = await env.DB.prepare(
+    `INSERT INTO recall_feedback (
+       id, recall_event_id, user_id, rating, reason, created_at
+     ) SELECT ?, id, user_id, ?, ?, ? FROM recall_events
+     WHERE id = ? AND user_id = ?
+     ON CONFLICT (recall_event_id, user_id) DO UPDATE SET
+       rating = excluded.rating, reason = excluded.reason, created_at = excluded.created_at`,
+  ).bind(
+    crypto.randomUUID(),
+    input.rating,
+    input.reason,
+    now,
+    input.recallEventId,
+    input.userId,
+  ).run();
+  if (!result.success) throw new Error("Recall feedback storage unavailable");
+  return sqlChanges(result) === 1;
 }

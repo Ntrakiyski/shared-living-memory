@@ -118,7 +118,7 @@ import {
   markAwarenessEventRead,
 } from "./awareness-events";
 import { recallEntries, type RecallMatch } from "./recall";
-import { emitRecallEvent, submitRecallFeedback, hashRecallQuery } from "./recall-events";
+import { recordRecallEvent, submitRecallFeedback } from "./recall-events";
 import { computePilotMetrics } from "./pilot-metrics";
 import { reinforceOwnedEntry } from "./reinforcement";
 import {
@@ -1905,15 +1905,22 @@ export const defaultHandler = {
         }, 400);
       }
 
+      const recallStarted = Date.now();
       const { matches, insight, semanticUnavailable, proposed_edges } = await recallEntries({
         query, topK, tag, after, before, kind, hops, userId: user_id, asOf, knownAt,
         skipInsight: includeInsightParam === "false",
       }, env, ctx);
+      const feedback = await recordRecallEvent(env, {
+        userId: user_id!, client: "rest", query,
+        resultEntryIds: matches.map((match) => match.id),
+        semanticUnavailable, durationMs: Date.now() - recallStarted,
+      });
 
       if (!matches.length) {
         return json({
           ok: true,
           results: [],
+          ...feedback,
           semantic_unavailable: semanticUnavailable,
           proposed_edges,
           message: semanticUnavailable
@@ -1964,6 +1971,7 @@ export const defaultHandler = {
           };
         }),
         insight: insight || null,
+        ...feedback,
         semantic_unavailable: semanticUnavailable,
         proposed_edges,
       });
@@ -2257,20 +2265,25 @@ export const defaultHandler = {
 
       let body: { recall_event_id?: string; rating?: string; reason?: string };
       try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON" }, 400); }
-      if (!body.recall_event_id?.trim()) return json({ ok: false, error: "recall_event_id is required" }, 400);
+      if (!body || typeof body.recall_event_id !== "string" || !body.recall_event_id.trim()) return json({ ok: false, error: "recall_event_id is required" }, 400);
       if (body.rating !== "helpful" && body.rating !== "not_helpful") return json({ ok: false, error: "rating must be helpful or not_helpful" }, 400);
       const reason = body.reason ?? "other";
       if (!["irrelevant", "missing", "stale", "conflicting", "unsupported", "too_much", "other"].includes(reason)) {
         return json({ ok: false, error: "Invalid reason code" }, 400);
       }
 
-      const ok = await submitRecallFeedback(env, {
-        recallEventId: body.recall_event_id.trim(),
-        userId: user_id!,
-        rating: body.rating as "helpful" | "not_helpful",
-        reason: reason as any,
-      });
-      if (!ok) return json({ ok: false, error: "Could not record feedback" }, 409);
+      let ok: boolean;
+      try {
+        ok = await submitRecallFeedback(env, {
+          recallEventId: body.recall_event_id.trim(),
+          userId: user_id!,
+          rating: body.rating as "helpful" | "not_helpful",
+          reason: reason as any,
+        });
+      } catch {
+        return json({ ok: false, error: { code: "storage_unavailable", message: "Feedback storage unavailable", retryable: true } }, 503);
+      }
+      if (!ok) return json({ ok: false, error: { code: "not_found_or_inaccessible", message: "Recall event not found", retryable: false } }, 404);
       return json({ ok: true });
     }
 
