@@ -178,3 +178,15 @@ Constraints: preserve existing local notes, credentials, ownership, visibility a
 
 ### Review
 Verified all nine original issue reports against source and Hermes's actual harness/logs. Fixed graph result starvation, distinct directional edge output/exact deletion count, real caller-bound recall feedback, insight evidence/provenance guidance, structured MCP refusals and compatible entry-ID aliases. Explained changed-source replay conflicts (#6), valid MCP HTTP200 execution envelopes (#7), private existence concealment (#8) and visibility boundaries (#10). Source 723c4ba passes 1580tests/138files, typecheck, Linux Workerd and GitHub CI 34822566584. Isolated staging passes seven scenario checks plus full MCP lifecycle; all fixtures erased, zero entries/queue. Production 8e301237-9b5b-4ae0-a144-5f629800afe9 verifies all five unchanged agent credentials/profiles, semantic recall, browsing/history, domains/readiness and exact preservation of 52 entry / 7 user-auth rows. Compatible inactive read-only recovery a007975a-065d-4a56-b695-c35c5b51c202 verified. One real conflict-answer sample correctly distinguished recommendation from decision in 3904 ms; this is not a benchmark or guarantee of model infallibility. Full issue dispositions and evidence are in docs/team-pilot/releases/2026-09-14-hermes-issue-review.md.
+
+## 2026-09-14 Hermes generated-answer follow-up
+
+Goal: investigate the reported generation latency increase and remaining trial/recommendation wording without weakening evidence safeguards.
+Constraints: compare actual requests and returned content; keep existing production records/keys unchanged; no model change or latency claim from unmatched samples.
+- [x] Inspect the retest report, harness and actual before/after samples.
+- [x] Measure evidence and answer sizes and isolate whether a minimal correction is justified.
+- [x] Verify any correction with relevant tests and bounded live evidence, or document why no deployment is warranted.
+- [x] Record findings and the remaining measurement limits.
+
+### Review
+Independently verified all nine GitHub issues closed with the reported dispositions. Inspected actual old/new remote timing scripts: retest appended a follow-up question, and fixed graph selection changes generation evidence, so the claimed like-for-like comparison is confounded. Six alternating current-release calls from Fractals all passed, with original-query median 6133.21 ms and follow-up median 6458.66 ms (three each), range 5207.05–7228.49 ms. Same five returned IDs and response evidence sizes in this run. Residual trial-as-decision wording remains an acknowledged quality limitation. No code, model, prompt, production records or credentials changed; no unsupported claim of a latency fix. Evidence and next valid measurement design added to the issue review.

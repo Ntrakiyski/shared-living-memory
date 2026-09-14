@@ -95,3 +95,10 @@ Mistake: Hermes's evaluation attributed source-changing retries to a concurrency
 Why it happened: The concurrency loop omitted source; the helper's top-level error field ignored MCP result.isError even though its log recorded it.
 Rule for next time: Compare every field that contributes to write meaning before diagnosing idempotency. Evaluate transport, JSON-RPC, tool isError and structured success separately. Reproduce from saved request objects rather than hand-transcribing them.
 Example check: Four retries of the exact source-bearing payload replay; removing source conflicts. Original logs show revision-conflict isError true while legacy graph refusals lack the flag.
+
+## 2026-09-14 - Compare prompts and evidence before calling a latency regression
+
+Mistake: The retest report described generated-answer samples as the same query, although the new harness appended a follow-up question and graph recall now supplies previously omitted evidence.
+Why it happened: Matching client and topK were treated as a controlled generation workload.
+Rule for next time: Compare exact query text, retrieved IDs/revisions, prompt and output sizes, model settings and sample timing. Separate end-to-end experience from an isolated generator regression.
+Example check: Alternate both historical query strings on one verified release and report the small-sample limitation; do not call it an old/new model benchmark.

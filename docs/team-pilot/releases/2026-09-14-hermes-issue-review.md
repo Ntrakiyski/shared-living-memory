@@ -71,4 +71,25 @@ Jarvis, Researcher, Engineer, Clients and Scientist all authenticate with their 
 
 The post-deployment SQL comparison exactly matches all 52 pre-deployment entry rows across ID, owner, content, tags, source, visibility, revision and vector IDs, and all seven user rows including credential hashes/prefixes and status. Migration history remains 1–16. Recall/audit telemetry can change through normal reads; it is not claimed byte-identical. The protected backup and verification evidence live under `~/.config/shared-living-memory/production-release-20260914/` outside Git.
 
-The GitHub issues remain open for Hermes to retest. This review supplies the individual dispositions without claiming every report was a server defect.
+Hermes subsequently retested all nine issues and closed them. GitHub state was independently verified: #3/#4/#5/#7/#9/#11 completed; #6/#8/#10 not planned. This review supplies the individual dispositions without claiming every report was a server defect.
+
+## Follow-up: independent retest and generation timing
+
+Hermes confirmed six fixes and three intentional behaviors against the exact deployed source/version. Its report retains a real generation-quality limitation: a `VERDICT: TRIAL` recommendation can still be narrated as a decision even while the answer names the conflict. Closing #5 does not establish that this framing error is solved. The existing instruction already prohibits that inference; no claim of deterministic model correctness is made.
+
+The reported median increase from 5,258.4 ms to 7,730.0 ms was not a controlled same-query comparison:
+
+- Original `scenario-timing.py`: `is there a local MCP inspection surface for our MCP servers and what did we decide to adopt`
+- New `retest-c.py`: the same text plus `, and what is the follow-up?`
+- Both generation probes use `hops:1`, whose retrieved evidence changed when graph-slot starvation was fixed. The deployed generator also receives additional status, source, relationship and citation context. Provider variability and output length were not isolated.
+
+A fresh bounded check ran from Fractals using the existing Scientist client/key, verified the current release through whoami, and alternated the two exact query strings. All six MCP calls succeeded, with the same five returned IDs and returned content/citation sizes in this run. No fixture content, keys or deployment configuration were changed.
+
+| Query | Samples (ms) | Median (ms) | Answer words |
+|---|---|---|---|
+| Original | 6674.46, 6133.21, 5879.36 | 6133.21 | 184, 218, 222 |
+| Added follow-up | 7228.49, 5207.05, 6458.66 | 6458.66 | 205, 146, 205 |
+
+Each response exposed 6,001 content characters plus 4,291 citation-content characters. These response sizes are not an exact token count of the internal generation prompt, nor proof that every citation is redundant. The six samples demonstrate variable latency on the unchanged release; they do not prove the historical slowdown absent or explain its cause. Three samples per query do not establish p95 or a concurrency SLO.
+
+Decision: preserve the verified production release and evidence safeguards. No runtime optimization or prompt edit is justified by this small, confounded timing comparison alone. Any subsequent optimization should compare fixed evidence and model settings, alternate baseline/candidate requests, record input/output tokens and first-token/total latency, and include a scored trial-versus-decision scenario. Raw recall with `include_insight:false` remains available when an agent needs evidence without a generated summary. Protected sample metadata: `~/.config/shared-living-memory/production-release-20260914/generation-followup.json`.
