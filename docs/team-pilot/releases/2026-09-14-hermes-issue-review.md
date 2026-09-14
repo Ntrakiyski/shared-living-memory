@@ -1,6 +1,6 @@
 # Hermes evaluation: issues #3–#11
 
-Status: investigation and corrections in progress. Evaluated release: `f95285f624c6e62a9de255e1d4de75854310d860`. Existing production memories, identities, visibility and keys are preserved. Mutating reproductions use synthetic local/staging fixtures.
+Status: corrections deployed and verified in production. Evaluated release: `f95285f624c6e62a9de255e1d4de75854310d860`. Existing production memories, identities, visibility and keys are preserved. Mutating reproductions use synthetic local/staging fixtures.
 
 ## Evidence and decisions
 
@@ -14,7 +14,7 @@ Confirmed. The MCP description promises a recall event ID, but the return path d
 
 ### #5 Generated insight blends conflicting recommendations and decisions
 
-Confirmed missing context/insufficient generation guidance. Canonical status means the record is retained as authoritative knowledge; it does not make every quoted recommendation an adopted decision. Pass authorized status/source/relationship context and require the generator to separate proposals, recommendations, actual decisions and unresolved conflicts. This improves grounding but cannot guarantee an LLM never contradicts itself. Existing deprecated/superseded/retracted filtering remains enforced. Do not silently change real record statuses or widen visibility.
+Confirmed missing context/insufficient generation guidance. Canonical status means the record is retained as authoritative knowledge; it does not make every quoted recommendation an adopted decision. Pass authorized status/source/relationship context, including directed edge provenance and require the generator to separate proposals, recommendations, actual decisions and unresolved conflicts. Inferred/system/unknown relationships are suggestions, not authoritative resolutions. This improves grounding but cannot guarantee an LLM never contradicts itself. Existing deprecated/superseded/retracted filtering remains enforced. Do not silently change real record statuses or widen visibility.
 
 ### #6 Concurrent capture conflict is caused by a changed request
 
@@ -48,5 +48,27 @@ The naming inconsistency is real. Accept `id` and `entry_id` where an existing s
 
 - Source and original remote evaluator scripts/logs inspected; issue #6 source mismatch and issue #7 mixed flags verified independently.
 - #6 real-SQLite suite: 34 tests passed. Existing deployed staging: four exact retries replay, changed provenance conflicts, complete fixture erasure.
-- Integrated candidate: 1,580 tests / 138 files pass; `npm run typecheck` and real Linux `npm run smoke:workerd` pass. Live candidate staging and deployment checks remain pending.
+- Integrated candidate: 1,580 tests / 138 files pass; `npm run typecheck` and real Linux `npm run smoke:workerd` pass. Candidate staging and production checks passed below.
 - Fresh production backup verifies SQLite integrity, 52 entries and 7 user records; all five existing personal credentials authenticate. No production data or keys changed.
+
+### Candidate live evidence
+
+Candidate source: `723c4bad55a3729b74f65c372ec23d1453abcea1`. [Linux CI](https://github.com/Ntrakiyski/shared-living-memory/actions/runs/34822566584) passed dependency install, typecheck, all 1,580 tests and real Workerd smoke.
+
+The full MCP private capture/recall/erasure lifecycle also passed. Staging was left with zero entries, an empty repair queue, and all 1,637 cumulative erasure receipts complete.
+
+Staging version `d8a74001-aaf9-4f2f-bc04-76d19ec7513f` passed authenticated Cloudflare binding isolation and seven live scenario checks: distinct incident directions, exact logical unlink count, a graph neighbor in a full topK=2 result, real event feedback with invented/foreign IDs rejected, private/missing error indistinguishability, ID alias compatibility/conflict refusal, and real model generation. All six synthetic scenario memories were erased with complete receipts.
+
+The real generated answer correctly distinguished the rejected Aster/weekly-review recommendation from the adopted Birch/monthly-review decision, citing both sources. This one end-to-end insight request took 3,904 ms; it is a functional sample, not a p95 benchmark or an LLM correctness guarantee.
+
+Compatible read-only recovery version `a007975a-065d-4a56-b695-c35c5b51c202` is uploaded and its production bindings verified, without activation. No production memory content, entry ownership, visibility, revisions, vector IDs, user identities or credential hashes were changed by the release.
+
+### Production verification
+
+Active production version: `8e301237-9b5b-4ae0-a144-5f629800afe9`, running tested source `723c4bad55a3729b74f65c372ec23d1453abcea1`. Both the custom domain and Workers domain return HTTP 200 for the dashboard and `/ready`; the five required deployment variables and production D1/KV/Vectorize bindings match. The existing AUTH_TOKEN secret binding remains present.
+
+Jarvis, Researcher, Engineer, Clients and Scientist all authenticate with their unchanged saved keys and pass MCP initialization, identity/release checks, semantic recall, recent-entry browsing, and the exact capture/review/full profiles (10/16/29 tools). Owned history succeeds for every account with an existing owned entry. Read results were checked against ownership/public visibility.
+
+The post-deployment SQL comparison exactly matches all 52 pre-deployment entry rows across ID, owner, content, tags, source, visibility, revision and vector IDs, and all seven user rows including credential hashes/prefixes and status. Migration history remains 1–16. Recall/audit telemetry can change through normal reads; it is not claimed byte-identical. The protected backup and verification evidence live under `~/.config/shared-living-memory/production-release-20260914/` outside Git.
+
+The GitHub issues remain open for Hermes to retest. This review supplies the individual dispositions without claiming every report was a server defect.
